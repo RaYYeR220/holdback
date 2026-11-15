@@ -45,6 +45,19 @@ describe("runClaudeTurn", () => {
       "--settings", "s.json", "--append-system-prompt-file", "c.md", "--max-turns", "3", "--model", "sonnet"])
       expect(args).toContain(a);
   });
+  it("runs the agent without the user's own Claude Code setup: project and local settings only, no MCP servers, never --bare (R34)", async () => {
+    process.env.HOLDBACK_CLAUDE_BIN = fake;
+    const argsFile = join(mkdtempSync(join(tmpdir(), "hb-")), "args.json");
+    process.env.FAKE_CLAUDE_ARGS_FILE = argsFile;
+    await runClaudeTurn(base());
+    const args: string[] = JSON.parse(readFileSync(argsFile, "utf8"));
+    // no user-level plugins, hooks or CLAUDE.md; Holdback's guard comes in through --settings, which still applies
+    expect(args[args.indexOf("--setting-sources") + 1]).toBe("project,local");
+    expect(args).toContain("--strict-mcp-config");
+    expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("--bare"); // it would drop the guard hook too
+    expect(args[args.indexOf("--settings") + 1]).toBe("s.json");
+  });
   it("marks the agent's process (and so every hook Claude Code runs from it) as a headless turn", async () => {
     process.env.HOLDBACK_CLAUDE_BIN = fake;
     const envFile = join(mkdtempSync(join(tmpdir(), "hb-")), "env.json");

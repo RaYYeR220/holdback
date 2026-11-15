@@ -70,6 +70,12 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     "bypassPermissions",
     "--settings",
     opts.settingsFile,
+    // A clean, reproducible agent: the app's own project/local settings (and Holdback's --settings,
+    // which carries the guard hook) but none of the user's plugins, hooks, global CLAUDE.md or MCP
+    // servers. Not --bare: it would drop the guard hook as well.
+    "--setting-sources",
+    "project,local",
+    "--strict-mcp-config",
     "--append-system-prompt-file",
     opts.contractFile,
     "--max-turns",
