@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -432,11 +432,37 @@ type InstallRecord = { settings: string; hooks: { event: string; command: string
 const INSTALL_RECORD = "claude-install.json";
 
 /**
- * Where the app keeps its data when the agent starts it in its own session (its boot check): a
- * scratch folder outside the repo and outside Holdback's home, never `./data`, which would end up in
- * the human's commits and stop falsify (N-m6).
+ * Where the app keeps its data when the agent starts it in its own session (its boot check), never
+ * `./data`, which would end up in the human's commits and stop falsify (N-m6): a folder in the user's
+ * own cache (`%LOCALAPPDATA%` on Windows, `$XDG_CACHE_HOME` or `~/.cache` elsewhere), never a shared
+ * temp folder, outside the repo and outside Holdback's home, whose path the agent must not learn.
  */
-const agentDataDir = (p: Project) => path.join(os.tmpdir(), "holdback-agent-data", path.basename(p.home));
+export function agentDataDir(p: Pick<Project, "home">, env: NodeJS.ProcessEnv = process.env): string {
+  const base =
+    process.platform === "win32" ? env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local") : env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+  return path.join(path.resolve(base), "holdback", "agent-data", path.basename(p.home));
+}
+
+/**
+ * Creates the agent's data folder (mode 0700) and makes sure it is a plain folder of this user's:
+ * never a link or junction someone planted to redirect the app's writes, never a file, and on POSIX
+ * owned by this user. Throws with what is wrong (fail closed).
+ */
+async function ensureAgentDataDir(dir: string): Promise<void> {
+  await mkdir(path.dirname(dir), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(dir, { mode: 0o700 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  const st = await lstat(dir);
+  const plain = st.isDirectory() && !st.isSymbolicLink();
+  const uid = process.getuid?.();
+  if (!plain || (uid !== undefined && st.uid !== uid)) {
+    throw new Error(`the agent's data folder ${dir} is not a plain folder of yours (a link, a file, or another user's): remove it, then run this again`);
+  }
+  if (process.platform !== "win32" && (st.mode & 0o077) !== 0) await chmod(dir, 0o700);
+}
 
 const SETTINGS = [".claude", "settings.json"];
 const SKILL = [".claude", "skills", "holdback", "SKILL.md"];
@@ -609,7 +635,12 @@ export async function installClaudeHooks(ctx: Ctx): Promise<number> {
   const env: Json = { ...(isObj(base.env) ? base.env : {}) };
   if (env.DATA_DIR === undefined) {
     const dir = agentDataDir(p);
-    await mkdir(dir, { recursive: true });
+    try {
+      await ensureAgentDataDir(dir);
+    } catch (e) {
+      ctx.err(`${errText(e)}. Holdback did not change .claude/settings.json.`);
+      return EXIT.error;
+    }
     env.DATA_DIR = dir;
     record.env = { DATA_DIR: dir };
   }

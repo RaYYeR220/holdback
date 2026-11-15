@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -502,6 +502,18 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     return { code, out: out.join("\n"), err: err.join("\n") };
   };
   const entry = () => join(root, "cli-dist-index.js");
+  /** The per-user cache the agent's data folder goes under (LOCALAPPDATA on Windows, XDG_CACHE_HOME elsewhere). */
+  const cache = () => join(root, "cache");
+  const cacheVars = ["LOCALAPPDATA", "XDG_CACHE_HOME"] as const;
+  beforeEach(() => {
+    for (const k of cacheVars) process.env[k] = cache();
+  });
+  afterEach(() => {
+    for (const k of cacheVars) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
 
   it("writes the four hooks, the deny rules and the read boundary into .claude/settings.json, plus the skill", async () => {
     writeFileSync(entry(), "// built cli\n");
@@ -533,11 +545,29 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     const skill = readFileSync(join(appDir, ".claude", "skills", "holdback", "SKILL.md"), "utf8");
     expect(skill.startsWith("---\nname: holdback\n")).toBe(true);
     expect(r.out).toContain(".claude/settings.json");
-    // the agent's own boot check keeps the app's data in a scratch folder outside the repo, never ./data (N-m6)
-    expect(Object.keys(s.env)).toEqual(["DATA_DIR"]);
-    expect(isAbsolute(s.env.DATA_DIR)).toBe(true);
+    // the agent's own boot check keeps the app's data in a per-user folder outside the repo, never ./data (N-m6)
+    expect(s.env).toEqual({ DATA_DIR: join(cache(), "holdback", "agent-data", basename(p.home)) });
     expect(relative(appDir, s.env.DATA_DIR).startsWith("..")).toBe(true);
     expect(relative(p.home, s.env.DATA_DIR).startsWith("..")).toBe(true); // never names Holdback's home
+    expect(lstatSync(s.env.DATA_DIR).isDirectory()).toBe(true);
+    if (process.platform !== "win32") expect(lstatSync(s.env.DATA_DIR).mode & 0o777).toBe(0o700);
+  });
+
+  it.each([
+    ["a link", (dir: string) => symlinkSync(mkdtempSync(join(root, "elsewhere-")), dir, "junction")],
+    ["a file", (dir: string) => writeFileSync(dir, "not a folder")],
+  ])("refuses, changing nothing, when the agent's data folder is %s (N-m6)", async (_what, plant) => {
+    writeFileSync(entry(), "// built cli\n");
+    writeFileSync(join(appDir, "holdback.config.json"), "{}");
+    p = await loadProject(appDir);
+    const dir = join(cache(), "holdback", "agent-data", basename(p.home));
+    mkdirSync(dirname(dir), { recursive: true });
+    plant(dir);
+    const r = await init([]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(dir);
+    expect(r.err).toMatch(/not a plain folder/);
+    expect(existsSync(settingsFile())).toBe(false);
   });
 
   it("keeps a DATA_DIR the human set in the settings, and --remove leaves it (N-m6)", async () => {
