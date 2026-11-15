@@ -105,7 +105,7 @@ describe("runTest", () => {
     expect(r.durationS).toBeGreaterThanOrEqual(2.9);
     const argv = JSON.parse(readFileSync(argvLog, "utf8").trim().split("\n")[0]!) as string[];
     expect(argv.slice(argv.indexOf("--timeout"), argv.indexOf("--timeout") + 2)).toEqual(["--timeout", "1"]);
-  });
+  }, 30_000); // the fake Kane hangs for three 1 s steps by design: well past the default 5 s on a loaded machine
   it("no done event is an error", async () => {
     delete process.env.FAKE_KANE_FIXTURE;
     process.env.FAKE_KANE_EXIT = "1";

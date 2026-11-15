@@ -73,7 +73,8 @@ describe("arm prompts", () => {
   });
 });
 
-describe("runArm", () => {
+// each arm spawns git and the fake agent a dozen times: slow on Windows under a parallel suite
+describe("runArm", { timeout: 60_000 }, () => {
   it("builds in an isolated repo, with the same model, no web access, and records the metrics and caps", async () => {
     process.env.HOLDBACK_CLAUDE_BIN = fakeClaude;
     process.env.FAKE_CLAUDE_ARGS_FILE = path.join(tmp, "args.json");
@@ -235,7 +236,7 @@ describe("runArm", () => {
   });
 });
 
-describe("recordArmC", () => {
+describe("recordArmC", { timeout: 60_000 }, () => {
   let app: string;
   let home: string;
   const ev = (at: string, e: object) => ({ at, ...e }) as never;

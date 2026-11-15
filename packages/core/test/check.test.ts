@@ -331,7 +331,12 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked" });
     expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "unchanged" });
     writeFileSync(join(appDir, ".env"), "LIMIT=1\n"); // invisible to the work-tree fingerprint
-    await markEdit(p.home);
+    // a save strictly after the last check began, and the next check strictly after the save: no
+    // reliance on the clock moving between two calls (it did not, on a fast or a loaded machine)
+    const lastStart = (await readCheckState(p.home))!.startedAt;
+    const savedAt = Math.max(Date.now(), lastStart + 1);
+    await markEdit(p.home, savedAt);
+    while (Date.now() <= savedAt) await new Promise((r) => setTimeout(r, 2));
     expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked" });
     expect(calls.tests).toHaveLength(2);
     // the check that ran after the save covers it

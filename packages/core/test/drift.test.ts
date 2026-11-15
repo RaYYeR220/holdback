@@ -103,7 +103,8 @@ const sealed = async () => (await readEvents(p.ledgerFile)).filter((e) => e.t ==
 const verifierClean = async () => expect(await checkSeal(p.verifierDir, (await sealed()).manifest)).toEqual([]);
 const verifierPrd = () => readFileSync(join(p.verifierDir, "PRD.md"), "utf8");
 
-describe("runDrift", () => {
+// git spawns and fake Kane calls: slow on Windows under a parallel suite
+describe("runDrift", { timeout: 60_000 }, () => {
   it("unchanged spec: no Kane call, no event", async () => {
     const calls: Calls = [];
     const before = (await readEvents(p.ledgerFile)).length;
