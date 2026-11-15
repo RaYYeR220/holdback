@@ -146,7 +146,7 @@ describe("timeline", () => {
     ];
     const items = timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "spec");
     expect(items).toMatchObject([
-      { title: "The spec changed while the agent was working: origin unverified", detail: "PRD.md" },
+      { title: "The spec changed after an agent turn: origin unverified", detail: "PRD.md" },
       { title: "The spec changed", detail: "PRD.md" },
     ]);
   });

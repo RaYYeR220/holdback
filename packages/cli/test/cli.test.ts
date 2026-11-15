@@ -732,8 +732,10 @@ describe("run", () => {
     const s = stages({ build: [{ allowStop: false, turns: 1, reason: "drift", error: "x", specChange: { files: ["PRD.md"], duringAgentTurn: true } }] });
     const r = await cli(["run"], s.deps);
     expect(r.code).toBe(3);
-    expect(r.err).toContain("SPEC CHANGED WHILE THE AGENT WAS WORKING");
-    expect(r.err).toContain("origin unverified");
+    expect(r.err).toContain("SPEC CHANGED — origin unverified (PRD.md)");
+    // it says what Holdback knows, never more: an agent turn ran since the seal, not that the agent made it (N-m8)
+    expect(r.err).toContain("an agent turn has run since the last seal");
+    expect(r.err).not.toMatch(/while the agent was working/i);
     expect(r.err).toContain("holdback drift");
   });
 
