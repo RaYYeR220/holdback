@@ -41,6 +41,7 @@ Each row is covered by unit tests that run with fake Kane and Claude Code binari
 | A planted bug Kane catches proves its criterion. One it misses makes the criterion vacuous and sends its use case back to Kane, for your approval. | REPRODUCIBLE | `packages/core/src/loop/falsify.ts`; `packages/core/test/falsify.test.ts` |
 | A spec edit reopens the work: Kane plans the change, you approve, the changed criteria are owed. | REPRODUCIBLE | `packages/core/src/loop/drift.ts`; `packages/core/test/drift.test.ts` |
 | A criterion that passed and then fails is bisected to the turn that broke it, and the brief names that turn. | REPRODUCIBLE | `packages/core/src/loop/bisect.ts`; `packages/core/test/bisect.test.ts` |
+| The agent cannot run the human's Holdback commands (`reseal`, `spec`, `run`, `drift`, `watch`, `init`, `clean`, `serve`, `hook`). The CLI refuses them inside Claude Code, and the guard denies them in any shell command: by path or shim, behind `npx`, an env prefix (`env -u CLAUDECODE …`), `cmd /c` or `powershell -c`. `holdback status` and `holdback owed` stay open. | REPRODUCIBLE | `packages/core/src/agent/guard.ts`, `packages/cli/src/context.ts` (`refuseInsideClaudeCode`); `packages/core/test/guard.test.ts`, `packages/cli/test/hooks.test.ts` |
 | In interactive mode, Kane checks after every Edit or Write and wakes the agent on a failure. A stop is refused while a criterion is owed; after 5 refusals in a row the human takes over. | REPRODUCIBLE | `packages/cli/src/hooks.ts`; `packages/cli/test/hooks.test.ts` |
 | The breaker's key never reaches the agent or the app. | REPRODUCIBLE | `packages/cli/src/context.ts` (`scrubAgentEnv`), `packages/core/src/loop/build.ts`; `packages/cli/test/cli.test.ts` |
 | Headless agent turns load no user-level Claude Code plugins, hooks or MCP servers. | REPRODUCIBLE | `packages/core/src/agent/claude.ts` (`--setting-sources project,local --strict-mcp-config`); `packages/core/test/claude-run.test.ts` |
@@ -54,7 +55,7 @@ Each row is covered by unit tests that run with fake Kane and Claude Code binari
 | Claim | Tag | Evidence |
 | --- | --- | --- |
 | The agent's bug report for the caught ac-2 bug reads as in JUDGES.md step 5. | MODELED | rendered by `buildBrief` from the recorded falsify verdict, as if it came from a build turn; never sent to an agent |
-| Authoring costs about 16 Kane credits and about 40 seconds per test step. | MODELED | t-1 and t-2: 65.31 and 63.20 credits for 4 authored steps each, 32 to 48 s per step (ledger) |
+| In the first live run, authoring cost about 16 Kane credits and about 40 seconds per test step. | MODELED | t-1 and t-2: 65.31 and 63.20 credits for 4 authored steps each, 32 to 48 s per step (ledger) |
 
 ## Pending
 
@@ -67,13 +68,13 @@ Each row is covered by unit tests that run with fake Kane and Claude Code binari
 ## Not claimed
 
 - **OS-level isolation of the verifier.** It is a seal, a guard hook, deny rules and hashes, not a sandbox. The threat model is an agent that optimizes toward green, not one that attacks Holdback.
-- **A guard that stops obfuscated shell.** It is best-effort. For example, `git -c` keys on an allowed read-only subcommand (a diff driver, a pager) can still run a command.
-- **Human-only commands out of the agent's reach.** `reseal`, `spec`, `run`, `drift`, `watch` and `serve` refuse inside Claude Code by reading the `CLAUDECODE` variable, which an agent with shell access can unset. The same variable decides what `status` and `owed` show it. A re-seal is logged in the ledger.
+- **A guard that stops obfuscated shell.** It is best-effort. For example, `git -c` keys on an allowed read-only subcommand (a diff driver, a pager) can still run a command, and a command name assembled at run time (`$(echo hold)back reseal`) gets past the check for the human's Holdback commands. A re-seal is logged in the ledger either way.
+- **A view the agent cannot change.** `status` and `owed` decide what to show by reading the `CLAUDECODE` variable. An agent with shell access can unset it and see the human view, which can name Holdback's folders and Kane's test files, and says which Kane runs proved nothing and why.
 - **Instant notice of Bash edits to git-ignored files.** In interactive mode they are not noticed until the next Edit or Write.
 - **A sealed window while Kane runs.** The app the agent wrote runs as your user while Kane tests it, so in that window it could change files Holdback seals. That window is outside the threat model.
 - **Privacy from Kane CLI's cloud.** Kane uploads test runs, screenshots and the pages it saw to LambdaTest Test Manager (`upload.performed: true` in every captured run under `packages/core/test/fixtures/kane/`). Holdback passes no option to change that.
 - **Redacted Kane evidence.** Kane's evidence packs in the verifier folder stay as Kane writes them. Only the public fixture drops them (`apps/dashboard/scripts/sanitize-ledger.mjs`).
-- **Low Kane cost.** Authoring costs about 16 credits per test step, and a test that keeps failing is authored again on every run.
+- **Low Kane cost.** In the first live run, authoring cost about 16 credits per test step, and a test that keeps failing is authored again on every run.
 - **The planted-bug pass started by `holdback run`.** In the first live run the gate never opened. The pass ran the same `runFalsify` code from a script while the gate was shut, with real Kane and the real breaker.
 - **The full loop live.** A Kane bug report reaching the agent and the agent fixing it, spec edits reopening work, re-design of a vacuous criterion, bisect, the interactive hooks with real Kane, re-runs of inconclusive tests and balance metering are built and unit-tested, not run live yet.
 - **Stable criterion ids across a re-design.** Whether Kane keeps a criterion's id when it re-designs a use case is not verified live.

@@ -93,7 +93,7 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | `agent.maxTurnsPerCall` | `60` | `--max-turns` for each Claude Code call. |
 | `kane.parallel` | `3` | Kane tests run at once. |
 | `kane.timeoutS` | `420` | Kane's `--timeout`, which applies to each step. Holdback stops a whole run after this times its step count, plus a grace period. |
-| `kane.designMax` | `5` | The most scenarios Kane designs per use case, each with one test. |
+| `kane.designMax` | `5` | Passed as `kane-cli design tests --max`: the most scenarios Kane designs per use case, one test each. It does not limit a test's steps. |
 | `breaker.model` | `"deepseek-v4-flash"` | The breaker's model on the Venice API. |
 | `breaker.capUsd` | `2` | The most the breaker may spend for this project, in USD, across runs. |
 | `loop.maxTurns` | `15` | The highest turn number. Turns are numbered across runs; `--max-turns` overrides it. |
@@ -125,7 +125,7 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | `holdback serve [--port <n>] [--static <dir>]` | The local dashboard on 127.0.0.1 (default port 4317): ledger, gate, live events, and answering Kane from the browser. | 0, 1 |
 | `holdback hook <guard\|post-edit\|stop\|prompt>` | The Claude Code hook entry point that `init --agent claude` installs. | hook protocol |
 
-`spec`, `run`, `drift`, `watch`, `reseal`, `serve` and `init --agent claude --remove` are yours, not the agent's: they refuse to run inside a Claude Code session.
+`spec`, `run`, `drift`, `watch`, `reseal`, `serve` and `init --agent claude --remove` are yours, not the agent's: they refuse to run inside a Claude Code session. The guard hook also denies them, plus `init`, `clean` and `hook`, in the agent's own shell commands: by any path, behind `npx`, an env prefix, `cmd /c` or `powershell -c`. `status` and `owed` stay open to the agent.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -138,6 +138,8 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 ## Honest limits
 
 - The verifier is sealed, guarded and hashed, not sandboxed. Holdback does not isolate it at the OS level.
+- Human-only commands are refused by an env check (`CLAUDECODE`) plus the guard hook's command rule. Both are best-effort against an agent that disguises its shell commands.
+- In interactive mode, Bash edits to git-ignored files are not noticed until the agent's next Edit or Write.
 - Kane CLI is a cloud service. Test runs, screenshots and the pages Kane saw are uploaded to LambdaTest Test Manager.
 - Authoring is slow and billed per step, and a failing test re-authors on every run.
 - Holdback has run live on Windows only so far.
