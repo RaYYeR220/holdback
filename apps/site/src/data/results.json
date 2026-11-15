@@ -1,0 +1,33 @@
+{
+  "_readme": "The page reads every figure from this file. null means not measured yet: the page shows it as pending. Never put an estimate here.",
+  "links": {
+    "github": null,
+    "video": null
+  },
+  "firstLiveRun": {
+    "specRules": 4,
+    "questions": 2,
+    "criteria": 11,
+    "tests": 3,
+    "agentBuildSeconds": 72,
+    "plantedBugs": 2,
+    "caught": 2,
+    "breakerUsd": 0.0008
+  },
+  "demo": {
+    "criteria": null,
+    "turns": null,
+    "kaneCredits": null,
+    "plantedBugs": null,
+    "caught": null,
+    "breakerUsd": null
+  },
+  "exam": {
+    "cases": 22,
+    "arms": [
+      { "id": "A", "name": "Agent alone", "about": "Claude Code builds from the spec and decides when it is done.", "passed": null, "failingAtDone": null },
+      { "id": "B", "name": "Agent + its own Kane checks", "about": "Claude Code also writes and runs its own Kane CLI checks.", "passed": null, "failingAtDone": null },
+      { "id": "C", "name": "Holdback", "about": "Kane’s sealed criteria decide when it is done.", "passed": null, "failingAtDone": null }
+    ]
+  }
+}
