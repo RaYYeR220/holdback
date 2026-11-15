@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { linkSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -224,7 +224,7 @@ describe("guardDecision hardening", () => {
     expect(guardDecision({ tool_name: "Bash", tool_input: { command: "echo x >> notes.md" } }, c)).toMatchObject({ allow: false, spec: "shell" });
     // an 8.3 short name (Windows, where the volume keeps them): `PRD~1.MD` for `P R D.md`
     if (process.platform === "win32") {
-      const short = execFileSync("cmd", ["/d", "/s", "/c", '"for %I in ("P R D.md") do @echo %~snxI"'], { cwd: app, encoding: "utf8", windowsVerbatimArguments: true }).trim();
+      const short = spawnSync("cmd", ["/d", "/s", "/c", '"for %I in ("P R D.md") do @echo %~snxI"'], { cwd: app, encoding: "utf8", windowsVerbatimArguments: true }).stdout.trim();
       if (short && short.toLowerCase() !== "p r d.md") {
         expect(edit(join(app, short)), short).toMatchObject({ allow: false, spec: "edit" });
         expect(edit(short), short).toMatchObject({ allow: false, spec: "edit" });
