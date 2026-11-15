@@ -136,8 +136,28 @@ function Row({ item, live }: { item: Item; live: boolean }) {
       detail = item.delta === null ? `unreadable (${item.error ?? "no reason"}); per-run figures stand in` : `balance dropped ${fmtCredits(item.delta)} cr; runs reported ${fmtCredits(item.perRunSum)}`;
       break;
     case "dropped":
-      title = `Re-design rolled back (${item.useCases.join(", ")})`;
+      title = `Kane's change rolled back (${item.useCases.join(", ")})`;
       detail = item.detail;
+      meta = `${fmtCredits(item.credits)} cr`;
+      break;
+    case "evolved":
+      title = (
+        <>
+          Kane evolved <span className="mono">{item.uc}</span> {item.followUp ? "again, to cover criteria its tests had lost" : "after a planted bug got past its tests"}
+        </>
+      );
+      detail = (
+        <>
+          minted <span className="mono">{item.minted.join(", ")}</span>
+          {item.retired.length > 0 && (
+            <>
+              {" "}
+              · retired <span className="mono">{item.retired.join(", ")}</span>
+            </>
+          )}
+          <span className="r-ctx"> · because: {item.because}</span>
+        </>
+      );
       meta = `${fmtCredits(item.credits)} cr`;
       break;
   }

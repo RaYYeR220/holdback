@@ -150,6 +150,23 @@ describe("timeline", () => {
       { title: "The spec changed", detail: "PRD.md" },
     ]);
   });
+
+  it("shows Kane's evolve after a surviving planted bug as a loop event: minted, retired, the because and its credits (R40)", () => {
+    const because = "A planted bug got past every test of this use case. ac-3: a household of 9 is held to the 8-person limit.";
+    const events = [
+      ev({ t: "turn.start", n: 1, owed: [] }),
+      ev({ t: "falsify.evolved", uc: "uc-1", because, minted: ["t-4"], retired: ["t-1", "t-2", "t-3"], credits: 11.39, mutants: ["m-ac-3-1"] }),
+      ev({ t: "falsify.evolved", uc: "uc-1", because: 'cover ac-2 ("x") again', minted: ["t-5"], retired: [], credits: 7.33, mutants: ["m-ac-3-1"], followUp: true }),
+      ev({ t: "redesign.dropped", useCases: ["uc-2"], detail: "Kane added no test to uc-2", credits: 5.69, acs: ["ac-9"], reason: "Kane could not add a test that catches this planted bug" }),
+    ];
+    const segs = timeline(events);
+    expect(segs.flatMap((s) => s.items).filter((i) => i.kind === "evolved" || i.kind === "dropped")).toMatchObject([
+      { kind: "evolved", uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2", "t-3"], because, credits: 11.39, followUp: false },
+      { kind: "evolved", uc: "uc-1", minted: ["t-5"], retired: [], credits: 7.33, followUp: true },
+      { kind: "dropped", useCases: ["uc-2"], detail: "Kane added no test to uc-2", credits: 5.69 },
+    ]);
+    expect(segs.at(-1)!.credits).toBeCloseTo(11.39 + 7.33 + 5.69, 9);
+  });
 });
 
 describe("meters and labels", () => {

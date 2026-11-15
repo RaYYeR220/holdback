@@ -340,7 +340,9 @@ export type Item =
   | { kind: "seal"; at: string; files: number; reseal: boolean }
   | { kind: "drift"; at: string; rows: number; applied: boolean; credits?: number }
   | { kind: "meter"; at: string; source: string; delta: number | null; perRunSum: number; error?: string }
-  | { kind: "dropped"; at: string; useCases: string[]; detail: string; credits: number };
+  | { kind: "dropped"; at: string; useCases: string[]; detail: string; credits: number }
+  /** R40: a planted bug got past every test of `uc`, and Kane evolved it: what it was told, what it minted and retired. */
+  | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean };
 
 export type Segment = {
   key: string;
@@ -476,6 +478,9 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         break;
       case "redesign.dropped":
         seg.items.push({ kind: "dropped", at: e.at, useCases: e.useCases, detail: e.detail, credits: e.credits });
+        break;
+      case "falsify.evolved":
+        seg.items.push({ kind: "evolved", at: e.at, uc: e.uc, because: e.because, minted: e.minted, retired: e.retired, credits: e.credits, followUp: e.followUp === true });
         break;
       default:
         break; // recordings: Holdback's own baseline, nothing to show
