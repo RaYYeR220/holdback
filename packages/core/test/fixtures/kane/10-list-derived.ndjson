@@ -1,0 +1,6 @@
+{"id":"uc-1","label":"usecase","title":"Check eligibility","trust":"trusted"}
+{"id":"ac-1","label":"ac","title":"SNAP qualifies","trust":"derived"}
+{"id":"ac-2","label":"ac","title":"Old","trust":"trusted"}
+{"id":"sc-1","label":"scenario","title":"Snap scenario","trust":"derived"}
+{"id":"t-1","label":"test","title":"Snap test","trust":"derived"}
+{"id":"gap-1","label":"gap","title":"g","trust":"derived"}

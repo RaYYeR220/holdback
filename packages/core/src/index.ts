@@ -9,6 +9,8 @@ export {
   review,
   designTests,
   readGraph,
+  listNodes,
+  type ListedNode,
   coverGaps,
   reconcile,
   balance,
@@ -56,3 +58,6 @@ export {
   type AgentSettingsOptions,
 } from "./agent/guard.js";
 export { runClaudeTurn, contractPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
+export type { HumanIO, ApprovalItem } from "./loop/human.js";
+export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
+export { runSpecStage } from "./loop/spec.js";

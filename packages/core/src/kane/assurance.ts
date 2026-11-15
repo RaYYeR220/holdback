@@ -328,6 +328,34 @@ function parseJsonDoc(stdout: string): unknown {
   return null;
 }
 
+// ---------------------------------------------------------------- list
+
+export type ListedNode = { id: string; label: string; title: string; trust: string };
+
+/** `kane-cli context list --json`: one JSON object per stdout line. */
+export async function listNodes(cwd: string): Promise<ListedNode[]> {
+  const r = await runKane(["context", "list", "--json"], { cwd, timeoutMs: READ_TIMEOUT_MS });
+  if (r.exitCode !== 0) {
+    throw new Error(`context list failed (exit ${r.exitCode}): ${(r.stderr || r.stdout).trim()}`);
+  }
+  const out: ListedNode[] = [];
+  for (const line of r.stdout.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    let o: unknown;
+    try {
+      o = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (!isObj(o)) continue;
+    const id = str(o.id) || str(o.slug) || str(o.logical_id);
+    if (!id) continue;
+    out.push({ id, label: str(o.label) || str(o.kind), title: str(o.title), trust: str(o.trust) });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- graph
 
 type ViewNode = { cid: string; slug: string; label: string; trust: string; title: string };
