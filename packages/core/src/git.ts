@@ -11,6 +11,8 @@ export type GitOptions = {
    * repo's hooks are writable by the agent.
    */
   hooksDir?: string;
+  /** Extra environment for the git process (e.g. a private GIT_INDEX_FILE). */
+  env?: Record<string, string>;
 };
 
 /** Holdback's own empty hooks dir, under its home (never inside the agent-writable app repo). */
@@ -37,7 +39,7 @@ export function git(cwd: string, args: string[], opts: GitOptions = {}): Promise
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...SAFE_CONFIG, ...hooks, ...args], {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -130,4 +132,18 @@ export async function worktreeAdd(cwd: string, dir: string, ref: string, opts: G
 
 export async function worktreeRemove(cwd: string, dir: string, opts: GitOptions = {}): Promise<void> {
   await gitOk(cwd, ["worktree", "remove", "--force", dir], opts);
+}
+
+/**
+ * Tree id of the work tree as `git add -A` would stage it (ignored files left out, and the
+ * repo-relative `exclude` paths too), built in the private index file `indexFile`: the repo's own
+ * index, HEAD and refs are never touched; only blobs and trees go into its object store.
+ * Two calls give the same id exactly when no tracked or untracked, non-ignored file changed.
+ */
+export async function worktreeTree(cwd: string, indexFile: string, opts: GitOptions = {}, exclude: string[] = []): Promise<string> {
+  const o: GitOptions = { ...opts, env: { ...opts.env, GIT_INDEX_FILE: indexFile } };
+  await gitOk(cwd, ["add", "-A", "--", "."], o);
+  // dropped from the private index afterwards: a pathspec naming an ignored path makes `git add` fail
+  if (exclude.length > 0) await gitOk(cwd, ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...exclude], o);
+  return (await gitOk(cwd, ["write-tree"], o)).trim();
 }

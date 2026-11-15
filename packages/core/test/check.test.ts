@@ -1,0 +1,341 @@
+import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AppStartError } from "../src/app.js";
+import type { AcNode, TestNode } from "../src/kane/assurance.js";
+import type { TestRunResult } from "../src/kane/testmd.js";
+import { appendEvent, readEvents } from "../src/ledger/store.js";
+import type { LedgerEvent } from "../src/ledger/types.js";
+import { acquireCheckLock, CHECK_LOCK, checkOnce, readCheckState, type CheckDeps } from "../src/loop/check.js";
+import { appSealFiles } from "../src/loop/spec.js";
+import { loadProject, type Project } from "../src/project.js";
+import { seal } from "../src/seal.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const fxTests = join(here, "fixtures", "kane", "tests");
+const at = "2026-11-15T00:00:00.000Z";
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+const AC1: AcNode = { id: "ac-1", text: "A SNAP household is eligible.", useCase: "uc-1", cites: [{ source: "prd", anchor: "L3-L3", quote: "SNAP households are eligible." }], trust: "derived" };
+const AC3: AcNode = { id: "ac-3", text: "Income above the limit is not eligible.", useCase: "uc-1", cites: [], trust: "derived" };
+
+const saved = { ...process.env };
+let root: string;
+let appDir: string;
+let p: Project;
+let T1: string;
+let T3: string;
+const log = (e: LedgerEvent) => appendEvent(p.ledgerFile, e);
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "hb-check-"));
+  process.env.HOLDBACK_HOME = join(root, "home");
+});
+afterEach(() => {
+  if (saved.HOLDBACK_HOME === undefined) delete process.env.HOLDBACK_HOME;
+  else process.env.HOLDBACK_HOME = saved.HOLDBACK_HOME;
+  rmSync(root, { recursive: true, force: true });
+});
+
+/** An app repo with one commit, a verifier with t-1/t-3, and a ledger with a design and a seal. */
+async function setup(opts: { seal?: boolean; gitInit?: boolean } = {}) {
+  appDir = join(root, "app");
+  mkdirSync(appDir);
+  writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\n");
+  writeFileSync(join(appDir, "holdback.config.json"), "{}");
+  writeFileSync(join(appDir, "app.js"), "// v0\n");
+  if (opts.gitInit !== false) {
+    git(appDir, "init", "-q");
+    git(appDir, "config", "user.name", "Test");
+    git(appDir, "config", "user.email", "test@example.com");
+    git(appDir, "config", "commit.gpgsign", "false");
+  }
+  p = await loadProject(appDir);
+  const testsDir = join(p.verifierDir, ".testmuai", "tests");
+  mkdirSync(testsDir, { recursive: true });
+  T1 = join(testsDir, "t1_test.md");
+  T3 = join(testsDir, "t3_test.md");
+  copyFileSync(join(fxTests, "snap-household-qualifies-despite-above-limit-income_test.md"), T1);
+  copyFileSync(join(fxTests, "non-snap-household-above-2-461-is-not-eligible_test.md"), T3);
+  const tests: TestNode[] = [
+    { id: "t-1", title: "SNAP household qualifies", file: ".testmuai/tests/t1_test.md", verifies: ["ac-1"] },
+    { id: "t-3", title: "Above the limit is not eligible", file: ".testmuai/tests/t3_test.md", verifies: ["ac-3"] },
+  ];
+  await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests, gaps: [], credits: 12 });
+  if (opts.seal !== false) await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+}
+
+const idOf = (file: string) => (file.endsWith("t1_test.md") ? "t-1" : "t-3");
+const pass = (file: string): TestRunResult => ({
+  testFile: file,
+  testId: idOf(file),
+  status: "passed",
+  steps: [],
+  criteriaPassed: [],
+  criteriaFailed: [],
+  credits: 0,
+  replayDecisions: 2,
+  authorDecisions: 0,
+  healTriggered: false,
+  durationS: 12,
+});
+const fail = (file: string): TestRunResult => ({
+  ...pass(file),
+  status: "failed",
+  failedStep: 2,
+  failedStepText: "Set Household size to 1 and Monthly household income ($) to 2462.",
+  verdict: { bugTitle: "Eligibility check approves income above displayed limit", observed: "Eligible. Monthly limit for a household of 1 is $2461." },
+});
+
+type Plan = { kane: (call: number, files: string[]) => TestRunResult[]; appUp?: () => boolean };
+
+function fakes(plan: Plan) {
+  const calls = { tests: [] as string[][], starts: [] as number[], stops: 0 };
+  const deps: CheckDeps = {
+    port: async () => 4555,
+    app: async (o) => {
+      calls.starts.push(o.port);
+      if (plan.appUp && !plan.appUp()) throw new AppStartError("app exited before becoming ready", "> node app.js\nError: Cannot find module 'hono'");
+      return { url: `http://127.0.0.1:${o.port}`, logs: () => "", stop: async () => void calls.stops++ };
+    },
+    tests: async (_cwd, files) => {
+      calls.tests.push([...files]);
+      return plan.kane(calls.tests.length, files);
+    },
+  };
+  return { deps, calls };
+}
+
+const kinds = async () =>
+  (await readEvents(p.ledgerFile))
+    .filter((e) => ["turn.start", "turn.end", "run", "recordings", "tamper", "regression"].includes(e.t))
+    .map((e) => (e.t === "run" ? `run:${e.turn}:${e.result.testId}:${e.result.status}` : e.t === "turn.start" || e.t === "turn.end" ? `${e.t}:${e.n}` : e.t));
+
+describe("checkOnce", { timeout: 60_000 }, () => {
+  it("runs the owed tests on an edit, briefs the failure, then keeps that verdict while nothing changes", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))) });
+
+    const r = await checkOnce(p, deps, log, { reason: "edit" });
+    expect(r).toMatchObject({ status: "checked", allowStop: false, tampered: false, ran: ["t-1", "t-3"], owed: ["ac-3"] });
+    expect(r.brief.startsWith("# Holdback — 1 criterion still owed\n")).toBe(true);
+    expect(r.brief).toContain("## ac-3 — Income above the limit is not eligible.");
+    expect(r.brief).toContain("Kane saw: Eligible. Monthly limit for a household of 1 is $2461.");
+    expect(calls.tests).toEqual([[T1, T3]]);
+    expect(calls.starts).toEqual([4555]); // a free port, never the configured one the agent may be using
+    expect(calls.stops).toBe(1);
+    // the first check after a stop opens a turn; an edit check never closes it; recordings are anchored after the batch
+    expect(await kinds()).toEqual(["recordings", "turn.start:1", "run:1:t-1:passed", "run:1:t-3:failed", "recordings"]);
+    expect((await readEvents(p.ledgerFile)).find((e) => e.t === "turn.start")).toMatchObject({ owed: ["ac-1", "ac-3"] });
+
+    const st = await readCheckState(p.home);
+    expect(st).toMatchObject({ status: "checked", reason: "edit", allowStop: false, owed: ["ac-3"], ran: ["t-1", "t-3"] });
+    expect(st!.tree).toMatch(/^[0-9a-f]{40}$/);
+
+    // nothing changed: no Kane, the same verdict, and the stop closes the turn (no commit in this mode)
+    const again = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(again).toMatchObject({ status: "unchanged", allowStop: false, ran: [], owed: ["ac-3"] });
+    expect(again.brief).toBe(r.brief);
+    expect(calls.tests).toHaveLength(1);
+    const end = (await readEvents(p.ledgerFile)).at(-1);
+    expect(end).toMatchObject({ t: "turn.end", n: 1, commit: "", filesChanged: [], appUp: true, agentExit: 0 });
+    // the repo's own index and history are untouched
+    expect(git(appDir, "status", "--porcelain")).toContain("?? app.js");
+    expect(() => git(appDir, "rev-parse", "--verify", "-q", "HEAD")).toThrow();
+  });
+
+  it("re-runs after any work-tree change (an untracked file too), replays the passing criteria once nothing is owed, and opens the gate", async () => {
+    await setup();
+    let fixed = false;
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (idOf(f) === "t-3" && !fixed ? fail(f) : pass(f))) });
+    await checkOnce(p, deps, log, { reason: "stop" }); // turn 1, closed
+
+    // an edit Claude Code's Edit/Write hooks never see (a shell redirect): the fingerprint still moves
+    fixed = true;
+    writeFileSync(join(appDir, "limits.js"), "export const LIMIT = 2461;\n");
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "checked", allowStop: true, ran: ["t-3", "t-1"], owed: [] });
+    expect(calls.tests).toEqual([[T1, T3], [T3], [T1]]);
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.filter((e) => e.t === "turn.end")).toMatchObject([
+      { n: 1, commit: "" },
+      { n: 2, commit: "", filesChanged: ["limits.js"], appUp: true },
+    ]);
+    expect(await kinds()).toEqual([
+      "recordings",
+      "turn.start:1",
+      "run:1:t-1:passed",
+      "run:1:t-3:failed",
+      "recordings",
+      "turn.end:1",
+      "turn.start:2",
+      "run:2:t-3:passed",
+      "run:2:t-1:passed",
+      "recordings",
+      "turn.end:2",
+    ]);
+
+    // Claude Code's own folder is not the app: touching it re-runs nothing
+    mkdirSync(join(appDir, ".claude"));
+    writeFileSync(join(appDir, ".claude", "settings.local.json"), "{}");
+    expect(await checkOnce(p, deps, log, { reason: "edit" })).toMatchObject({ status: "unchanged", allowStop: true });
+    expect(calls.tests).toHaveLength(3);
+  });
+
+  it("fingerprints the tree with Kane's evidence copies on disk and a git-ignored .claude folder (left out either way)", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    writeFileSync(join(appDir, ".gitignore"), ".claude/\n");
+    mkdirSync(join(appDir, ".claude"));
+    writeFileSync(join(appDir, ".claude", "settings.local.json"), "{}");
+    expect(await checkOnce(p, deps, log, { reason: "edit" })).toMatchObject({ status: "checked" });
+    // Kane's screenshot copies land under kane-evidence/, which Holdback keeps out of git
+    mkdirSync(join(appDir, "kane-evidence", "turn-1"), { recursive: true });
+    writeFileSync(join(appDir, "kane-evidence", "turn-1", "t-3-step-2.png"), "png");
+    writeFileSync(join(appDir, ".claude", "settings.local.json"), '{"x":1}');
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "unchanged", allowStop: true });
+    expect(calls.tests).toHaveLength(1);
+  });
+
+  it("an app that no longer starts shuts the gate even when every criterion passed before", async () => {
+    await setup();
+    let up = true;
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass), appUp: () => up });
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked", allowStop: true });
+
+    up = false;
+    writeFileSync(join(appDir, "app.js"), "import 'hono';\n");
+    const r = await checkOnce(p, deps, log, { reason: "edit" });
+    expect(r).toMatchObject({ status: "checked", allowStop: false, ran: [], owed: [] });
+    expect(r.gate.allowStop).toBe(true); // the ledger alone would have let it stop
+    expect(r.appStartError).toContain("Cannot find module 'hono'");
+    expect(r.brief).toContain("# Holdback — The app does not start");
+    expect(calls.tests).toHaveLength(1); // nothing to test this time
+
+    // the verdict stands until the tree changes, and the stop records the app as down
+    const stop = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(stop).toMatchObject({ status: "unchanged", allowStop: false, appStartError: expect.stringContaining("hono") });
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "turn.end", n: 2, appUp: false, filesChanged: ["app.js"] });
+  });
+
+  it("a changed sealed test is a tamper: logged, marked, nothing run, and the brief sends the agent to a human", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    appendFileSync(T3, "\n## extra step\n");
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "tamper", tampered: true, allowStop: false, ran: [] });
+    expect(r.detail).toContain(".testmuai/tests/t3_test.md");
+    expect(r.brief).toContain("Only a human can lift this");
+    expect(r.brief).not.toMatch(/holdback reseal/);
+    expect(calls.tests).toHaveLength(0);
+    expect(existsSync(join(p.home, "TAMPERED"))).toBe(true);
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper" });
+    // and it stays shut on the next check
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "tamper", allowStop: false });
+    expect(await readCheckState(p.home)).toMatchObject({ status: "tamper", tampered: true });
+  });
+
+  it("a spec edit alone is drift for a human: the gate stays shut but nothing is marked tampered", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "drift", tampered: false, allowStop: false, detail: "spec changed since the last seal: PRD.md" });
+    expect(r.brief).toContain("`holdback drift`");
+    expect(calls.tests).toHaveLength(0);
+    expect(existsSync(join(p.home, "TAMPERED"))).toBe(false);
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "tamper")).toBe(false);
+  });
+
+  it("a changed config file is still a tamper, not drift", async () => {
+    await setup();
+    writeFileSync(join(appDir, "holdback.config.json"), '{"start":{"cmd":"node fake.js"}}');
+    expect(await checkOnce(p, fakes({ kane: (_c, f) => f.map(pass) }).deps, log, { reason: "stop" })).toMatchObject({ status: "tamper" });
+  });
+
+  it("reports unsealed before the spec stage, and an error outside a git repository", async () => {
+    await setup({ seal: false });
+    expect(await checkOnce(p, fakes({ kane: (_c, f) => f.map(pass) }).deps, log, { reason: "stop" })).toMatchObject({ status: "unsealed", allowStop: false });
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root);
+    await setup({ gitInit: false });
+    const r = await checkOnce(p, fakes({ kane: (_c, f) => f.map(pass) }).deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "error", allowStop: false });
+    expect(r.brief).toContain("the root of a git repository");
+  });
+
+  it("runs again when someone else wrote the ledger since the last check (a re-seal, a drift, a headless run)", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    await checkOnce(p, deps, log, { reason: "stop" });
+    await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked" });
+    expect(calls.tests.length).toBeGreaterThan(1);
+  });
+
+  it("a Kane batch that throws leaves an error, anchors the recordings and keeps the next check running", async () => {
+    await setup();
+    let boom = true;
+    const { deps } = fakes({
+      kane: (_c, files) => {
+        if (boom) throw new Error("kane-cli crashed");
+        return files.map(pass);
+      },
+    });
+    const r = await checkOnce(p, deps, log, { reason: "edit" });
+    expect(r).toMatchObject({ status: "error", allowStop: false, detail: "kane-cli crashed" });
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "recordings" });
+    boom = false;
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked", allowStop: true });
+  });
+
+  it("an abort before Kane runs checks nothing", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    const ctl = new AbortController();
+    ctl.abort();
+    expect(await checkOnce(p, deps, log, { reason: "edit", signal: ctl.signal })).toMatchObject({ status: "aborted", allowStop: false });
+    expect(calls.tests).toHaveLength(0);
+  });
+});
+
+describe("acquireCheckLock", { timeout: 30_000 }, () => {
+  it("lets one holder in at a time, and the next one in after release", async () => {
+    const home = join(root, "h");
+    const a = await acquireCheckLock(home, { waitMs: 0 });
+    expect(a).not.toBeNull();
+    expect(await acquireCheckLock(home, { waitMs: 150, pollMs: 20 })).toBeNull();
+    let asked = 0;
+    expect(await acquireCheckLock(home, { waitMs: 10_000, pollMs: 20, giveUp: () => ++asked >= 2 })).toBeNull();
+    const waiting = acquireCheckLock(home, { waitMs: 10_000, pollMs: 20 });
+    await new Promise((r) => setTimeout(r, 60));
+    await a!.release();
+    const b = await waiting;
+    expect(b).not.toBeNull();
+    await b!.release();
+    expect(existsSync(join(home, CHECK_LOCK))).toBe(false);
+  });
+
+  it("takes over a lock whose process is gone, or that nobody touched for too long", async () => {
+    const home = join(root, "h");
+    mkdirSync(home, { recursive: true });
+    const child = spawn(process.execPath, ["-e", ""]);
+    const deadPid = await new Promise<number>((res) => child.on("exit", () => res(child.pid!)));
+    writeFileSync(join(home, CHECK_LOCK), JSON.stringify({ pid: deadPid, token: "x" }));
+    const a = await acquireCheckLock(home, { waitMs: 0 });
+    expect(a).not.toBeNull();
+    // a live holder (this process) that went quiet past the stale limit
+    expect(await acquireCheckLock(home, { waitMs: 0, staleMs: 60_000 })).toBeNull();
+    const old = new Date(Date.now() - 120_000);
+    const { utimesSync } = await import("node:fs");
+    utimesSync(join(home, CHECK_LOCK), old, old);
+    const b = await acquireCheckLock(home, { waitMs: 0, staleMs: 60_000 });
+    expect(b).not.toBeNull();
+    await a!.release(); // no longer its lock: must not remove b's
+    expect(readFileSync(join(home, CHECK_LOCK), "utf8")).toContain(String(process.pid));
+    await b!.release();
+  });
+});

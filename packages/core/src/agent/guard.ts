@@ -194,8 +194,11 @@ export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: 
   return [q(nodeBin), q(guardMain), "--home", q(ctx.home), "--verifier", q(ctx.verifierDir)].join(" ");
 }
 
-/** Write the settings file passed to `claude --settings`: deny rules plus the guard hook. */
-export async function writeAgentSettings(file: string, ctx: GuardContext, opts: AgentSettingsOptions): Promise<void> {
+/**
+ * The permission deny rules every Holdback agent runs under: the verifier home (in both rule
+ * forms), the repo's `.git`, the protected app files, and optionally the web tools.
+ */
+export function agentDenyRules(ctx: GuardContext, opts: Pick<AgentSettingsOptions, "denyWeb" | "protect"> = {}): string[] {
   const home = posixAbs(ctx.home);
   const rules = [
     "Read(~/.holdback/**)",
@@ -206,7 +209,12 @@ export async function writeAgentSettings(file: string, ctx: GuardContext, opts: 
     ...(opts.protect ? protectRules(opts.protect) : []),
     ...(opts.denyWeb ? ["WebFetch", "WebSearch"] : []),
   ];
-  const deny = [...new Set(rules)];
+  return [...new Set(rules)];
+}
+
+/** Write the settings file passed to `claude --settings`: deny rules plus the guard hook. */
+export async function writeAgentSettings(file: string, ctx: GuardContext, opts: AgentSettingsOptions): Promise<void> {
+  const deny = agentDenyRules(ctx, opts);
   const settings = {
     permissions: { deny, blockReadsOutsideWorkingDirectories: true },
     hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: opts.guardCommand }] }] },

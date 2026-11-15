@@ -51,6 +51,8 @@ export { seal, checkSeal, sealRecordings, checkRecordings, tier1Entries, type Ap
 export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
 export {
   guardDecision,
+  guardPayload,
+  agentDenyRules,
   writeAgentSettings,
   guardHookCommand,
   posixAbs,
@@ -64,7 +66,7 @@ export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
 export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls } from "./loop/spec.js";
 export { runDrift, watchSpec, defaultDriftKane, type DriftKane, type DriftResult } from "./loop/drift.js";
-export { buildBrief, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";
+export { buildBrief, byAcId, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";
 export { bisectRegression, BisectTampered, blameOf, lastGoodTurn, probeVerdict, type BisectDeps } from "./loop/bisect.js";
 export {
   runBuildLoop,
@@ -72,11 +74,29 @@ export {
   evidencePath,
   lastSeal,
   EVIDENCE_DIR,
+  VerifySession,
+  type SessionStop,
   type BuildDeps,
   type BuildOptions,
   type BuildResult,
   type BuildStopReason,
 } from "./loop/build.js";
+export {
+  checkOnce,
+  readCheckState,
+  writeCheckState,
+  acquireCheckLock,
+  CHECK_STATE,
+  CHECK_LOCK,
+  type CheckDeps,
+  type CheckOptions,
+  type CheckReason,
+  type CheckResult,
+  type CheckState,
+  type CheckStatus,
+  type CheckLock,
+  type LockOptions,
+} from "./loop/check.js";
 export {
   runFalsify,
   sweepStaleWorktrees,
@@ -131,6 +151,7 @@ export {
   holdbackGitOptions,
   EMPTY_HOOKS_DIR,
   changedFiles,
+  worktreeTree,
   checkout,
   worktreeAdd,
   worktreeRemove,
