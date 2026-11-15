@@ -103,6 +103,69 @@ describe("guardDecision hardening", () => {
     expect(sh("git status && git log -1")).toBe(false);
     expect(sh("cat .gitignore && ls .github/workflows")).toBe(false);
   });
+
+  it("denies the human's Holdback commands however they are invoked", () => {
+    for (const c of [
+      "holdback reseal --yes",
+      "holdback spec",
+      "holdback run --max-turns 30",
+      "holdback drift",
+      "holdback watch",
+      "holdback init --agent claude --remove",
+      "holdback init --force",
+      "holdback clean",
+      "holdback serve --port 0",
+      "holdback hook stop --app .",
+      "HOLDBACK RESEAL --yes",
+      "npx holdback reseal --yes",
+      "npx --yes holdback reseal",
+      "pnpm exec holdback run",
+      "./node_modules/.bin/holdback reseal",
+      "C:\\Users\\x\\AppData\\Roaming\\npm\\holdback.cmd reseal --yes",
+      "holdback.ps1 drift",
+      "node packages/cli/dist/index.js reseal --yes",
+      'node "C:\\work\\holdback\\packages\\cli\\dist\\index.js" reseal',
+      "node /opt/lib/node_modules/holdback/dist/index.js spec",
+      "env -u CLAUDECODE holdback reseal --yes",
+      "env -i PATH=/usr/bin holdback run",
+      "CLAUDECODE= holdback reseal --yes",
+      "FOO=bar holdback drift",
+      "npm test && holdback reseal --yes",
+      "echo y | holdback reseal",
+      "cmd /c holdback reseal --yes",
+      'cmd /c "holdback reseal --yes"',
+      'powershell -c "holdback reseal --yes"',
+      'powershell -Command "& { Remove-Item Env:CLAUDECODE; holdback reseal --yes }"',
+      "$(holdback run)",
+    ])
+      expect(sh(c), c).toBe(true);
+    expect(sh("holdback reseal --yes", "PowerShell")).toBe(true);
+    expect(denied("Mcp", { command: "holdback run" })).toBe(true);
+  });
+
+  it("allows the read-only Holdback commands and other mentions of the name", () => {
+    for (const c of [
+      "holdback status",
+      "holdback status --json",
+      "holdback owed",
+      "npx holdback owed",
+      "env -u CLAUDECODE holdback status",
+      "node packages/cli/dist/index.js status",
+      "holdback --help",
+      "holdback --version",
+      "cat holdback.config.json",
+      "grep -r holdback src",
+      "npm test && holdback owed",
+    ])
+      expect(sh(c), c).toBe(false);
+    expect(sh("holdback owed", "PowerShell")).toBe(false);
+  });
+
+  it("names the read-only commands in the reason", () => {
+    const d = guardDecision({ tool_name: "Bash", tool_input: { command: "env -u CLAUDECODE holdback reseal --yes" } }, ctx);
+    expect(d.allow).toBe(false);
+    if (!d.allow) expect(d.reason).toMatch(/holdback status.*holdback owed/);
+  });
 });
 
 describe("guardHookCommand", () => {

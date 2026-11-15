@@ -65,6 +65,15 @@ const DENY_GIT =
   "Holdback owns git history. Only read-only git commands (status, diff, log, show, ls-files, blame, rev-parse, branch --list) are allowed.";
 const DENY_INPUT = "Holdback guard could not read this tool call, so it was blocked.";
 const DENY_GIT_INTERNALS = "Holdback owns this repository's git hooks and config. Leave .git/hooks and .git/config alone.";
+const DENY_HUMAN =
+  "Re-sealing, the spec stage, drift, runs, cleanup, the dashboard and the hooks are the human's Holdback commands. You may run `holdback status` and `holdback owed` to read what is owed.";
+
+/** The `holdback` command by any path or shim (`holdback`, `.bin/holdback`, `holdback.cmd`, `holdback.ps1`). */
+const HOLDBACK_BIN = /^(?:.*[/\\])?holdback(?:\.(?:cmd|bat|ps1|exe|js|mjs|cjs))?$/i;
+/** The CLI's entry file run with node: `…/cli/dist/index.js` (this repo) or `…/holdback/dist/index.js` (installed). */
+const HOLDBACK_ENTRY = /(?:^|[/\\])(?:cli|holdback)[/\\]dist[/\\]index\.[cm]?js$/i;
+/** Subcommands only the human runs. `status` and `owed` only read, and stay open to the agent. */
+const HUMAN_COMMANDS = new Set(["reseal", "spec", "run", "drift", "watch", "init", "clean", "serve", "hook"]);
 
 /** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes). */
 const GIT_INTERNALS = [".git/hooks", ".git/config", "core.hookspath"];
@@ -120,11 +129,34 @@ function gitViolation(text: string): string | undefined {
 }
 
 /**
+ * True when `text` runs one of the human's Holdback commands: the `holdback` binary (any path,
+ * any shim, behind npx, an env prefix, `cmd /c` or `powershell -c`) or the CLI's entry file,
+ * followed by a human-only subcommand. The CLI's own refusal reads `CLAUDECODE`, which a shell can
+ * unset; this check does not depend on it.
+ */
+function humanCommand(text: string): boolean {
+  for (const seg of text.split(GIT_SPLIT)) {
+    const toks = seg
+      .trim()
+      .split(/\s+/)
+      .map(unquote)
+      .filter((t) => t.length > 0);
+    for (let i = 0; i < toks.length; i++) {
+      if (!HOLDBACK_BIN.test(toks[i]!) && !HOLDBACK_ENTRY.test(toks[i]!)) continue;
+      const sub = toks.slice(i + 1).find((t) => !t.startsWith("-"));
+      if (sub !== undefined && HUMAN_COMMANDS.has(sub.toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Decide whether a tool call may proceed. Denies anything that mentions the
  * Holdback home, verifier directory or Kane's own store (any slash style, any
- * case), runs Kane, reaches for the user's home directory from a shell, or runs
- * git beyond a read-only allowlist or touches the repo's git hooks/config. A
- * malformed `tool_input` is denied.
+ * case), runs Kane, reaches for the user's home directory from a shell, runs
+ * git beyond a read-only allowlist or touches the repo's git hooks/config, or
+ * runs one of the human's Holdback commands (anything but `status` and `owed`).
+ * A malformed `tool_input` is denied.
  *
  * Path and kane-cli checks cover every string of any tool; home and git checks
  * cover shell tools (Bash, PowerShell) and any `command` field.
@@ -145,6 +177,7 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
     if (GIT_INTERNALS.some((x) => n.includes(x))) return { allow: false, reason: DENY_GIT_INTERNALS };
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
+    if (humanCommand(s)) return { allow: false, reason: DENY_HUMAN };
   }
   return { allow: true };
 }
