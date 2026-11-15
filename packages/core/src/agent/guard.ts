@@ -64,6 +64,10 @@ const DENY_HOME_REF = "Reaching for the user's home directory is not needed to b
 const DENY_GIT =
   "Holdback owns git history. Only read-only git commands (status, diff, log, show, ls-files, blame, rev-parse, branch --list) are allowed.";
 const DENY_INPUT = "Holdback guard could not read this tool call, so it was blocked.";
+const DENY_GIT_INTERNALS = "Holdback owns this repository's git hooks and config. Leave .git/hooks and .git/config alone.";
+
+/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes). */
+const GIT_INTERNALS = [".git/hooks", ".git/config", "core.hookspath"];
 
 // References to the user's home directory from a shell. A tilde must stand alone as a word.
 const HOME_REFS: RegExp[] = [
@@ -119,7 +123,8 @@ function gitViolation(text: string): string | undefined {
  * Decide whether a tool call may proceed. Denies anything that mentions the
  * Holdback home, verifier directory or Kane's own store (any slash style, any
  * case), runs Kane, reaches for the user's home directory from a shell, or runs
- * git beyond a read-only allowlist. A malformed `tool_input` is denied.
+ * git beyond a read-only allowlist or touches the repo's git hooks/config. A
+ * malformed `tool_input` is denied.
  *
  * Path and kane-cli checks cover every string of any tool; home and git checks
  * cover shell tools (Bash, PowerShell) and any `command` field.
@@ -136,6 +141,8 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
   }
   for (const s of shellStrings(String(input.tool_name ?? ""), toolInput)) {
     if (HOME_REFS.some((re) => re.test(s))) return { allow: false, reason: DENY_HOME_REF };
+    const n = s.toLowerCase().replace(/[\\/]+/g, "/"); // `.git\\hooks` (escaped) counts too
+    if (GIT_INTERNALS.some((x) => n.includes(x))) return { allow: false, reason: DENY_GIT_INTERNALS };
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
   }
@@ -172,26 +179,34 @@ export interface AgentSettingsOptions {
   protect?: { appDir: string; files: string[] };
 }
 
-/** `Edit(...)` deny rules for app files, in both the cwd-relative and the absolute rule form. */
+/** `Edit(...)` deny rules for app files (and the repo's `.git`), in both the cwd-relative and the absolute rule form. */
 function protectRules(p: { appDir: string; files: string[] }): string[] {
   const abs = posixAbs(p.appDir);
-  return p.files.flatMap((f) => {
+  return [...p.files, ".git/**"].flatMap((f) => {
     const rel = f.replace(/\\/g, "/").replace(/^\.\//, "");
     return [`Edit(./${rel})`, `Edit(${abs}/${rel})`];
   });
 }
 
+/** `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>"`: every path quoted. */
+export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath): string {
+  const q = (s: string) => `"${s}"`;
+  return [q(nodeBin), q(guardMain), "--home", q(ctx.home), "--verifier", q(ctx.verifierDir)].join(" ");
+}
+
 /** Write the settings file passed to `claude --settings`: deny rules plus the guard hook. */
 export async function writeAgentSettings(file: string, ctx: GuardContext, opts: AgentSettingsOptions): Promise<void> {
   const home = posixAbs(ctx.home);
-  const deny = [
+  const rules = [
     "Read(~/.holdback/**)",
     "Edit(~/.holdback/**)",
     `Read(${home}/**)`,
     `Edit(${home}/**)`,
+    "Edit(./.git/**)",
     ...(opts.protect ? protectRules(opts.protect) : []),
     ...(opts.denyWeb ? ["WebFetch", "WebSearch"] : []),
   ];
+  const deny = [...new Set(rules)];
   const settings = {
     permissions: { deny, blockReadsOutsideWorkingDirectories: true },
     hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: opts.guardCommand }] }] },

@@ -16,6 +16,11 @@ export async function readEvents(file: string): Promise<LedgerEvent[]> {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
+  return parseEvents(raw);
+}
+
+/** Ledger text -> events; blank, corrupt or untyped lines are skipped. */
+export function parseEvents(raw: string): LedgerEvent[] {
   const out: LedgerEvent[] = [];
   for (const line of raw.split("\n")) {
     const s = line.trim();

@@ -2,11 +2,25 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
 
-const SEALED_DIRS = [".testmuai/tests", ".testmuai/variables"];
+type Scope = {
+  /** Directory names not descended into. */
+  skipDir: (name: string) => boolean;
+  /** Entry names (file, symlink or special) that are sealed. */
+  keep: (name: string) => boolean;
+};
+
+// Tests: only the `*_test.md` files Kane designed. Kane writes its run recordings into
+// `output-<name>/` folders next to them; those are Kane's, not part of the seal.
+const TESTS: Scope = { skipDir: (n) => n.startsWith("output-"), keep: (n) => n.endsWith("_test.md") };
+const EVERYTHING: Scope = { skipDir: () => false, keep: () => true };
+const SEALED_DIRS: [string, Scope][] = [
+  [".testmuai/tests", TESTS],
+  [".testmuai/variables", EVERYTHING],
+];
 
 type Entry = { rel: string; kind: "file" | "symlink" | "special" };
 
-async function walk(dir: string, rel: string, out: Entry[]): Promise<void> {
+async function walk(dir: string, rel: string, scope: Scope, out: Entry[]): Promise<void> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -17,8 +31,10 @@ async function walk(dir: string, rel: string, out: Entry[]): Promise<void> {
   for (const ent of entries) {
     const r = `${rel}/${ent.name}`;
     // Dirent is lstat-based: symlinks/junctions are never followed.
-    if (ent.isSymbolicLink()) out.push({ rel: r, kind: "symlink" });
-    else if (ent.isDirectory()) await walk(path.join(dir, ent.name), r, out);
+    if (ent.isDirectory()) {
+      if (!scope.skipDir(ent.name)) await walk(path.join(dir, ent.name), r, scope, out);
+    } else if (!scope.keep(ent.name)) continue;
+    else if (ent.isSymbolicLink()) out.push({ rel: r, kind: "symlink" });
     else if (ent.isFile()) out.push({ rel: r, kind: "file" });
     else out.push({ rel: r, kind: "special" });
   }
@@ -38,10 +54,14 @@ async function hashAppFile(appDir: string, rel: string): Promise<string> {
   }
 }
 
-/** sha256 of every file under .testmuai/tests and .testmuai/variables, keyed by `/` relative path; plus `app:<rel>` entries when `app` is given. */
+/**
+ * sha256 of every `*_test.md` under .testmuai/tests (Kane's `output-*` recording folders excluded)
+ * and every file under .testmuai/variables, keyed by `/` relative path; plus `app:<rel>` entries
+ * when `app` is given.
+ */
 export async function seal(verifierDir: string, app?: AppSeal): Promise<Record<string, string>> {
   const files: Entry[] = [];
-  for (const d of SEALED_DIRS) await walk(path.join(verifierDir, ...d.split("/")), d, files);
+  for (const [d, scope] of SEALED_DIRS) await walk(path.join(verifierDir, ...d.split("/")), d, scope, files);
   files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
   const manifest: Record<string, string> = {};
   for (const { rel, kind } of files) {

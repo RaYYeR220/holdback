@@ -8,7 +8,14 @@ export type BriefOptions = {
   maxItems?: number;
   /** Stack and style notes file the agent should follow (config.agentNotes). */
   notes?: string;
+  /**
+   * Where the agent can open a failure's screenshot. When given, its result replaces Kane's own
+   * path on the `Screenshot:` line, and `undefined` drops the line.
+   */
+  screenshot?: (failure: AcFailure) => string | undefined;
 };
+
+export type AcFailure = NonNullable<AcState["lastFailure"]>;
 
 const LOG_TAIL_LINES = 40;
 
@@ -47,8 +54,11 @@ function startFailure(log: string): string {
   ].join("\n");
 }
 
+/** Kane's step text names the app's URL as a variable; say it in words. */
+const stepText = (t: string): string => oneLine(t.replace(/\{\{\s*start_url\s*\}\}/gi, "the app's start page"));
+
 /** One criterion as a bug report: what the spec says, what Kane did, saw and thinks. Never the test itself. */
-function section(ac: AcState): string[] {
+function section(ac: AcState, opts: BriefOptions): string[] {
   const out = [`## ${ac.id} — ${oneLine(ac.text)}`];
   if (ac.status === "regressed") out.push("Regressed: this passed on an earlier turn and fails now.");
   const cite = ac.cites[0];
@@ -56,13 +66,16 @@ function section(ac: AcState): string[] {
   const f = ac.lastFailure;
   if (!f) return out;
   const v = f.verdict;
-  if (f.stepText) out.push(`Kane ran: ${oneLine(f.stepText)}`);
+  if (f.stepText) out.push(`Kane ran: ${stepText(f.stepText)}`);
   const saw = v?.observed ?? v?.oneLiner;
   if (saw) out.push(`Kane saw: ${oneLine(saw)}`);
   if (v?.bugTitle) out.push(`Kane's diagnosis: ${oneLine(v.bugTitle)}${v.rootCause ? ` — ${oneLine(v.rootCause)}` : ""}`);
   if (v?.suggestion) out.push(`Suggested: ${oneLine(v.suggestion)}`);
   if (!v && f.reason) out.push(`Kane reported: ${oneLine(f.reason)}`);
-  if (f.screenshot) out.push(`Screenshot: ${f.screenshot}`);
+  if (f.screenshot) {
+    const shot = opts.screenshot ? opts.screenshot(f) : f.screenshot;
+    if (shot) out.push(`Screenshot: ${shot}`);
+  }
   return out;
 }
 
@@ -78,7 +91,7 @@ export function buildBrief(state: LedgerState, opts: BriefOptions = {}): string 
   const lines = [`# Holdback — ${n} ${n === 1 ? "criterion" : "criteria"} still owed`];
   if (opts.notes) lines.push("", `Stack and style notes: ${opts.notes}`);
   const max = Math.max(0, Math.floor(opts.maxItems ?? n));
-  for (const ac of items.slice(0, max)) lines.push("", ...section(ac));
+  for (const ac of items.slice(0, max)) lines.push("", ...section(ac, opts));
   if (n > max) lines.push("", `…and ${n - max} more not shown.`);
   return lines.join("\n") + "\n";
 }

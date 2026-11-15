@@ -42,7 +42,7 @@ export type {
   AcState,
   LedgerState,
 } from "./ledger/types.js";
-export { appendEvent, readEvents } from "./ledger/store.js";
+export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
@@ -51,6 +51,7 @@ export { startApp, freePort, AppStartError, type StartAppOptions, type RunningAp
 export {
   guardDecision,
   writeAgentSettings,
+  guardHookCommand,
   posixAbs,
   type GuardInput,
   type GuardContext,
@@ -61,11 +62,14 @@ export { runClaudeTurn, contractPath, guardMainPath, type ClaudeTurnOptions, typ
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
 export { runSpecStage, resealAppFiles, appSealFiles } from "./loop/spec.js";
-export { buildBrief, type BriefOptions } from "./loop/brief.js";
+export { buildBrief, type BriefOptions, type AcFailure } from "./loop/brief.js";
 export {
   runBuildLoop,
   defaultBuildDeps,
+  evidencePath,
+  EVIDENCE_DIR,
   type BuildDeps,
+  type BuildOptions,
   type BuildResult,
   type BuildStopReason,
 } from "./loop/build.js";
@@ -75,9 +79,11 @@ export {
   headSha,
   commitAll,
   ensureHead,
+  excludeFromGit,
   changedFiles,
   checkout,
   worktreeAdd,
   worktreeRemove,
   type GitResult,
+  type CommitOptions,
 } from "./git.js";

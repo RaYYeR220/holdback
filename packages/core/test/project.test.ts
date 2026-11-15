@@ -89,8 +89,8 @@ describe("seal", () => {
     const v = path.join(tmp, "v");
     await mkdir(path.join(v, ".testmuai", "tests", "sub"), { recursive: true });
     await mkdir(path.join(v, ".testmuai", "variables"), { recursive: true });
-    await writeFile(path.join(v, ".testmuai", "tests", "a.md"), "A");
-    await writeFile(path.join(v, ".testmuai", "tests", "sub", "b.md"), "B");
+    await writeFile(path.join(v, ".testmuai", "tests", "a_test.md"), "A");
+    await writeFile(path.join(v, ".testmuai", "tests", "sub", "b_test.md"), "B");
     await writeFile(path.join(v, ".testmuai", "variables", "x.json"), "{}");
     return v;
   }
@@ -99,8 +99,8 @@ describe("seal", () => {
     const v = await verifier();
     const m = await seal(v);
     expect(Object.keys(m).sort()).toEqual([
-      ".testmuai/tests/a.md",
-      ".testmuai/tests/sub/b.md",
+      ".testmuai/tests/a_test.md",
+      ".testmuai/tests/sub/b_test.md",
       ".testmuai/variables/x.json",
     ]);
     expect(await checkSeal(v, m)).toEqual([]);
@@ -109,13 +109,13 @@ describe("seal", () => {
   it("reports edited, deleted and added files (sorted)", async () => {
     const v = await verifier();
     const m = await seal(v);
-    await writeFile(path.join(v, ".testmuai", "tests", "a.md"), "A2");
-    await rm(path.join(v, ".testmuai", "tests", "sub", "b.md"));
-    await writeFile(path.join(v, ".testmuai", "tests", "c.md"), "C");
+    await writeFile(path.join(v, ".testmuai", "tests", "a_test.md"), "A2");
+    await rm(path.join(v, ".testmuai", "tests", "sub", "b_test.md"));
+    await writeFile(path.join(v, ".testmuai", "tests", "c_test.md"), "C");
     expect(await checkSeal(v, m)).toEqual([
-      ".testmuai/tests/a.md",
-      ".testmuai/tests/c.md",
-      ".testmuai/tests/sub/b.md",
+      ".testmuai/tests/a_test.md",
+      ".testmuai/tests/c_test.md",
+      ".testmuai/tests/sub/b_test.md",
     ]);
   });
 
@@ -125,7 +125,7 @@ describe("seal", () => {
     const target = path.join(tmp, "elsewhere");
     await mkdir(target, { recursive: true });
     await writeFile(path.join(target, "evil.md"), "x");
-    const link = path.join(v, ".testmuai", "tests", "link");
+    const link = path.join(v, ".testmuai", "tests", "link_test.md");
     let made = false;
     for (const type of ["dir", "junction"] as const) {
       try {
@@ -138,8 +138,25 @@ describe("seal", () => {
     }
     if (!made) ctx.skip(); // neither symlink nor junction can be created here
     const bad = await checkSeal(v, m);
-    expect(bad).toEqual([".testmuai/tests/link"]);
-    expect((await seal(v))[".testmuai/tests/link"]).toMatch(/^symlink:/);
+    expect(bad).toEqual([".testmuai/tests/link_test.md"]);
+    expect((await seal(v))[".testmuai/tests/link_test.md"]).toMatch(/^symlink:/);
+  });
+
+  it("seals only *_test.md under tests and ignores Kane's output-* recording folders", async () => {
+    const v = await verifier();
+    const tests = path.join(v, ".testmuai", "tests");
+    await writeFile(path.join(tests, "notes.txt"), "not a test");
+    const m = await seal(v);
+    expect(Object.keys(m)).not.toContain(".testmuai/tests/notes.txt");
+    // a Kane run writes its recording next to the test
+    await mkdir(path.join(tests, "output-a"), { recursive: true });
+    await writeFile(path.join(tests, "output-a", "recording.json"), "{}");
+    await writeFile(path.join(tests, "output-a", "copy_test.md"), "Kane's own copy");
+    await writeFile(path.join(tests, "notes.txt"), "changed");
+    expect(await checkSeal(v, m)).toEqual([]);
+    // a new test file anywhere else is reported
+    await writeFile(path.join(tests, "sub", "planted_test.md"), "x");
+    expect(await checkSeal(v, m)).toEqual([".testmuai/tests/sub/planted_test.md"]);
   });
 
   it("missing folders give an empty manifest without throwing", async () => {

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { guardDecision, guardPayload, writeAgentSettings, posixAbs } from "../src/agent/guard.js";
+import { guardDecision, guardHookCommand, guardPayload, writeAgentSettings, posixAbs } from "../src/agent/guard.js";
 
 const ctx = {
   home: "C:\\Users\\x\\.holdback\\abc",
@@ -93,6 +93,26 @@ describe("guardDecision hardening", () => {
     ])
       expect(sh(c), c).toBe(false);
   });
+  it("denies shell text that touches the repo's git hooks or config", () => {
+    for (const c of [
+      "cp pre.sh .git/hooks/pre-commit", "echo exit 0 > .git\\hooks\\commit-msg", "Set-Content .GIT\\Hooks\\post-commit x",
+      "cat .git/config", "notepad .git\\\\config", "node -e \"fs.appendFileSync('.git/config','')\"", "echo hooksPath core.hooksPath",
+    ])
+      expect(sh(c), c).toBe(true);
+    expect(sh("cp pre.sh .git/hooks/pre-commit", "PowerShell")).toBe(true);
+    expect(sh("git status && git log -1")).toBe(false);
+    expect(sh("cat .gitignore && ls .github/workflows")).toBe(false);
+  });
+});
+
+describe("guardHookCommand", () => {
+  it("quotes the absolute node binary and every path", () => {
+    const c = { home: "C:\\Users\\Jane Doe\\.holdback\\abc", verifierDir: "C:\\Users\\Jane Doe\\.holdback\\abc\\verifier" };
+    expect(guardHookCommand(c, "C:\\Program Files\\hb\\dist\\agent\\guard-main.js", "C:\\Program Files\\nodejs\\node.exe")).toBe(
+      '"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\hb\\dist\\agent\\guard-main.js" --home "C:\\Users\\Jane Doe\\.holdback\\abc" --verifier "C:\\Users\\Jane Doe\\.holdback\\abc\\verifier"',
+    );
+    expect(guardHookCommand(c, "g.js").startsWith(`"${process.execPath}" "g.js" `)).toBe(true);
+  });
 });
 
 describe("guardPayload", () => {
@@ -125,6 +145,7 @@ describe("writeAgentSettings", () => {
         "Edit(~/.holdback/**)",
         "Read(//c/Users/x/.holdback/abc/**)",
         "Edit(//c/Users/x/.holdback/abc/**)",
+        "Edit(./.git/**)",
       ]),
     );
     expect(s.permissions.deny).not.toContain("WebFetch");
@@ -151,8 +172,11 @@ describe("writeAgentSettings", () => {
         "Edit(//c/Users/x/app/docs/PRD.md)",
         "Edit(./NOTES.md)",
         "Edit(//c/Users/x/app/NOTES.md)",
+        "Edit(./.git/**)",
+        "Edit(//c/Users/x/app/.git/**)",
       ]),
     );
+    expect(deny.filter((r) => r === "Edit(./.git/**)")).toHaveLength(1);
     expect(deny.some((r) => r.startsWith("Read(./"))).toBe(false); // the agent still reads its spec
   });
 });

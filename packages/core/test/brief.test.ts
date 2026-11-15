@@ -123,7 +123,7 @@ describe("buildBrief", () => {
         "## ac-6 — The page displays an input labelled “Household size”.",
         "Regressed: this passed on an earlier turn and fails now.",
         'Spec: "The page "Food pantry eligibility check" has a field labelled "Household size"." (prd L7-L7)',
-        "Kane ran: At {{start_url}}, open the page and assert it has an input labelled “Household size”.",
+        "Kane ran: At the app's start page, open the page and assert it has an input labelled “Household size”.",
         "Kane saw: No input labelled “Household size” on the page.",
         "Kane's diagnosis: Household size input missing",
         "Screenshot: shot-2.png",
@@ -185,6 +185,22 @@ describe("buildBrief", () => {
     };
     const brief = buildBrief(reduce([design(), run(thin)]), {});
     expect(brief).toContain("Kane saw: Marks $2,462 eligible under a $2,461 limit.\nKane's diagnosis: Eligibility check approves income above displayed limit\n");
+  });
+
+  it("prints the screenshot path the resolver gives, and no Screenshot line when it gives none", () => {
+    const state = reduce([design(), run(mutantRun, 4)]);
+    const seen: unknown[] = [];
+    const brief = buildBrief(state, {
+      screenshot: (f) => {
+        seen.push({ turn: f.turn, test: f.test, step: f.step, shot: f.screenshot });
+        return `kane-evidence/turn-${f.turn}/${f.test}-step-${f.step}.png`;
+      },
+    });
+    expect(brief).toContain("\nScreenshot: kane-evidence/turn-4/t-3-step-2.png\n");
+    expect(seen).toEqual([{ turn: 4, test: "t-3", step: 2, shot: SCREENSHOT }]);
+    const none = buildBrief(state, { screenshot: () => undefined });
+    expect(none).not.toContain("Screenshot:");
+    expect(none).toContain("Suggested: Correct the income comparison");
   });
 
   it("caps the listed ACs at maxItems, keeps the full count, and names the notes file", () => {

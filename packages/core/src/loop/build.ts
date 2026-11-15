@@ -1,17 +1,20 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
-import { writeAgentSettings } from "../agent/guard.js";
+import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, startApp, type RunningApp } from "../app.js";
-import { changedFiles, commitAll, ensureHead, headSha, isRepoRoot } from "../git.js";
-import { runTests } from "../kane/testmd.js";
+import { changedFiles, commitAll, ensureHead, excludeFromGit, headSha, isRepoRoot, type CommitOptions } from "../git.js";
+import { runTests, type TestRunResult } from "../kane/testmd.js";
 import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
-import { readEvents } from "../ledger/store.js";
+import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent } from "../ledger/types.js";
 import type { Project } from "../project.js";
-import { checkSeal, seal } from "../seal.js";
-import { buildBrief, byAcId } from "./brief.js";
+import { checkSeal } from "../seal.js";
+import { buildBrief, byAcId, type AcFailure } from "./brief.js";
 import { appSealFiles } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
@@ -22,11 +25,16 @@ export type BuildDeps = {
   claude: typeof runClaudeTurn;
   tests: typeof runTests;
   app: typeof startApp;
-  /** Shell command for the agent's PreToolUse guard. Default: the built guard entry run through node. */
+  /** Shell command for the agent's PreToolUse guard. Default: the built guard entry run by this node binary. */
   guardCommand?: string;
 };
 
 export const defaultBuildDeps: BuildDeps = { claude: runClaudeTurn, tests: runTests, app: startApp };
+
+export type BuildOptions = {
+  /** A human raising the turn cap for this run; turn numbers are global, so this is the highest turn allowed. */
+  maxTurnsOverride?: number;
+};
 
 export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error";
 export type BuildResult = { allowStop: boolean; turns: number; reason: BuildStopReason; error?: string };
@@ -35,13 +43,15 @@ const TURN_TIMEOUT_MS = 30 * 60_000;
 /** Every Nth turn (and on the turn that empties the owed list) the passing ACs' tests are replayed too. */
 const REPLAY_EVERY = 3;
 const SETTINGS_FILE = "agent-settings.json";
-const APP_PREFIX = "app:";
+const EMPTY_HOOKS_DIR = "empty-hooks";
+/** Copies of Kane's failure screenshots inside the app dir, where the agent may open them; never committed. */
+export const EVIDENCE_DIR = "kane-evidence";
 
 function defaultGuardCommand(p: Project): string {
   const main = guardMainPath();
   // a hook command that cannot start exits 1, which Claude Code treats as "allow": refuse to run without it
   if (!existsSync(main)) throw new Error(`guard entry not found at ${main}: build @holdback/core first`);
-  return `node "${main}" --home "${p.home}" --verifier "${p.verifierDir}"`;
+  return guardHookCommand({ home: p.home, verifierDir: p.verifierDir }, main);
 }
 
 function lastSeal(events: LedgerEvent[]): Manifest | undefined {
@@ -75,35 +85,82 @@ function filesOf(acs: AcState[], files: Map<string, string>): string[] {
   return out;
 }
 
-const appEntries = (m: Manifest): Manifest => Object.fromEntries(Object.entries(m).filter(([k]) => k.startsWith(APP_PREFIX)));
-
-function sameManifest(a: Manifest, b: Manifest): boolean {
-  const ka = Object.keys(a);
-  return ka.length === Object.keys(b).length && ka.every((k) => b[k] === a[k]);
-}
-
 function startFailureText(e: unknown): string {
   if (e instanceof AppStartError) return [e.logs.replace(/\s+$/, ""), e.message].filter((s) => s.length > 0).join("\n");
   return e instanceof Error ? e.message : String(e);
+}
+
+/** `kane-evidence/turn-<N>/<test-id>-step-<K>.png`, relative to the app dir, `/`-separated. */
+export function evidencePath(turn: number, testId: string, step: number | undefined): string {
+  const id = testId.replace(/[^\w.-]/g, "_");
+  return `${EVIDENCE_DIR}/turn-${turn}/${id}${step === undefined ? "" : `-step-${step}`}.png`;
+}
+
+/** Byte length + sha256 of the ledger as Holdback last wrote it. */
+type LedgerMark = { size: number; sha256: string };
+
+const sha256 = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
+
+async function readLedger(file: string): Promise<Buffer> {
+  try {
+    return await readFile(file);
+  } catch (e) {
+    // only "no ledger yet" is empty; any other error must not look like an empty (all-clear) ledger
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return Buffer.alloc(0);
+  }
+}
+
+class LedgerTampered extends Error {
+  constructor() {
+    super("ledger modified outside Holdback");
+  }
+}
+
+/** Throws LedgerTampered unless the file is byte-for-byte what `mark` vouches for. */
+async function verifiedLedger(file: string, mark: LedgerMark): Promise<Buffer> {
+  const raw = await readLedger(file);
+  if (raw.length !== mark.size || sha256(raw) !== mark.sha256) throw new LedgerTampered();
+  return raw;
+}
+
+/** After appending `e`: the file must be the vouched-for bytes plus exactly that one event. Returns the new mark. */
+async function markAfterAppend(file: string, mark: LedgerMark, e: LedgerEvent): Promise<LedgerMark> {
+  const raw = await readLedger(file);
+  if (raw.length <= mark.size || sha256(raw.subarray(0, mark.size)) !== mark.sha256) throw new LedgerTampered();
+  const tail = raw.subarray(mark.size).toString("utf8").trim();
+  let added: unknown;
+  try {
+    added = JSON.parse(tail); // more than one line fails to parse
+  } catch {
+    throw new LedgerTampered();
+  }
+  if (JSON.stringify(added) !== JSON.stringify(e)) throw new LedgerTampered();
+  return { size: raw.length, sha256: sha256(raw) };
 }
 
 /**
  * Headless build loop: brief the agent with what Kane says is still owed, commit
  * its turn, restart the app, re-run the tests of the owed ACs (plus a replay of
  * the passing ones every few turns), and repeat until the gate opens, the turn
- * cap is hit, or a sealed file changes. `log` must append to `p.ledgerFile`:
- * every turn starts from a fresh read of the ledger.
+ * cap is hit, or a sealed file or the ledger changes behind Holdback's back.
+ * `log` must append to `p.ledgerFile`: the loop re-reads and verifies it every turn.
  */
-export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promise<BuildResult> {
+export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: BuildOptions = {}): Promise<BuildResult> {
   let turns = 0;
   let app: RunningApp | undefined;
   let events: LedgerEvent[] = [];
+  let mark: LedgerMark = { size: 0, sha256: sha256(Buffer.alloc(0)) };
 
   const done = (allowStop: boolean, reason: BuildStopReason, error?: string): BuildResult =>
     error === undefined ? { allowStop, turns, reason } : { allowStop, turns, reason, error };
+  const at = () => new Date().toISOString();
+  /** Append one event; the ledger must be untouched since Holdback's last append, before and after. */
   const emit = async (body: EventBody) => {
-    const e = { at: new Date().toISOString(), ...body } as LedgerEvent;
+    const e = { at: at(), ...body } as LedgerEvent;
+    await verifiedLedger(p.ledgerFile, mark);
     await log(e);
+    mark = await markAfterAppend(p.ledgerFile, mark, e);
     events.push(e);
   };
   const stopApp = async () => {
@@ -118,11 +175,30 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promi
     await emit({ t: "tamper", detail: `sealed files changed: ${bad.join(", ")}` });
     return true;
   };
+  /** Copy a failed run's screenshot to where the agent may open it. A failed copy just drops the brief line. */
+  const keepEvidence = async (r: TestRunResult, turn: number) => {
+    if (r.status === "passed" || !r.screenshot || !r.testId) return;
+    const src = path.resolve(r.screenshot.replace(/^~(?=[\\/])/, os.homedir()));
+    const dest = path.join(p.appDir, ...evidencePath(turn, r.testId, r.failedStep).split("/"));
+    try {
+      await mkdir(path.dirname(dest), { recursive: true });
+      await copyFile(src, dest);
+    } catch {
+      /* the brief omits the Screenshot line */
+    }
+  };
+  const screenshot = (f: AcFailure): string | undefined => {
+    if (f.turn === undefined) return undefined;
+    const rel = evidencePath(f.turn, f.test, f.step);
+    return existsSync(path.join(p.appDir, ...rel.split("/"))) ? rel : undefined;
+  };
 
   try {
-    const maxTurns = p.config.loop.maxTurns;
+    const maxTurns = opts.maxTurnsOverride ?? p.config.loop.maxTurns;
     if (typeof maxTurns !== "number" || !(maxTurns >= 0)) return done(false, "error", `loop.maxTurns must be a number, got ${JSON.stringify(maxTurns)}`);
     if (!(await isRepoRoot(p.appDir))) return done(false, "error", `the app dir must be the root of a git repository: ${p.appDir}`);
+    const found = await readLedger(p.ledgerFile); // trust the ledger as found at loop start
+    mark = { size: found.length, sha256: sha256(found) };
     const settingsFile = path.join(p.home, SETTINGS_FILE);
     await writeAgentSettings(
       settingsFile,
@@ -133,26 +209,32 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promi
         protect: { appDir: p.appDir, files: appSealFiles(p) },
       },
     );
-    await ensureHead(p.appDir, "holdback: initial commit");
+    // Holdback's own commits never run the app repo's hooks: the agent can write those
+    const hooksDir = path.join(p.home, EMPTY_HOOKS_DIR);
+    await mkdir(hooksDir, { recursive: true });
+    const commitOpts: CommitOptions = { hooksDir };
+    await excludeFromGit(p.appDir, `${EVIDENCE_DIR}/`);
+    await ensureHead(p.appDir, "holdback: initial commit", commitOpts);
 
     let startError: string | undefined;
     let lastTurn = 0;
     for (;;) {
-      events = await readEvents(p.ledgerFile); // throws on anything but "no ledger yet": fail closed
+      events = parseEvents((await verifiedLedger(p.ledgerFile, mark)).toString("utf8"));
       const manifest = lastSeal(events);
       if (!manifest) return done(false, "error", "no seal in the ledger: run the spec stage first");
       let state = reduce(events);
       if (Object.keys(state.acs).length === 0) return done(false, "error", "no acceptance criteria in the ledger: run the spec stage first");
+      // before any decision: a change made at any point since the last check is flagged
+      if (await tampered(manifest)) return done(false, "tamper");
       const g = gate(state);
       if (g.allowStop) return done(true, "gate-open");
-      if (turns >= maxTurns) return done(false, "max-turns");
-      if (await tampered(manifest)) return done(false, "tamper");
+      const n = Math.max(state.turn, lastTurn) + 1;
+      if (n > maxTurns) return done(false, "max-turns");
 
       const owed = [...[...g.regressed].sort(byAcId), ...[...g.owed].sort(byAcId)];
       const fileOf = testFileMap(events, p.verifierDir);
       const idOf = new Map([...fileOf].map(([id, f]) => [f, id]));
       const owedFiles = filesOf(owed, fileOf);
-      const n = Math.max(state.turn, lastTurn) + 1;
       lastTurn = n;
       turns += 1;
       await emit({ t: "turn.start", n, owed: owed.map((a) => a.id) });
@@ -161,7 +243,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promi
       const before = await headSha(p.appDir);
       const agent = await deps.claude({
         cwd: p.appDir,
-        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes }),
+        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, screenshot }),
         settingsFile,
         contractFile: contractPath(),
         maxTurns: p.config.agent.maxTurnsPerCall,
@@ -169,13 +251,14 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promi
         timeoutMs: TURN_TIMEOUT_MS,
       });
       if (agent.subtype === undefined && !agent.timedOut && agent.exitCode !== 0) {
+        if (await tampered(manifest)) return done(false, "tamper");
         // no result line at all (bad auth, bad flags, crash): another turn would fail the same way
         const why = agent.stderrTail.trim().slice(-500) || agent.resultText || "no output";
         return done(false, "error", `claude exited with code ${agent.exitCode} without a result: ${why}`);
       }
 
       // 2. commit the turn, restart the app
-      const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`);
+      const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, commitOpts);
       const filesChanged = commit && before ? await changedFiles(p.appDir, before, commit) : [];
       startError = undefined;
       try {
@@ -198,21 +281,24 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promi
         appUp: app !== undefined,
         agentExit: agent.exitCode,
       });
-      if (!app) continue; // nothing to test; the next brief is the start failure
+      if (!app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top
 
-      // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then
+      // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then.
+      // Build runs keep adaptive heal on: the UI is expected to change between turns.
       if (await tampered(manifest)) return done(false, "tamper");
-      const opts = { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
+      const runOpts = { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
       const ran = new Set<string>();
-      const runBatch = async (batch: string[]) => {
-        if (batch.length === 0) return;
+      /** Runs and logs one batch; true when a sealed file changed during it (the app process ran meanwhile). */
+      const runBatch = async (batch: string[]): Promise<boolean> => {
+        if (batch.length === 0) return false;
         for (const f of batch) ran.add(f);
-        const results = await deps.tests(p.verifierDir, batch, opts);
+        const results = await deps.tests(p.verifierDir, batch, runOpts);
         if (results.length !== batch.length) throw new Error(`Kane returned ${results.length} results for ${batch.length} tests`);
         const was = reduce(events);
         for (const [i, r] of results.entries()) {
           // a run that never read its file has no id: attribute it, so the failure counts against its ACs
           const result = r.testId == null ? { ...r, testId: idOf.get(batch[i]!) ?? null } : r;
+          await keepEvidence(result, n);
           await emit({ t: "run", kind: "build", turn: n, result });
         }
         const now = reduce(events);
@@ -220,25 +306,31 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log): Promi
           const prev = was.acs[ac.id]?.status;
           if ((prev === "passing" || prev === "proved") && ac.status === "regressed") await emit({ t: "regression", ac: ac.id, turn: n });
         }
+        return tampered(manifest);
       };
       try {
-        await runBatch(owedFiles);
+        if (await runBatch(owedFiles)) return done(false, "tamper");
         state = reduce(events);
         if (n % REPLAY_EVERY === 0 || gate(state).allowStop) {
           const green = Object.values(state.acs)
             .filter((a) => a.status === "passing" || a.status === "proved")
             .sort(byAcId);
-          await runBatch(filesOf(green, fileOf).filter((f) => !ran.has(f)));
+          if (await runBatch(filesOf(green, fileOf).filter((f) => !ran.has(f)))) return done(false, "tamper");
         }
       } finally {
         await stopApp();
-        // Kane writes its recordings into the test files it runs: re-seal the verifier side
-        // (only Kane ran since the check above); app entries keep their originally sealed hashes.
-        const resealed = { ...(await seal(p.verifierDir)), ...appEntries(manifest) };
-        if (!sameManifest(resealed, manifest)) await emit({ t: "seal", manifest: resealed });
       }
     }
   } catch (e) {
+    if (e instanceof LedgerTampered) {
+      await stopApp().catch(() => {});
+      try {
+        await log({ at: at(), t: "tamper", detail: e.message });
+      } catch {
+        /* the stop reason is returned either way */
+      }
+      return done(false, "tamper");
+    }
     return done(false, "error", e instanceof Error ? e.message : String(e));
   } finally {
     await stopApp().catch(() => {});
