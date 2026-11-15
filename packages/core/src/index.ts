@@ -43,3 +43,5 @@ export type {
 export { appendEvent, readEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
+export { loadProject, type Project, type HoldbackConfig } from "./project.js";
+export { seal, checkSeal } from "./seal.js";
