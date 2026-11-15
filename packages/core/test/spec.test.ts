@@ -88,6 +88,20 @@ describe("runSpecStage", () => {
     expect(readFileSync(join(p.verifierDir, "PRD.md"), "utf8")).toContain("Snap rules.");
   }, 60_000);
 
+  it("logs Kane's balance drop for the ingest and for each design, next to their per-run credits (R34)", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const balances = [100, 92.5, 92.5, 70];
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e), { balance: async () => balances.shift()! });
+    const events = await readEvents(p.ledgerFile);
+    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "credits", "spec.approved", "design", "credits", "spec.approved", "seal"]);
+    const [ingest, design] = events.filter((e) => e.t === "credits");
+    const perRun = (ts: string[]) => events.filter((e) => ts.includes(e.t)).reduce((n, e) => n + ("credits" in e && typeof e.credits === "number" ? e.credits : 0), 0);
+    expect(ingest).toMatchObject({ source: "spec", delta: 7.5, perRunSum: expect.closeTo(perRun(["spec.ingested", "spec.paused", "spec.answered"]), 4) });
+    expect(design).toMatchObject({ source: "design", delta: 22.5, perRunSum: expect.closeTo(perRun(["design"]), 4) });
+    expect(reduce(events).kaneCredits).toBe(30);
+  }, 60_000);
+
   it("ScriptedHumanIO answers by text/id and throws on unknown questions", async () => {
     const f = join(root, "script.json");
     writeFileSync(f, JSON.stringify({ answers: { q1: "A" }, approve: ["x"] }));

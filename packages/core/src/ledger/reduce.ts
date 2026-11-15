@@ -1,4 +1,8 @@
+import { notAnAppFailure } from "../kane/outcome.js";
+import { eventCredits } from "./credits.js";
 import type { AcState, LedgerEvent, LedgerState } from "./types.js";
+
+const round = (n: number) => Math.round(n * 1e4) / 1e4;
 
 /** Pure reducer: ledger events -> state of every AC. Single source of truth for AC status. */
 export function reduce(events: LedgerEvent[]): LedgerState {
@@ -6,13 +10,21 @@ export function reduce(events: LedgerEvent[]): LedgerState {
     acs: {},
     turn: 0,
     credits: 0,
+    kaneCredits: 0,
+    kaneUnmeasured: 0,
     breakerUsd: 0,
     runs: 0,
     mutants: { killed: 0, survived: 0, invalid: 0 },
+    inconclusive: [],
     tampered: false,
   };
   // latest build result per (ac, test): true = passed, false = failed
   const latest = new Map<string, Map<string, boolean>>();
+  // per test, its latest build run when that run proved nothing
+  const unsure = new Map<string, LedgerState["inconclusive"][number]>();
+  // metered batches: balance drops (per-run sums where unreadable), and the per-run credits they cover
+  let metered = 0;
+  let covered = 0;
 
   const allPass = (ac: AcState): boolean => {
     const m = latest.get(ac.id);
@@ -20,6 +32,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
   };
 
   for (const e of events) {
+    state.credits += eventCredits(e);
     switch (e.t) {
       // fail closed: a tamper blocks the gate until a fresh seal (spec stage or a human re-seal)
       case "tamper":
@@ -29,6 +42,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         if (state.tampered) {
           // results from before the tamper (possibly forged) do not survive the re-seal: verify again
           latest.clear();
+          unsure.clear();
           for (const ac of Object.values(state.acs)) {
             ac.status = ac.tests.length > 0 ? "owed" : "needs-spec";
             delete ac.lastFailure;
@@ -37,7 +51,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         state.tampered = false;
         break;
       case "design": {
-        state.credits += e.credits;
+        for (const t of e.tests) unsure.delete(t.id); // a re-designed test starts over
         for (const ac of e.acs) latest.delete(ac.id); // AC may move between use cases: drop stale results
         for (const old of Object.values(state.acs)) {
           if (old.useCase === e.useCase) {
@@ -58,12 +72,13 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         }
         break;
       }
-      case "spec.ingested":
-      case "spec.paused":
-      case "spec.answered":
-      case "redesign.dropped":
-      case "drift":
-        state.credits += typeof e.credits === "number" ? e.credits : 0;
+      case "credits":
+        covered += e.perRunSum;
+        if (typeof e.delta === "number") metered += e.delta;
+        else {
+          metered += e.perRunSum;
+          state.kaneUnmeasured += 1;
+        }
         break;
       case "turn.start":
         state.turn = Math.max(state.turn, e.n);
@@ -71,9 +86,16 @@ export function reduce(events: LedgerEvent[]): LedgerState {
       case "run": {
         state.runs += 1;
         const r = e.result;
-        state.credits += r.credits;
         if (e.kind !== "build" || r.testId == null) break;
         const testId = r.testId;
+        // R34: a run that failed for a reason other than the app proves nothing either way, passes
+        // included: every criterion keeps its status (and its last real failure, for the brief)
+        const why = notAnAppFailure(r);
+        if (why !== undefined) {
+          unsure.set(testId, { test: testId, ...(e.turn !== undefined ? { turn: e.turn } : {}), reason: why });
+          break;
+        }
+        unsure.delete(testId);
         const mark = (acId: string, passed: boolean) => {
           const ac = state.acs[acId];
           if (!ac || !ac.tests.includes(testId)) return;
@@ -128,5 +150,11 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         break;
     }
   }
+  state.credits = round(state.credits);
+  // per-run credits logged outside any metered batch (an older ledger) count as they are
+  state.kaneCredits = round(metered + Math.max(0, state.credits - covered));
+  // only tests some criterion still runs
+  const live = new Set(Object.values(state.acs).flatMap((a) => a.tests));
+  state.inconclusive = [...unsure.values()].filter((u) => live.has(u.test));
   return state;
 }

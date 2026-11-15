@@ -41,6 +41,11 @@ export type LedgerEvent = { at: string } & (
    * app repo's git config hash. The next build loop holds the disk to the latest one at start.
    */
   | { t: "recordings"; digest: string; gitConfig: string }
+  /**
+   * One metered Kane batch (`KaneMeter`): `kane-cli balance` before minus after (null when it could
+   * not be read, `error` says why), and the per-run credits the events logged in that batch carry.
+   */
+  | { t: "credits"; source: string; delta: number | null; perRunSum: number; error?: string }
 );
 
 export type AcStatus = "owed" | "passing" | "proved" | "vacuous" | "regressed" | "needs-spec";
@@ -66,10 +71,23 @@ export type AcState = {
 export type LedgerState = {
   acs: Record<string, AcState>;
   turn: number;
+  /** Kane credits as Kane reported them per run (design, run, spec and drift events): the per-run sum. */
   credits: number;
+  /**
+   * Kane credits by `kane-cli balance`: each metered batch's balance drop (its per-run sum when the
+   * balance could not be read), plus per-run credits logged outside any metered batch.
+   */
+  kaneCredits: number;
+  /** Metered batches whose balance could not be read (their per-run sum stands in). */
+  kaneUnmeasured: number;
   breakerUsd: number;
   runs: number;
   mutants: { killed: number; survived: number; invalid: number };
+  /**
+   * Tests whose latest build run proved nothing (Kane's environment or automation, a timeout, a
+   * crash): the criteria they verify kept their status. For the human, never the agent's brief.
+   */
+  inconclusive: { test: string; turn?: number; reason: string }[];
   /** A `tamper` event with no later `seal`: nothing verified since can be trusted until a human re-seals. */
   tampered: boolean;
 };

@@ -25,7 +25,7 @@ export type CheckReason = "edit" | "stop";
  */
 export type CheckStatus = "checked" | "unchanged" | "unsealed" | "drift" | "tamper" | "aborted" | "error";
 
-export type CheckDeps = Pick<BuildDeps, "tests" | "app"> & {
+export type CheckDeps = Pick<BuildDeps, "tests" | "app" | "balance"> & {
   /** The port the app is started on for the check. Default: a free one (the agent may run its own server on the configured port). */
   port?: () => Promise<number>;
 };
@@ -49,6 +49,11 @@ export type CheckResult = {
   detail?: string;
   /** The app did not start for this work tree: no criterion could be checked. */
   appStartError?: string;
+  /**
+   * Runs of this check that proved nothing (`<test>: <why>`), after one re-run: their criteria kept
+   * their status. For the human (check.json, check.log, `holdback status`), never the agent's brief.
+   */
+  inconclusive?: string[];
 };
 
 /** `<home>/check.json`: the latest check's verdict and what it was for. Written last, in one rename. */
@@ -154,7 +159,7 @@ const sameMark = (a: LedgerMark | null | undefined, b: LedgerMark | undefined) =
  */
 export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: CheckOptions): Promise<CheckResult> {
   const startedAt = Date.now();
-  const s = new VerifySession(p, deps, log);
+  const s = new VerifySession(p, deps, log, "check");
   const last = await readCheckState(p.home);
   let tree: string | null = null;
   /** The work tree the open turn started from; undefined while no turn is open. */
@@ -189,7 +194,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     if (r.reason === "unsealed") return closed("unsealed", UNSEALED_BRIEF, r.error);
     return closed("error", ERROR_BRIEF(forAgent(p, r.error ?? "unknown error")), r.error);
   };
-  const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined): CheckResult => {
+  const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined, inconclusive: string[] = []): CheckResult => {
     const state = reduce(s.events);
     const g = gate(state);
     return {
@@ -201,6 +206,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
       tampered: false,
       owed: owedIds(state),
       ...(appStartError !== undefined ? { appStartError } : {}),
+      ...(inconclusive.length > 0 ? { inconclusive } : {}),
     };
   };
   /** Closes the open turn with what changed in the work tree since it started. */
@@ -231,9 +237,11 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
 
     // a save through Claude Code after the last check began counts too: it may have touched a git-ignored file
     const editAt = await readEditAt(p.home);
+    // a check with a run that proved nothing did not verify the tree: it never stands
     const stands =
       last !== null &&
       (last.status === "checked" || last.status === "unchanged") &&
+      !last.inconclusive?.length &&
       last.tree === tree &&
       sameMark(last.ledger, s.mark) &&
       last.startedAt > editAt;
@@ -256,16 +264,18 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
 
     const appStartError = await s.startApp(await (deps.port ?? freePort)());
     let ran: string[] = [];
+    let inconclusive: string[] = [];
     if (appStartError === undefined) {
       const v = await s.verify(turn.n, owedFiles, fileOf, false);
       if (v.tampered) return tamper();
       const idOf = new Map([...fileOf].map(([id, f]) => [f, id]));
       ran = [...v.ran].map((f) => idOf.get(f) ?? f);
+      inconclusive = v.inconclusive;
     }
     // the app is down: Kane's recordings as they are now are what the next check holds them to
     if (s.kaneWindow) await s.closeKaneWindow();
     if (opts.reason === "stop") await endTurn(turn, appStartError === undefined);
-    return verdict("checked", ran, appStartError);
+    return verdict("checked", ran, appStartError, inconclusive);
   };
 
   let result: CheckResult;

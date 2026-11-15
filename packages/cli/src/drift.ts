@@ -9,7 +9,7 @@ export async function driftCmd(ctx: Ctx, o: { answers?: string } = {}): Promise<
   try {
     let r!: Awaited<ReturnType<typeof ctx.deps.runDrift>>;
     const locked = await withCheckLock(ctx, p, async () => {
-      r = await ctx.deps.runDrift(p, io, ledgerLog(p));
+      r = await ctx.deps.runDrift(p, io, ledgerLog(p), { balance: ctx.deps.balance });
       return EXIT.ok;
     });
     if (locked !== EXIT.ok) return locked;

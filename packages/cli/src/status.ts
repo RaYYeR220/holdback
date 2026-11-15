@@ -1,5 +1,6 @@
 import { loadProject } from "@holdback/core";
 import { EXIT, explainFailure, readerView, snapshot, type Ctx } from "./context.js";
+import { inconclusiveLine, kaneCreditsText } from "./messages.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -57,7 +58,9 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
     for (const r of rows) ctx.out(`${pad(r.id, wi)}  ${pad(r.status, ws)}  ${pad(r.tests, wt)}  ${r.failure}`.trimEnd());
   }
   ctx.out("");
-  ctx.out(`Gate: ${open ? "open" : "closed"} | owed ${s.gate.owed.length + s.gate.regressed.length} | turn ${s.state.turn} | Kane credits ${s.state.credits} | breaker $${s.state.breakerUsd.toFixed(4)}`);
+  ctx.out(`Gate: ${open ? "open" : "closed"} | owed ${s.gate.owed.length + s.gate.regressed.length} | turn ${s.state.turn} | Kane credits ${kaneCreditsText(s.state)} | breaker $${s.state.breakerUsd.toFixed(4)}`);
+  const unsure = inconclusiveLine(s.state);
+  if (unsure) ctx.out(unsure);
   if (s.specChanged.length > 0) ctx.out(`The spec changed since the last seal (${s.specChanged.join(", ")}): \`holdback run\` runs drift first.`);
   if (s.tamper !== null) {
     ctx.err(s.tamper);

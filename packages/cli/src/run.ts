@@ -1,6 +1,6 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
 import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
-import { tamperMessage } from "./messages.js";
+import { inconclusiveLine, kaneCreditsText, tamperMessage } from "./messages.js";
 
 export type RunOptions = {
   maxTurns?: string | number;
@@ -53,7 +53,9 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
     `Criteria: ${count("owed", "regressed")} owed${regressed > 0 ? ` (${regressed} regressed)` : ""}, ${count("passing")} passing, ${count("proved")} proved, ${count("vacuous")} vacuous, ${count("needs-spec")} needs-spec`,
   );
   ctx.out(`Turns this run: ${turns} (turn ${s.state.turn} overall)`);
-  ctx.out(`Kane credits: ${s.state.credits}`);
+  ctx.out(`Kane credits: ${kaneCreditsText(s.state)}`);
+  const unsure = inconclusiveLine(s.state);
+  if (unsure) ctx.out(unsure);
   ctx.out(`Breaker spend: $${s.state.breakerUsd.toFixed(4)} of $${p.config.breaker.capUsd}`);
   if (falsified && falsified.skipped.length > 0) ctx.out(`Not attacked (breaker budget): ${falsified.skipped.join(", ")}`);
   if (count("vacuous") > 0) ctx.out("Vacuous means a planted bug in that criterion's code got past its tests: the criterion proves nothing yet.");
@@ -100,7 +102,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
     // the spec was edited after the last seal: Kane re-plans with the human before anything is built
     if (before.specChanged.length > 0) {
       ctx.out("spec changed since the last seal — running drift");
-      const d = await ctx.deps.runDrift(p, io, log);
+      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance });
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
         ctx.err("Nothing was built. Fix or revert the spec edit, then run `holdback drift` or `holdback run` again.");

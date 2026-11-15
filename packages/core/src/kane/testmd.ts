@@ -5,6 +5,7 @@ import type { KaneEvent } from "./ndjson.js";
 import { parseTestMd } from "./testmd-parse.js";
 
 export { parseTestMd } from "./testmd-parse.js";
+export { inconclusiveNote, notAnAppFailure, runSettled } from "./outcome.js";
 
 export type BugVerdict = {
   bugTitle: string;
@@ -15,6 +16,12 @@ export type BugVerdict = {
   oneLiner?: string;
   observed?: string;
   culpritStep?: string;
+  /**
+   * Kane's verdict family: `application_issue` blames the app; `environment_issue` (browser,
+   * platform) and `automation_bug` (Kane's own replay or authoring) do not.
+   */
+  family?: string;
+  category?: string;
 };
 
 export type TestRunResult = {
@@ -35,6 +42,14 @@ export type TestRunResult = {
   evidencePack?: string;
   durationS: number;
   reason?: string;
+  /** Why the first attempt was run again: it failed for a reason other than the app (`runSettled`). */
+  retried?: string;
+  /**
+   * Set when the run (after one re-run) still failed for a reason other than the app: a Kane
+   * environment or automation verdict, a timeout or a crash. Such a run proves nothing either way:
+   * no criterion changes status on it and no mutant is killed by it.
+   */
+  inconclusive?: string;
 };
 
 export type RunTestOptions = {
@@ -56,8 +71,9 @@ const num = (v: unknown): number | undefined => (typeof v === "number" && Number
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
+/** The failure Kane reported last: after an adaptive heal, an earlier failure no longer stands. */
 function verdictFrom(events: KaneEvent[]): { verdict?: BugVerdict; screenshot?: string } {
-  const failedEnd = events.find((e) => e.type === "run_end" && e.status === "failed");
+  const failedEnd = events.findLast((e) => e.type === "run_end" && e.status === "failed");
   const rich = isObj(failedEnd?.verdict) ? failedEnd.verdict : undefined;
   const screenshot = str(failedEnd?.screenshot_path) || undefined;
   const out: { verdict?: BugVerdict; screenshot?: string } = screenshot ? { screenshot } : {};
@@ -72,16 +88,20 @@ function verdictFrom(events: KaneEvent[]): { verdict?: BugVerdict; screenshot?: 
     const sig = Array.isArray(rich.signals) ? rich.signals.find(isObj) : undefined;
     if (str(sig?.excerpt)) v.observed = str(sig?.excerpt);
     if (str(rich.culprit_step)) v.culpritStep = str(rich.culprit_step);
+    if (str(rich.family)) v.family = str(rich.family);
+    if (str(rich.category)) v.category = str(rich.category);
     out.verdict = v;
     return out;
   }
-  const bug = events.find((e) => e.type === "test_md_bug_verdict");
+  const bug = events.findLast((e) => e.type === "test_md_bug_verdict");
   if (bug && str(bug.bug_title)) {
     const v: BugVerdict = { bugTitle: str(bug.bug_title) };
     if (str(bug.severity)) v.severity = str(bug.severity);
     const conf = num(bug.confidence);
     if (conf !== undefined) v.confidence = conf;
     if (str(bug.one_liner)) v.oneLiner = str(bug.one_liner);
+    if (str(bug.family)) v.family = str(bug.family);
+    if (str(bug.category)) v.category = str(bug.category);
     out.verdict = v;
   }
   return out;
@@ -136,13 +156,16 @@ export async function runTest(cwd: string, testFile: string, opts: RunTestOption
   }
   result.credits = Math.round(credits * 1e4) / 1e4;
 
+  // an adaptive heal re-runs steps and Kane emits them again: the last entry of each step stands
+  const byStep = new Map<number, TestRunResult["steps"][number]>();
   for (const e of ev) {
     if (e.type !== "test_md_step_end") continue;
     const index = num(e.step_index) ?? 0;
-    const status = str(e.status);
-    result.steps.push({ index, status, durationS: num(e.duration_s) ?? 0 });
-    if (status === "failed" && result.failedStep === undefined) result.failedStep = index;
+    byStep.set(index, { index, status: str(e.status), durationS: num(e.duration_s) ?? 0 });
   }
+  result.steps = [...byStep.values()];
+  const failed = result.steps.find((s) => s.status === "failed");
+  if (failed) result.failedStep = failed.index;
   const summary = ev.find((e) => e.type === "test_md_summary");
   if (summary) {
     const s = isObj(summary.steps) ? summary.steps : {};
@@ -158,8 +181,6 @@ export async function runTest(cwd: string, testFile: string, opts: RunTestOption
       result.criteriaFailed = strs(cov.this_run.criteria_failed);
     }
   }
-  Object.assign(result, verdictFrom(ev));
-
   const done = ev.find((e) => e.type === "test_md_done");
   const overall = str(done?.overall_status);
   if (r.timedOut) {
@@ -172,11 +193,14 @@ export async function runTest(cwd: string, testFile: string, opts: RunTestOption
   } else {
     result.status = overall === "passed" ? "passed" : overall === "failed" ? "failed" : "broken";
     if (result.status !== "passed") {
-      const failing = ev.find((e) => e.type === "run_end" && e.status !== "passed");
+      const failing = ev.findLast((e) => e.type === "run_end" && e.status !== "passed");
       const reason = str(failing?.reason);
       if (reason) result.reason = reason;
     }
   }
+  // a run that passed (after a heal, maybe) keeps nothing of the failures it got past
+  if (result.status === "passed") delete result.failedStep;
+  else Object.assign(result, verdictFrom(ev));
 
   // broken/error runs may end on a step whose status is not "failed": point at the first step that did not pass
   if (result.failedStep === undefined && result.status !== "passed") {

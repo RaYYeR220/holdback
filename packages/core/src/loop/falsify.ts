@@ -5,8 +5,9 @@ import { freePort, startApp, type RunningApp } from "../app.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, type Mutant } from "../breaker/mutate.js";
 import { Budget, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
-import { designTests, extractResume, listNodes, readGraph, resumeSession, review, type ListedNode } from "../kane/assurance.js";
-import { runTests, type TestRunResult } from "../kane/testmd.js";
+import { balance, designTests, extractResume, listNodes, readGraph, resumeSession, review, type ListedNode } from "../kane/assurance.js";
+import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
+import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent } from "../ledger/types.js";
@@ -42,6 +43,8 @@ export type FalsifyDeps = {
   port?: () => Promise<number>;
   /** Default: `process.env.VENICE_API_KEY`. */
   apiKey?: string;
+  /** Kane's balance, read around every Kane batch (`credits` events); leave out to log none. */
+  balance?: BalanceReader;
 };
 
 export const defaultFalsifyDeps: FalsifyDeps = {
@@ -49,6 +52,7 @@ export const defaultFalsifyDeps: FalsifyDeps = {
   tests: runTests,
   app: startApp,
   kane: { designTests, listNodes, review, readGraph, resumeSession, extractResume },
+  balance,
 };
 
 export type FalsifyStopReason = "done" | "budget" | "tamper" | "error" | "aborted";
@@ -83,9 +87,14 @@ const RESEAL_HINT = "a tamper is on record: re-seal (the spec stage, or a human 
 const NO_SEAL = "no seal in the ledger: run the spec stage first";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The verdict on one mutant from its Kane runs (healing off). */
+/**
+ * The verdict on one mutant from its Kane runs (healing off). Only a failure Kane blames on the app
+ * kills it; a run that failed for any other reason (R34: after one re-run) leaves it `invalid`.
+ */
 export function falsifyVerdict(acId: string, results: TestRunResult[]): { verdict: Verdict; note?: string } {
-  if (results.some((r) => r.criteriaFailed.includes(acId))) return { verdict: "killed" };
+  if (results.some((r) => notAnAppFailure(r) === undefined && r.criteriaFailed.includes(acId))) return { verdict: "killed" };
+  const unsure = results.filter((r) => notAnAppFailure(r) !== undefined);
+  if (unsure.length > 0) return { verdict: "invalid", note: `inconclusive: ${unsure.map(inconclusiveNote).join("; ")}` };
   const failed = results.filter((r) => r.status !== "passed");
   if (failed.length > 0) {
     const what = failed.map((r) => `${r.testId ?? r.testFile} ${r.status}${r.criteriaFailed.length > 0 ? ` (${r.criteriaFailed.join(", ")})` : ""}`);
@@ -291,8 +300,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     if (!mark) throw new Error("internal: ledger not read before the first append");
     mark = await appendVouched(p.ledgerFile, mark, log, e);
     events.push(e);
+    meter.add(e);
   };
   const emit = (body: EventBody) => append({ at: at(), ...body } as LedgerEvent);
+  /** Each Kane batch (a mutant's replay, the closing replay, a re-design) is metered by Kane's balance. */
+  const meter = new KaneMeter(deps.balance, emit);
   const recordTamper = async (detail: string) => {
     let logged = detail;
     try {
@@ -434,28 +446,31 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
         return "done";
       }
 
-      // 3. Kane replays the AC's sealed tests against it, healing off
-      kaneWindow = true;
-      attacked = true;
-      let results: TestRunResult[];
-      try {
-        results = await deps.tests(cwd, files, { startUrl: `${running.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel });
-      } finally {
-        await stopApp();
-      }
-      if (results.length !== files.length) throw new Error(`Kane returned ${results.length} results for ${files.length} tests`);
-      const bad = await sealBroken();
-      if (bad.length > 0) {
-        // results produced against a changed test or variable never reach the ledger
-        await recordTamper(`sealed files changed: ${bad.join(", ")}`);
-        return "tamper";
-      }
-      const fileId = testIdsByFile();
-      const attributed = results.map((r, i) => (r.testId == null ? { ...r, testId: fileId.get(files[i]!) ?? null } : r));
-      const v = falsifyVerdict(ac.id, attributed);
-      await finish(v.verdict, v.note, attributed);
-      await closeKaneWindow();
-      return "done";
+      // 3. Kane replays the AC's sealed tests against it, healing off (a run that failed for a reason
+      //    other than the app once more, while the mutant is still up)
+      const app = running;
+      return await meter.batch("falsify", async () => {
+        kaneWindow = true;
+        attacked = true;
+        let results: TestRunResult[];
+        try {
+          results = await runSettled(deps.tests, cwd, files, { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel });
+        } finally {
+          await stopApp();
+        }
+        const bad = await sealBroken();
+        if (bad.length > 0) {
+          // results produced against a changed test or variable never reach the ledger
+          await recordTamper(`sealed files changed: ${bad.join(", ")}`);
+          return "tamper";
+        }
+        const fileId = testIdsByFile();
+        const attributed = results.map((r, i) => (r.testId == null ? { ...r, testId: fileId.get(files[i]!) ?? null } : r));
+        const v = falsifyVerdict(ac.id, attributed);
+        await finish(v.verdict, v.note, attributed);
+        await closeKaneWindow();
+        return "done";
+      });
     } catch (e) {
       stopNote = `stopped before a verdict: ${errText(e)}`;
       throw e;
@@ -478,6 +493,15 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
    * test file Kane added or changed is one the human approved here.
    */
   const redesign = async (ucs: string[], survivors: string[]): Promise<void> => {
+    // one metered Kane batch: the designs and the human's approval (the re-seal after it is local)
+    if (!(await meter.batch("design", () => designAgain(ucs, survivors)))) return;
+    await reseal(p, append, gitOpts); // also anchors the recordings as they are now
+    kaneWindow = false;
+    manifest = lastSeal(events);
+    out.redesigned.push(...ucs);
+  };
+  /** The re-design up to the seal: true once the approved design is logged, false when it was rolled back. */
+  const designAgain = async (ucs: string[], survivors: string[]): Promise<boolean> => {
     const copy = await copySealed(p);
     const credits = new Map<string, number>();
     const designs: Extract<EventBody, { t: "design" }>[] = [];
@@ -539,13 +563,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       const detail = e instanceof RedesignDropped ? e.message : `Kane failed during the re-design: ${errText(e)}`;
       out.redesignError = detail;
       await emit({ t: "redesign.dropped", useCases: ucs, detail, credits: [...credits.values()].reduce((a, b) => a + b, 0) });
-      return;
+      return false;
     }
     for (const d of designs) await emit(d);
-    await reseal(p, append, gitOpts); // also anchors the recordings as they are now
-    kaneWindow = false;
-    manifest = lastSeal(events);
-    out.redesigned.push(...ucs);
+    return true;
   };
 
   /** Every test once against the real build, logged as build runs (Kane's own coverage then reflects the real build). */
@@ -568,32 +589,34 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       out.replayError = `the app did not start: ${startFailureText(e).slice(-1000)}`;
       return "done";
     }
-    kaneWindow = true;
-    let results: TestRunResult[];
-    try {
-      results = await deps.tests(cwd, files, { startUrl: `${running.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel });
-    } finally {
-      await stopApp();
-    }
-    if (results.length !== files.length) throw new Error(`Kane returned ${results.length} results for ${files.length} tests`);
-    const again = await sealBroken();
-    if (again.length > 0) {
-      await recordTamper(`sealed files changed: ${again.join(", ")}`);
-      return "tamper";
-    }
-    const fileId = testIdsByFile();
-    const was = reduce(events);
-    for (const [i, r] of results.entries()) {
-      const res = r.testId == null ? { ...r, testId: fileId.get(files[i]!) ?? null } : r;
-      await emit({ t: "run", kind: "build", turn: state.turn, result: res });
-    }
-    const now = reduce(events);
-    for (const ac of Object.values(now.acs).sort(byAcId)) {
-      const prev = was.acs[ac.id]?.status;
-      if ((prev === "passing" || prev === "proved") && ac.status === "regressed") await emit({ t: "regression", ac: ac.id, turn: state.turn });
-    }
-    await closeKaneWindow();
-    return "done";
+    const app = running;
+    return meter.batch("falsify", async () => {
+      kaneWindow = true;
+      let results: TestRunResult[];
+      try {
+        results = await runSettled(deps.tests, cwd, files, { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel });
+      } finally {
+        await stopApp();
+      }
+      const again = await sealBroken();
+      if (again.length > 0) {
+        await recordTamper(`sealed files changed: ${again.join(", ")}`);
+        return "tamper";
+      }
+      const fileId = testIdsByFile();
+      const was = reduce(events);
+      for (const [i, r] of results.entries()) {
+        const res = r.testId == null ? { ...r, testId: fileId.get(files[i]!) ?? null } : r;
+        await emit({ t: "run", kind: "build", turn: state.turn, result: res });
+      }
+      const now = reduce(events);
+      for (const ac of Object.values(now.acs).sort(byAcId)) {
+        const prev = was.acs[ac.id]?.status;
+        if ((prev === "passing" || prev === "proved") && ac.status === "regressed") await emit({ t: "regression", ac: ac.id, turn: state.turn });
+      }
+      await closeKaneWindow();
+      return "done" as const;
+    });
   };
 
   const run = async (): Promise<FalsifyResult> => {

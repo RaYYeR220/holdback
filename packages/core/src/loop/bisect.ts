@@ -2,7 +2,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { freePort, startApp } from "../app.js";
 import { holdbackGitOptions, worktreeAdd } from "../git.js";
-import { runTests, type TestRunResult } from "../kane/testmd.js";
+import { notAnAppFailure, runTests, type TestRunResult } from "../kane/testmd.js";
+import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
@@ -25,6 +26,8 @@ export type BisectDeps = {
    * changed meanwhile (the caller has recorded the tamper). The bisect then throws `BisectTampered`.
    */
   guard?: () => Promise<boolean>;
+  /** Kane's balance, read before and after the search (a `credits` event); leave out to log none. */
+  balance?: BalanceReader;
 };
 
 /** Sealed files changed while a bisect ran; nothing it produced reached the ledger. */
@@ -37,9 +40,12 @@ export class BisectTampered extends Error {
 
 type Verdict = "pass" | "fail" | "error";
 
-/** One probe's reading of its Kane results: the AC failing is a fail; every test passing is a pass; anything else proves nothing. */
+/**
+ * One probe's reading of its Kane results: the AC failing on the app is a fail; every test passing
+ * is a pass; anything else (a failure Kane puts down to its own browser or replay, too) proves nothing.
+ */
 export function probeVerdict(acId: string, results: TestRunResult[]): Verdict {
-  if (results.some((r) => r.criteriaFailed.includes(acId))) return "fail";
+  if (results.some((r) => notAnAppFailure(r) === undefined && r.criteriaFailed.includes(acId))) return "fail";
   return results.length > 0 && results.every((r) => r.status === "passed") ? "pass" : "error";
 }
 
@@ -120,6 +126,11 @@ export async function bisectRegression(
   if (cands.length === 0) return null;
 
   const at = () => new Date().toISOString();
+  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
+  const logged = async (e: LedgerEvent) => {
+    await log(e);
+    meter.add(e);
+  };
   let probes = 0;
   const probe = async (commit: string, turn: number): Promise<Verdict> => {
     probes += 1;
@@ -152,7 +163,7 @@ export async function bisectRegression(
       if (deps.guard && (await deps.guard())) throw new BisectTampered(); // before anything else reads or logs the results
       if (results.length !== files.length) return "error";
       const attributed = results.map((r, i) => (r.testId == null ? { ...r, testId: idOf.get(files[i]!) ?? null } : r));
-      for (const result of attributed) await log({ at: at(), t: "run", kind: "bisect", turn, result });
+      for (const result of attributed) await logged({ at: at(), t: "run", kind: "bisect", turn, result });
       return probeVerdict(ac, attributed);
     } catch (e) {
       if (e instanceof BisectTampered) throw e;
@@ -173,29 +184,33 @@ export async function bisectRegression(
 
   let tampered = false;
   let sawFail = false;
-  try {
-    // lo = -1 stands for goodTurn (green); cands[hi] is bad (badTurn's commit at the start)
-    let lo = -1;
-    let hi = cands.length - 1;
-    while (hi - lo > 1) {
-      const mid = (lo + hi) >> 1;
-      const v = await settled(cands[mid]!.commit, cands[mid]!.n);
-      if (v === null) return null;
-      if (v === "pass") lo = mid;
-      else {
-        hi = mid;
-        sawFail = true;
+  const search = async (): Promise<{ turn: number; commit: string } | null> => {
+    try {
+      // lo = -1 stands for goodTurn (green); cands[hi] is bad (badTurn's commit at the start)
+      let lo = -1;
+      let hi = cands.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        const v = await settled(cands[mid]!.commit, cands[mid]!.n);
+        if (v === null) return null;
+        if (v === "pass") lo = mid;
+        else {
+          hi = mid;
+          sawFail = true;
+        }
       }
+      if (probes > 0 && !sawFail) return null; // nothing reproduced the failure
+      const blamed = cands[hi]!;
+      await log({ at: at(), t: "regression", ac, turn: badTurn, blamedTurn: blamed.n, blamedCommit: blamed.commit });
+      return { turn: blamed.n, commit: blamed.commit };
+    } catch (e) {
+      tampered = e instanceof BisectTampered;
+      throw e;
+    } finally {
+      // Kane may have written recordings during the probes: the next build loop's anchor must match
+      if (probes > 0 && !tampered) await logRecordings(p, log, gitOpts);
     }
-    if (probes > 0 && !sawFail) return null; // nothing reproduced the failure
-    const blamed = cands[hi]!;
-    await log({ at: at(), t: "regression", ac, turn: badTurn, blamedTurn: blamed.n, blamedCommit: blamed.commit });
-    return { turn: blamed.n, commit: blamed.commit };
-  } catch (e) {
-    tampered = e instanceof BisectTampered;
-    throw e;
-  } finally {
-    // Kane may have written recordings during the probes: the next build loop's anchor must match
-    if (probes > 0 && !tampered) await logRecordings(p, log, gitOpts);
-  }
+  };
+  // the whole search is one metered Kane batch; a single candidate is blamed without a probe
+  return cands.length > 1 ? meter.batch("bisect", search) : search();
 }

@@ -161,10 +161,10 @@ describe("buildBrief", () => {
   });
 
   it("omits the Spec line when an AC has no cite, and reports a failure without a verdict", () => {
-    const timeout: TestRunResult = {
+    const plain: TestRunResult = {
       ...mutantRun,
-      status: "error",
-      reason: "timeout",
+      status: "failed",
+      reason: "assertion_failed: @ step 7",
       criteriaPassed: [],
       criteriaFailed: [],
       verdict: undefined,
@@ -172,10 +172,17 @@ describe("buildBrief", () => {
       failedStep: undefined,
       failedStepText: undefined,
     };
-    const state = reduce([design([AC1, ac("ac-3", "No cite here."), AC6]), run(timeout)]);
+    const state = reduce([design([AC1, ac("ac-3", "No cite here."), AC6]), run(plain)]);
     const brief = buildBrief(state, {});
-    expect(brief).toContain("## ac-3 — No cite here.\nKane reported: timeout\n");
+    expect(brief).toContain("## ac-3 — No cite here.\nKane reported: assertion_failed: @ step 7\n");
     expect(brief).not.toContain("Kane saw:");
+  });
+
+  it("never quotes a run that proved nothing (a timeout): the criterion is listed bare (R34)", () => {
+    const timeout: TestRunResult = { ...mutantRun, status: "error", reason: "timeout", criteriaPassed: [], criteriaFailed: [], verdict: undefined };
+    const brief = buildBrief(reduce([design([AC1, ac("ac-3", "No cite here."), AC6]), run(timeout)]), {});
+    expect(brief).toContain("## ac-3 — No cite here.\n");
+    expect(brief).not.toMatch(/timeout|Kane reported|Kane ran/);
   });
 
   it("falls back to Kane's one-liner when the verdict has no observed excerpt", () => {

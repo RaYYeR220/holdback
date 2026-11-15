@@ -258,6 +258,72 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(Object.values(state.acs).map((a) => a.status)).toEqual(["passing", "passing"]);
   });
 
+  it("re-runs a test Kane blames on its own browser once, never briefs the agent with it, and leaves its criterion owed (R34)", async () => {
+    await setup();
+    // the live t-3: Kane's browser closed mid-authoring (environment_issue), twice in turn 1
+    const envFail = (file: string): TestRunResult => ({
+      ...fail(file),
+      criteriaFailed: ["ac-3"],
+      verdict: { bugTitle: "Browser target closed before screenshot capture", family: "environment_issue", observed: "nothing to see" },
+      reason: "Screenshot failed: TargetClosedError",
+      credits: 9.6,
+    });
+    const { deps, calls } = fakes({ kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? envFail(f) : pass(f))) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
+    expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
+      [1, [T1, T3]],
+      [1, [T3]], // the same test once more, the app still up
+      [2, [T3]],
+      [2, [T1]],
+    ]);
+    expect(calls.starts).toBe(2);
+
+    // turn 2's brief: ac-3 still owed, nothing of Kane's own failure
+    const second = calls.claude[1]!.prompt;
+    expect(second.startsWith("# Holdback — 1 criterion still owed\n")).toBe(true);
+    expect(second).toContain("## ac-3 — ");
+    for (const s of ["Browser target", "Kane saw", "Kane reported", "Kane's diagnosis", "Screenshot", "TargetClosedError"]) expect(second).not.toContain(s);
+    expect(existsSync(join(appDir, "kane-evidence", "turn-1"))).toBe(false);
+
+    const ev = await loopEvents();
+    const t3 = ev.find((e) => e.t === "run" && e.turn === 1 && e.result.testId === "t-3");
+    expect(t3).toMatchObject({ result: { inconclusive: "environment_issue: Browser target closed before screenshot capture", retried: expect.any(String), credits: 19.2 } });
+    const mid = reduce((await readEvents(p.ledgerFile)).filter((e) => !(e.t === "run" && e.turn === 2)));
+    expect(mid.acs["ac-3"]!.status).toBe("owed");
+    expect(mid.inconclusive).toEqual([{ test: "t-3", turn: 1, reason: "environment_issue: Browser target closed before screenshot capture" }]);
+    expect(reduce(await readEvents(p.ledgerFile)).inconclusive).toEqual([]);
+  });
+
+  it("logs Kane's balance drop around each batch, and a batch whose balance cannot be read with its per-run sum (R34)", async () => {
+    await setup();
+    let bal = 1000;
+    let reads = 0;
+    const { deps } = fakes({ kane: (turn, files) => files.map((f) => ({ ...(turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f)), credits: 4 })) });
+    const tests = deps.tests;
+    deps.tests = async (...a) => {
+      bal -= 5 * a[1].length; // Kane bills more than it reports per run
+      return tests(...a);
+    };
+    deps.balance = async () => {
+      reads++;
+      if (reads === 1) throw new Error("balance: could not read credits (exit 1): offline");
+      return bal;
+    };
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: true, reason: "gate-open" });
+    const credits = (await readEvents(p.ledgerFile)).filter((e) => e.t === "credits");
+    expect(credits).toEqual([
+      { at: expect.any(String), t: "credits", source: "build", delta: null, perRunSum: 8, error: "balance: could not read credits (exit 1): offline" },
+      { at: expect.any(String), t: "credits", source: "build", delta: 5, perRunSum: 4 },
+      { at: expect.any(String), t: "credits", source: "build", delta: 5, perRunSum: 4 },
+    ]);
+    const state = reduce(await readEvents(p.ledgerFile));
+    expect(state.credits).toBe(12 + 16); // the design's 12 and four runs
+    expect(state.kaneCredits).toBe(12 + 8 + 5 + 5);
+    expect(state.kaneUnmeasured).toBe(1);
+  });
+
   it("runs no Kane test on a turn where the app does not start, and briefs the start failure next", async () => {
     await setup();
     const { deps, calls } = fakes({ appUp: (turn) => turn !== 1, kane: (_turn, files) => files.map(pass) });
@@ -350,9 +416,13 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(git(appDir, "log", "--format=%s").split("\n")).toEqual(["holdback turn 1: 2 owed", "holdback: initial commit"]);
     const runs = ev.filter((e): e is Extract<LedgerEvent, { t: "run" }> => e.t === "run");
     expect(runs.filter((e) => e.result.status === "error").every((e) => e.result.testId === "t-3")).toBe(true);
+    // R34: a timeout (re-run once, timed out again) proves nothing: ac-3 stays owed, the agent never hears of it
+    expect(runs.filter((e) => e.result.testId === "t-3").every((e) => e.result.inconclusive === "timeout")).toBe(true);
     const state = reduce(await readEvents(p.ledgerFile));
-    expect(state.acs["ac-3"]).toMatchObject({ status: "owed", lastFailure: { test: "t-3", reason: "timeout" } });
-    expect(calls.claude[1]!.prompt).toContain("Kane reported: timeout");
+    expect(state.acs["ac-3"]).toMatchObject({ status: "owed" });
+    expect(state.acs["ac-3"]!.lastFailure).toBeUndefined();
+    expect(state.inconclusive).toEqual([{ test: "t-3", turn: 2, reason: "timeout" }]);
+    expect(calls.claude[1]!.prompt).not.toContain("timeout");
   });
 
   it("stops with reason aborted after the current step when the signal fires, leaving the turn on record", async () => {

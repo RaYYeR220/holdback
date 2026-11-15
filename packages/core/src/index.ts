@@ -32,6 +32,9 @@ export {
   parseTestMd,
   runTest,
   runTests,
+  runSettled,
+  notAnAppFailure,
+  inconclusiveNote,
   type BugVerdict,
   type TestRunResult,
   type RunTestOptions,
@@ -45,6 +48,7 @@ export type {
 } from "./ledger/types.js";
 export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
+export { KaneMeter, eventCredits, type BalanceReader } from "./ledger/credits.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
 export { seal, checkSeal, appSealKey, isAppKeyOf, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
@@ -64,8 +68,8 @@ export {
 export { runClaudeTurn, contractPath, guardMainPath, HEADLESS_ENV, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO, parseHumanScript, type HumanScript } from "./loop/human.js";
-export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls } from "./loop/spec.js";
-export { runDrift, watchSpec, defaultDriftKane, type DriftKane, type DriftResult } from "./loop/drift.js";
+export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls, type SpecDeps } from "./loop/spec.js";
+export { runDrift, watchSpec, defaultDriftKane, type DriftDeps, type DriftKane, type DriftResult } from "./loop/drift.js";
 export { buildBrief, byAcId, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";
 export { bisectRegression, BisectTampered, blameOf, lastGoodTurn, probeVerdict, type BisectDeps } from "./loop/bisect.js";
 export {

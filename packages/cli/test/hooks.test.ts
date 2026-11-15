@@ -88,7 +88,7 @@ const result = (file: string, status: "passed" | "failed"): TestRunResult => ({
 });
 
 /** What Kane says, per test file; and what the fake app does. */
-const world = { failing: new Set<string>(), appUp: true, kaneCalls: [] as string[][], checks: 0 };
+const world = { failing: new Set<string>(), stuck: new Set<string>(), appUp: true, kaneCalls: [] as string[][], checks: 0 };
 
 function hookDeps(over: Partial<HookDeps> = {}): HookDeps {
   const deps: HookDeps = {
@@ -100,7 +100,7 @@ function hookDeps(over: Partial<HookDeps> = {}): HookDeps {
       },
       tests: async (_cwd, files) => {
         world.kaneCalls.push(files.map((f) => (f.endsWith("t1_test.md") ? "t-1" : "t-2")));
-        return files.map((f) => result(f, world.failing.has(f) ? "failed" : "passed"));
+        return files.map((f) => (world.stuck.has(f) ? { ...result(f, "passed"), status: "error" as const, reason: "timeout" } : result(f, world.failing.has(f) ? "failed" : "passed")));
       },
     },
     // the background check, run in this process: the same `holdback hook check` command, not awaited
@@ -144,6 +144,7 @@ const promptIn = () => ({ ...base(), hook_event_name: "UserPromptSubmit", prompt
 
 beforeEach(() => {
   world.failing = new Set();
+  world.stuck = new Set();
   world.appUp = true;
   world.kaneCalls = [];
   world.checks = 0;
@@ -210,6 +211,18 @@ describe("hook post-edit (PostToolUse, asyncRewake)", { timeout: 120_000 }, () =
     expect(world.kaneCalls).toEqual([["t-1", "t-2"]]);
     const runs = (await readEvents(p.ledgerFile)).filter((e) => e.t === "run");
     expect(runs).toMatchObject([{ kind: "build", turn: 1 }, { kind: "build", turn: 1 }]);
+  });
+
+  it("a Kane run that timed out twice is noted in check.log for the human, never in the agent's brief (R34)", async () => {
+    await fixture();
+    world.stuck.add(T2);
+    const r = await hook("post-edit", post("app.js"));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("## ac-2 — criterion ac-2");
+    expect(r.err).not.toMatch(/timeout|inconclusive/i);
+    expect(world.kaneCalls).toEqual([["t-1", "t-2"], ["t-2"]]);
+    const note = readFileSync(join(p.home, "check.log"), "utf8");
+    expect(note).toMatch(/edit: checked \(Kane ran t-1, t-2\), 1 owed; inconclusive: t-2: timeout\n$/);
   });
 
   it("exits 0 quietly when every criterion passes", async () => {

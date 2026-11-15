@@ -1,3 +1,5 @@
+import type { LedgerState } from "@holdback/core";
+
 /** What a tamper means to the human, and what to do about it. */
 export function tamperMessage(detail: string): string {
   return [
@@ -21,3 +23,18 @@ export const HELP_FOOTER = [
   "links into your app's node_modules, and removing them with a plain delete can wipe it.",
   "Use `holdback clean` instead.",
 ].join("\n");
+
+/** Kane's spend by its balance, with the per-run sum beside it when they differ (and batches the balance could not be read for). */
+export function kaneCreditsText(s: LedgerState): string {
+  const notes: string[] = [];
+  if (s.kaneCredits !== s.credits) notes.push(`per-run sum ${s.credits}`);
+  if (s.kaneUnmeasured > 0) notes.push(`${s.kaneUnmeasured} batch${s.kaneUnmeasured === 1 ? "" : "es"} without a balance reading`);
+  return `${s.kaneCredits}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`;
+}
+
+/** The tests whose latest Kane run proved nothing (Kane's own environment or replay, a timeout, a crash), or undefined. */
+export function inconclusiveLine(s: LedgerState): string | undefined {
+  if (s.inconclusive.length === 0) return undefined;
+  const runs = s.inconclusive.map((u) => `${u.test}${u.turn !== undefined ? ` turn ${u.turn}` : ""}: ${u.reason}`);
+  return `Inconclusive Kane runs (not counted; their criteria kept their status): ${runs.join("; ")}`;
+}

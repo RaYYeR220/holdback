@@ -207,26 +207,32 @@ describe("build runs", () => {
 
 describe("build runs without coverage lists (fallback to test verifies)", () => {
   const d = design(["ac-1", "ac-2"], [["t-1", ["ac-1", "ac-2"]]]);
-  it("timeout result on a passing AC -> regressed with reason", () => {
+  it("a timeout (even an old one, logged before runs were flagged inconclusive) leaves a passing AC passing (R34)", () => {
     const evs = [
       d,
       run(result("t-1", ["ac-1", "ac-2"], [])),
       run(result("t-1", [], [], { status: "error", reason: "timeout" }), "build", 2),
     ];
     const s = reduce(evs);
-    expect(s.acs["ac-1"]!.status).toBe("regressed");
-    expect(s.acs["ac-2"]!.status).toBe("regressed");
-    expect(s.acs["ac-1"]!.lastFailure).toMatchObject({ test: "t-1", reason: "timeout", turn: 2 });
+    expect(s.acs["ac-1"]!.status).toBe("passing");
+    expect(s.acs["ac-2"]!.status).toBe("passing");
+    expect(s.acs["ac-1"]!.lastFailure).toBeUndefined();
+    expect(s.inconclusive).toEqual([{ test: "t-1", turn: 2, reason: "timeout" }]);
   });
   it("passed with empty lists -> passing via fallback", () => {
     const s = reduce([d, run(result("t-1", [], [], { status: "passed" }))]);
     expect(s.acs["ac-1"]!.status).toBe("passing");
     expect(s.acs["ac-2"]!.status).toBe("passing");
   });
-  it.each(["failed", "broken", "error"] as const)("%s with empty lists on owed AC -> owed + lastFailure", (st) => {
-    const s = reduce([d, run(result("t-1", [], [], { status: st, failedStep: 2, failedStepText: "x", screenshot: "s.png" }))]);
+  it("failed with empty lists on owed AC -> owed + lastFailure", () => {
+    const s = reduce([d, run(result("t-1", [], [], { status: "failed", failedStep: 2, failedStepText: "x", screenshot: "s.png" }))]);
     expect(s.acs["ac-1"]!.status).toBe("owed");
     expect(s.acs["ac-1"]!.lastFailure).toMatchObject({ test: "t-1", step: 2, stepText: "x", screenshot: "s.png" });
+  });
+  it.each(["broken", "error"] as const)("%s with no verdict on owed AC -> owed, no lastFailure (a crash proves nothing)", (st) => {
+    const s = reduce([d, run(result("t-1", [], [], { status: st, failedStep: 2, failedStepText: "x", screenshot: "s.png" }))]);
+    expect(s.acs["ac-1"]!.status).toBe("owed");
+    expect(s.acs["ac-1"]!.lastFailure).toBeUndefined();
   });
   it("non-empty lists keep precise behaviour (no fallback)", () => {
     const s = reduce([d, run(result("t-1", ["ac-1"], [], { status: "failed" }))]);
@@ -335,9 +341,12 @@ describe("aggregates", () => {
       acs: {},
       turn: 0,
       credits: 0,
+      kaneCredits: 0,
+      kaneUnmeasured: 0,
       breakerUsd: 0,
       runs: 0,
       mutants: { killed: 0, survived: 0, invalid: 0 },
+      inconclusive: [],
       tampered: false,
     });
   });
@@ -461,5 +470,91 @@ describe("store", () => {
       Array.from({ length: 25 }, (_, i) => appendEvent(f, { t: "tamper", at, detail: String(i) })),
     );
     expect(await readEvents(f)).toHaveLength(25);
+  });
+});
+
+describe("inconclusive runs (R34: only the app's own failures count)", () => {
+  const d = design(["ac-1", "ac-2"], [["t-1", ["ac-1"]], ["t-2", ["ac-2"]]]);
+  const env = { family: "environment_issue", bugTitle: "Browser target closed before screenshot capture" };
+  const automation = { family: "automation_bug", bugTitle: "Eligibility assertion ran with empty form values" };
+
+  it("a run Kane blames on its own environment or automation changes no criterion, passes included", () => {
+    const evs = [
+      d,
+      run(result("t-1", [], ["ac-1"], { verdict: env, inconclusive: "environment_issue: Browser target closed" }), "build", 1),
+      // a passing AC replayed: Kane's own replay broke (automation_bug), not flagged (an older ledger)
+      run(result("t-2", ["ac-2"], []), "build", 1),
+      run(result("t-2", [], ["ac-2"], { verdict: automation }), "build", 2),
+    ];
+    const s = reduce(evs);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "owed" });
+    expect(s.acs["ac-1"]!.lastFailure).toBeUndefined();
+    expect(s.acs["ac-2"]!.status).toBe("passing");
+    expect(s.runs).toBe(3);
+    expect(s.inconclusive).toEqual([
+      { test: "t-1", turn: 1, reason: "environment_issue: Browser target closed" },
+      { test: "t-2", turn: 2, reason: "automation_bug: Eligibility assertion ran with empty form values" },
+    ]);
+  });
+
+  it("an inconclusive run keeps the criterion's earlier failure (the brief never quotes the inconclusive one)", () => {
+    const app = result("t-1", [], ["ac-1"], { verdict: { family: "application_issue", bugTitle: "limit off by one" }, failedStep: 2 });
+    const s = reduce([d, run(app, "build", 1), run(result("t-1", ["ac-1"], [], { status: "error", reason: "timeout" }), "build", 2)]);
+    expect(s.acs["ac-1"]!.status).toBe("owed");
+    expect(s.acs["ac-1"]!.lastFailure).toMatchObject({ verdict: { bugTitle: "limit off by one" }, turn: 1 });
+  });
+
+  it("an application_issue (confirmed or not) counts as a failure", () => {
+    const app = result("t-1", [], ["ac-1"], { verdict: { family: "application_issue", bugTitle: "b" } });
+    expect(status([d, run(result("t-1", ["ac-1"], [])), run(app)], "ac-1")).toBe("regressed");
+  });
+
+  it("a later conclusive run of the test clears it from the inconclusive list; so does a design that drops the test", () => {
+    const flaky = run(result("t-1", [], [], { status: "error", reason: "timeout" }), "build", 1);
+    expect(reduce([d, flaky, run(result("t-1", ["ac-1"], []), "build", 2)]).inconclusive).toEqual([]);
+    expect(reduce([d, flaky, design(["ac-1", "ac-2"], [["t-9", ["ac-1"]], ["t-2", ["ac-2"]]])]).inconclusive).toEqual([]);
+    // a falsify or bisect run is not a build verdict: it never lists here
+    expect(reduce([d, run(result("t-1", [], [], { status: "error", reason: "timeout" }), "falsify")]).inconclusive).toEqual([]);
+  });
+});
+
+describe("Kane credits by balance (R34: authoritative spend)", () => {
+  const credits = (source: string, delta: number | null, perRunSum: number, error?: string): LedgerEvent => ({
+    t: "credits",
+    at,
+    source,
+    delta,
+    perRunSum,
+    ...(error ? { error } : {}),
+  });
+
+  it("the balance delta of each metered batch is the spend; the per-run sum stays alongside", () => {
+    const s = reduce([
+      design(["ac-1"], [["t-1", ["ac-1"]]], { credits: 22.55 }),
+      credits("design", 28.39, 22.55),
+      run(result("t-1", ["ac-1"], [], { credits: 293.38 }), "build", 1),
+      credits("build", 343, 293.38),
+    ]);
+    expect(s.credits).toBeCloseTo(315.93, 6);
+    expect(s.kaneCredits).toBeCloseTo(371.39, 6);
+    expect(s.kaneUnmeasured).toBe(0);
+  });
+
+  it("a batch whose balance could not be read counts its per-run sum, and is counted as unmeasured", () => {
+    const s = reduce([
+      run(result("t-1", ["ac-1"], [], { credits: 4 }), "build", 1),
+      credits("build", null, 4, "balance: could not read credits"),
+      run(result("t-1", ["ac-1"], [], { credits: 2.62 }), "falsify"),
+      credits("falsify", 4.74, 2.62),
+    ]);
+    expect(s.kaneCredits).toBeCloseTo(8.74, 6);
+    expect(s.kaneUnmeasured).toBe(1);
+  });
+
+  it("per-run credits outside any metered batch (an older ledger) still count", () => {
+    const s = reduce([design(["ac-1"], [["t-1", ["ac-1"]]], { credits: 12 }), run(result("t-1", ["ac-1"], [], { credits: 4.5 }))]);
+    expect(s.kaneCredits).toBe(16.5);
+    const mixed = reduce([design(["ac-1"], [], { credits: 12 }), run(result("t-1", [], [], { credits: 3 })), credits("build", 5, 3)]);
+    expect(mixed.kaneCredits).toBe(17);
   });
 });

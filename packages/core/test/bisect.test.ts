@@ -222,6 +222,33 @@ describe("bisectRegression", { timeout: 60_000 }, () => {
     expect(existsSync(join(appDir, "node_modules", "dep"))).toBe(true);
   });
 
+  it("never blames a turn on a failure Kane puts down to its own browser or replay (R34)", async () => {
+    await setup();
+    const { deps, seen } = fakes(6);
+    const flaky = deps.tests;
+    deps.tests = async (c, f, o) =>
+      (await flaky(c, f, o)).map((r) => (r.status === "failed" ? { ...r, verdict: { bugTitle: "page closed", family: "environment_issue" } } : r));
+    expect(await bisectRegression(p, "ac-1", 1, 8, deps, log)).toBeNull();
+    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "regression")).toEqual([]);
+    expect(seen.turns.length).toBeGreaterThan(1); // the probe that proved nothing was tried again
+  });
+
+  it("meters the search by Kane's balance: one credits event after it, with the probes' per-run credits", async () => {
+    await setup();
+    let bal = 500;
+    const { deps, seen } = fakes(6, { balance: async () => bal });
+    const inner = deps.tests;
+    deps.tests = async (c, f, o) => {
+      bal -= 3;
+      return (await inner(c, f, o)).map((r) => ({ ...r, credits: 2 }));
+    };
+    expect(await bisectRegression(p, "ac-1", 1, 8, deps, log)).toEqual({ turn: 6, commit: commits.get(6) });
+    const ev = await readEvents(p.ledgerFile);
+    const probes = seen.turns.length;
+    expect(ev.filter((e) => e.t === "credits")).toEqual([{ at: expect.any(String), t: "credits", source: "bisect", delta: 3 * probes, perRunSum: 2 * probes }]);
+    expect(ev.at(-1)!.t).toBe("credits");
+  });
+
   it("throws BisectTampered, logging no probe result, when the guard trips", async () => {
     await setup();
     const { deps } = fakes(6, { guard: async () => true });

@@ -13,6 +13,7 @@ import {
   type ReconcileRow,
 } from "../kane/assurance.js";
 import { holdbackGitOptions, isRepoRoot } from "../git.js";
+import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
@@ -40,6 +41,12 @@ export type DriftKane = {
 
 export const defaultDriftKane: DriftKane = { reconcile, designTests, listNodes, readGraph, review, resumeSession, extractResume };
 
+export type DriftDeps = {
+  kane?: DriftKane;
+  /** Kane's balance, read before and after the run's Kane calls (a `credits` event); leave out to log none. */
+  balance?: BalanceReader;
+};
+
 export type DriftResult =
   | { changed: false }
   | { changed: true; applied: true }
@@ -66,9 +73,14 @@ const slash = (f: string): string => f.split(path.sep).join("/");
  * (`redesign.dropped` logged for a drop). ARCHIVE/REMOVE-only plans are never applied headless. The
  * app-side spec stays as the human left it. `log` must append to `p.ledgerFile`.
  */
-export async function runDrift(p: Project, io: HumanIO, log: Log, deps: { kane?: DriftKane } = {}): Promise<DriftResult> {
+export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDeps = {}): Promise<DriftResult> {
   const kane = deps.kane ?? defaultDriftKane;
-  const emit = (e: EventBody) => log({ at: new Date().toISOString(), ...e } as LedgerEvent);
+  const at = () => new Date().toISOString();
+  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
+  const emit = async (e: EventBody) => {
+    await log({ at: at(), ...e } as LedgerEvent);
+    meter.add(e);
+  };
   const cwd = p.verifierDir;
   checkSpecPaths(p);
 
@@ -152,91 +164,96 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: { kane?:
   const credits = { apply: 0, design: new Map<string, number>() };
   let ucs: string[] = [];
   const designs: Extract<EventBody, { t: "design" }>[] = [];
-  try {
-    for (const rel of changed) {
-      const dest = path.join(cwd, rel);
-      await mkdir(path.dirname(dest), { recursive: true });
-      await copyFile(path.join(p.appDir, rel), dest);
-      const plan = await drivePaused(p, io, emit, await kane.reconcile(cwd, rel, sourceIds.get(rel)!, "plan"), kane);
-      rows.push(...plan.rows);
-      planCredits += plan.credits;
-    }
-    await emit({ t: "drift", rows, applied: false, credits: planCredits });
-
-    const designable = rows.filter((r) => r.kind === "ADD" || r.kind === "MODIFY");
-    if (rows.length === 0) return await decline("Kane found nothing to change in the spec edit");
-    if (designable.length === 0) {
-      return await decline(
-        `the plan only has ARCHIVE/REMOVE rows, which Kane never applies headless: run \`kane-cli maintain reconcile\` interactively in ${cwd}, then run drift again`,
-        true,
-      );
-    }
-    const approvedRows = await io.approve(rows.map((r) => ({ ref: r.ref, title: `${r.kind}: ${r.why}`, kind: "drift" })));
-    if (designable.some((r) => !approvedRows.includes(r.ref))) return await decline("the plan was not approved");
-
-    // only use cases are designed; any other ref is shown to the human and skipped
-    const known = new Set((await kane.listNodes(cwd)).filter((n) => n.label === "usecase").map((n) => n.id));
-    ucs = [...new Set(designable.map((r) => r.ref).filter((ref) => ref.startsWith("uc-") || known.has(ref)))];
-    if (ucs.length === 0) return await decline("no ADD/MODIFY row names a use case");
-
-    for (const rel of changed) {
-      const applied = await drivePaused(p, io, emit, await kane.reconcile(cwd, rel, sourceIds.get(rel)!, "apply"), kane);
-      credits.apply += applied.credits;
-    }
-    // approving the plan row is the human's approval of that use case
-    await kane.review(cwd, ucs);
-    const designNode = (n: ListedNode) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label);
-    const derivedBefore = new Set((await kane.listNodes(cwd)).filter(designNode).map((n) => n.id));
-    for (const uc of ucs) {
-      const kind = designable.find((r) => r.ref === uc)?.kind;
-      const first = await kane.designTests(cwd, uc, { force: kind === "MODIFY", max: p.config.kane.designMax });
-      const d = await drivePaused(p, io, emit, first, kane);
-      credits.design.set(uc, d.credits);
-      if (d.status !== "complete") throw new DriftDropped(`design of ${uc} ${d.status}${d.message ? `: ${d.message}` : ""}`);
-    }
-    const g = await kane.readGraph(cwd);
-    const ucAcs = new Set(g.acs.filter((a) => ucs.includes(a.useCase)).map((a) => a.id));
-    const ucTests = new Set(g.tests.filter((t) => t.verifies.some((v) => ucAcs.has(v))).map((t) => t.id));
-    const derived = (await kane.listNodes(cwd)).filter((n) => designNode(n) && (!derivedBefore.has(n.id) || ucAcs.has(n.id) || ucTests.has(n.id)));
-    if (derived.length === 0) throw new DriftDropped("the design produced nothing to approve");
-    const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
-    const refs = derived.map((n) => n.id).filter((id) => approved.includes(id));
-    const rejected = new Set(derived.map((n) => n.id).filter((id) => !refs.includes(id)));
-    await emit({ t: "spec.approved", refs, rejected: [...rejected] });
-    if (refs.length === 0) throw new DriftDropped("no designed test was approved");
-
-    for (const uc of ucs) {
-      const acs = g.acs.filter((a) => a.useCase === uc && !rejected.has(a.id));
-      const ids = new Set(acs.map((a) => a.id));
-      const tests = g.tests.filter((t) => !rejected.has(t.id) && t.verifies.some((v) => ids.has(v)));
-      designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.design.get(uc) ?? 0 });
-    }
-    // the seal hashes whatever is on disk: every test byte Kane wrote must be one the human approved
-    const approvedFiles = new Set(
-      g.tests.filter((t) => refs.includes(t.id) && t.file).map((t) => slash(path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)))),
-    );
-    const unapproved = (await changedTests(p, copy)).filter((f) => !approvedFiles.has(f));
-    if (unapproved.length > 0) throw new DriftDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
-    const moved = await recordingsMoved();
-    if (moved.length > 0) throw new DriftTamper(`${moved.join(", ")} changed while Kane ran`);
-    await kane.review(cwd, refs);
-  } catch (e) {
+  // one metered Kane batch: the plan, the apply and the designs (the re-seal after it is local)
+  const declined = await meter.batch("drift", async (): Promise<DriftResult | undefined> => {
     try {
-      await restore();
-    } catch (re) {
-      throw new Error(`drift rolled back incompletely (${errText(re)}): re-seal before building`);
+      for (const rel of changed) {
+        const dest = path.join(cwd, rel);
+        await mkdir(path.dirname(dest), { recursive: true });
+        await copyFile(path.join(p.appDir, rel), dest);
+        const plan = await drivePaused(p, io, emit, await kane.reconcile(cwd, rel, sourceIds.get(rel)!, "plan"), kane);
+        rows.push(...plan.rows);
+        planCredits += plan.credits;
+      }
+      await emit({ t: "drift", rows, applied: false, credits: planCredits });
+
+      const designable = rows.filter((r) => r.kind === "ADD" || r.kind === "MODIFY");
+      if (rows.length === 0) return await decline("Kane found nothing to change in the spec edit");
+      if (designable.length === 0) {
+        return await decline(
+          `the plan only has ARCHIVE/REMOVE rows, which Kane never applies headless: run \`kane-cli maintain reconcile\` interactively in ${cwd}, then run drift again`,
+          true,
+        );
+      }
+      const approvedRows = await io.approve(rows.map((r) => ({ ref: r.ref, title: `${r.kind}: ${r.why}`, kind: "drift" })));
+      if (designable.some((r) => !approvedRows.includes(r.ref))) return await decline("the plan was not approved");
+
+      // only use cases are designed; any other ref is shown to the human and skipped
+      const known = new Set((await kane.listNodes(cwd)).filter((n) => n.label === "usecase").map((n) => n.id));
+      ucs = [...new Set(designable.map((r) => r.ref).filter((ref) => ref.startsWith("uc-") || known.has(ref)))];
+      if (ucs.length === 0) return await decline("no ADD/MODIFY row names a use case");
+
+      for (const rel of changed) {
+        const applied = await drivePaused(p, io, emit, await kane.reconcile(cwd, rel, sourceIds.get(rel)!, "apply"), kane);
+        credits.apply += applied.credits;
+      }
+      // approving the plan row is the human's approval of that use case
+      await kane.review(cwd, ucs);
+      const designNode = (n: ListedNode) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label);
+      const derivedBefore = new Set((await kane.listNodes(cwd)).filter(designNode).map((n) => n.id));
+      for (const uc of ucs) {
+        const kind = designable.find((r) => r.ref === uc)?.kind;
+        const first = await kane.designTests(cwd, uc, { force: kind === "MODIFY", max: p.config.kane.designMax });
+        const d = await drivePaused(p, io, emit, first, kane);
+        credits.design.set(uc, d.credits);
+        if (d.status !== "complete") throw new DriftDropped(`design of ${uc} ${d.status}${d.message ? `: ${d.message}` : ""}`);
+      }
+      const g = await kane.readGraph(cwd);
+      const ucAcs = new Set(g.acs.filter((a) => ucs.includes(a.useCase)).map((a) => a.id));
+      const ucTests = new Set(g.tests.filter((t) => t.verifies.some((v) => ucAcs.has(v))).map((t) => t.id));
+      const derived = (await kane.listNodes(cwd)).filter((n) => designNode(n) && (!derivedBefore.has(n.id) || ucAcs.has(n.id) || ucTests.has(n.id)));
+      if (derived.length === 0) throw new DriftDropped("the design produced nothing to approve");
+      const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
+      const refs = derived.map((n) => n.id).filter((id) => approved.includes(id));
+      const rejected = new Set(derived.map((n) => n.id).filter((id) => !refs.includes(id)));
+      await emit({ t: "spec.approved", refs, rejected: [...rejected] });
+      if (refs.length === 0) throw new DriftDropped("no designed test was approved");
+
+      for (const uc of ucs) {
+        const acs = g.acs.filter((a) => a.useCase === uc && !rejected.has(a.id));
+        const ids = new Set(acs.map((a) => a.id));
+        const tests = g.tests.filter((t) => !rejected.has(t.id) && t.verifies.some((v) => ids.has(v)));
+        designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.design.get(uc) ?? 0 });
+      }
+      // the seal hashes whatever is on disk: every test byte Kane wrote must be one the human approved
+      const approvedFiles = new Set(
+        g.tests.filter((t) => refs.includes(t.id) && t.file).map((t) => slash(path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)))),
+      );
+      const unapproved = (await changedTests(p, copy)).filter((f) => !approvedFiles.has(f));
+      if (unapproved.length > 0) throw new DriftDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
+      const moved = await recordingsMoved();
+      if (moved.length > 0) throw new DriftTamper(`${moved.join(", ")} changed while Kane ran`);
+      await kane.review(cwd, refs);
+    } catch (e) {
+      try {
+        await restore();
+      } catch (re) {
+        throw new Error(`drift rolled back incompletely (${errText(re)}): re-seal before building`);
+      }
+      // anything that moved Kane's recordings during this run is a tamper, not a re-anchor
+      const moved = e instanceof DriftTamper ? [errText(e)] : await recordingsMoved().catch(() => []);
+      if (moved.length > 0) await recordTamper(`changed during drift: ${moved.join(", ")}`);
+      if (e instanceof DriftTamper) throw new Error(`drift stopped: ${errText(e)}`);
+      const detail = e instanceof DriftDropped ? e.message : `Kane failed during drift: ${errText(e)}`;
+      const spent = credits.apply + [...credits.design.values()].reduce((a, b) => a + b, 0);
+      await emit({ t: "redesign.dropped", useCases: ucs, detail, credits: spent });
+      return { changed: true, applied: false, reason: detail };
     }
-    // anything that moved Kane's recordings during this run is a tamper, not a re-anchor
-    const moved = e instanceof DriftTamper ? [errText(e)] : await recordingsMoved().catch(() => []);
-    if (moved.length > 0) await recordTamper(`changed during drift: ${moved.join(", ")}`);
-    if (e instanceof DriftTamper) throw new Error(`drift stopped: ${errText(e)}`);
-    const detail = e instanceof DriftDropped ? e.message : `Kane failed during drift: ${errText(e)}`;
-    const spent = credits.apply + [...credits.design.values()].reduce((a, b) => a + b, 0);
-    await emit({ t: "redesign.dropped", useCases: ucs, detail, credits: spent });
-    return { changed: true, applied: false, reason: detail };
-  }
-  await emit({ t: "drift", rows, applied: true, credits: credits.apply });
-  for (const d of designs) await emit(d);
+    await emit({ t: "drift", rows, applied: true, credits: credits.apply });
+    for (const d of designs) await emit(d);
+    return undefined;
+  });
+  if (declined) return declined;
   await reseal(p, log, gitOpts);
   return { changed: true, applied: true };
 }

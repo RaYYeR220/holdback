@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import {
   acquireCheckLock,
   appendEvent,
+  balance,
   checkSeal,
   CliHumanIO,
   ScriptedHumanIO,
@@ -26,6 +27,7 @@ import {
   tamperMarker,
   watchSpec,
   LedgerTampered,
+  type BalanceReader,
   type BuildDeps,
   type FalsifyDeps,
   type HumanIO,
@@ -53,6 +55,8 @@ export type Deps = {
   watchSpec: typeof watchSpec;
   buildDeps: BuildDeps;
   falsifyDeps: FalsifyDeps;
+  /** Kane's balance, read around the spec stage's and drift's Kane calls (`buildDeps`, `falsifyDeps` and the hooks' check carry their own). */
+  balance: BalanceReader;
   /** The human in the loop: the terminal, or the scripted answers file a command was given (`--answers`). */
   humanIO: (answersFile?: string) => ClosableIO | Promise<ClosableIO>;
   confirm: (question: string) => Promise<boolean>;
@@ -138,10 +142,11 @@ export function defaultCtx(): Ctx {
       watchSpec,
       buildDeps: defaultBuildDeps,
       falsifyDeps: defaultFalsifyDeps,
+      balance,
       humanIO: (file) => (file ? ScriptedHumanIO.fromFile(file) : new CliHumanIO(stdin, stdout)),
       confirm: (q) => askYesNo(stdin, stdout, q),
       env: process.env,
-      hooks: defaultHookDeps({ tests: runTests, app: startApp }),
+      hooks: defaultHookDeps({ tests: runTests, app: startApp, balance }),
       lockWaitMs: 20 * 60_000,
     },
   };

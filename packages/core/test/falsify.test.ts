@@ -11,7 +11,7 @@ import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
-import { runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
+import { falsifyVerdict, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { ApprovalItem, HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -433,6 +433,36 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
   });
 
+  it("logs Kane's balance drop for each mutant's batch, the re-design (before its seal) and the closing replay (R34)", async () => {
+    await setup();
+    const since = (await readEvents(p.ledgerFile)).length;
+    let bal = 1000;
+    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass) });
+    const tests = deps.tests;
+    deps.tests = async (...a) => ((bal -= 6), tests(...a));
+    const design = deps.kane.designTests;
+    deps.kane = { ...deps.kane, designTests: async (...a) => ((bal -= 11), design(...a)) };
+    deps.balance = async () => bal;
+    await runFalsify(p, deps, io, log);
+    const ev = await after(since);
+    expect(tags(ev).filter((t) => ["credits", "design", "seal"].includes(t) || t.startsWith("mutant"))).toEqual([
+      "mutant:ac-1:killed",
+      "credits",
+      "mutant:ac-3:survived",
+      "credits",
+      "design",
+      "credits",
+      "seal",
+      "credits",
+    ]);
+    expect(ev.filter((e) => e.t === "credits").map((e) => e.t === "credits" && [e.source, e.delta, e.perRunSum])).toEqual([
+      ["falsify", 6, 4.7],
+      ["falsify", 6, 0],
+      ["design", 11, 9],
+      ["falsify", 6, 0],
+    ]);
+  });
+
   it("rolls the verifier back and keeps the survivor vacuous when the human approves none of the re-design", async () => {
     await setup();
     const since = (await readEvents(p.ledgerFile)).length;
@@ -561,6 +591,49 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const m = all.find((e) => e.t === "mutant" && e.ac === "ac-3");
     expect(m).toMatchObject({ verdict: "invalid", note: expect.stringMatching(/^collateral: t-3 failed \(ac-6\)/) });
     expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
+  });
+
+  it("re-runs a mutant replay Kane blames on its own environment once, then counts it invalid (inconclusive), never a kill", async () => {
+    await setup();
+    // the live t-3: Kane's browser closed mid-run; its criteria list still names the AC under attack
+    const envFail = (ac: string) => (file: string): TestRunResult => ({
+      ...failOn(ac)(file),
+      verdict: { bugTitle: "Browser target closed before screenshot capture", family: "environment_issue" },
+    });
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : envFail("ac-3")) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: [], invalid: ["ac-3"], redesigned: [], reason: "done" });
+    // the same test, the same mutant, run once more before the verdict
+    expect(calls.tests.filter((t) => t.opts.noHeal).map((t) => [t.ac, t.files])).toEqual([
+      ["ac-1", [T1]],
+      ["ac-3", [T3]],
+      ["ac-3", [T3]],
+    ]);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({
+      verdict: "invalid",
+      note: "inconclusive: t-3: environment_issue: Browser target closed before screenshot capture",
+    });
+    const logged = all.filter((e) => e.t === "run" && e.kind === "falsify" && e.mutantId === "m-ac-3-1");
+    expect(logged).toHaveLength(1); // both attempts in one result: their credits added up
+    expect(logged[0]).toMatchObject({ result: { retried: expect.stringContaining("environment_issue"), inconclusive: expect.stringContaining("environment_issue"), credits: 9.4 } });
+    expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
+    expect(reduce(all).acs["ac-1"]!.status).toBe("proved");
+  });
+
+  it("kills the mutant when the re-run fails on the app; a Holdback timeout is re-run too", async () => {
+    await setup();
+    const seen = new Map<string, number>();
+    const { deps, io, calls } = fakes({
+      mutantRun: (ac, files) => {
+        const n = (seen.get(ac) ?? 0) + 1;
+        seen.set(ac, n);
+        return files.map((f) => (n === 1 ? { ...pass(f), status: "error", reason: "timeout" } : failOn(ac)(f)));
+      },
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], invalid: [], reason: "done" });
+    expect(calls.tests.filter((t) => t.opts.noHeal)).toHaveLength(4);
   });
 
   it("counts a pass after a heal as survived-by-heal; a second survival of a use case stays vacuous without another re-design", async () => {
@@ -716,5 +789,20 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     await expect(runFalsify(p, deps, io, log)).rejects.toThrow(/VENICE_API_KEY/);
     expect(calls.chat).toEqual([]);
     expect(readFileSync(p.ledgerFile, "utf8")).toBe(before);
+  });
+});
+
+describe("falsifyVerdict", () => {
+  const r = (over: Partial<TestRunResult>): TestRunResult => ({ ...pass(T3 ?? "t3_test.md"), testId: "t-3", ...over });
+  it("only a failure Kane blames on the app kills; any other failure of the AC is inconclusive", () => {
+    const app = r({ status: "failed", criteriaFailed: ["ac-3"], verdict: { bugTitle: "b", family: "application_issue" } });
+    expect(falsifyVerdict("ac-3", [app])).toEqual({ verdict: "killed" });
+    expect(falsifyVerdict("ac-3", [r({ status: "failed", criteriaFailed: ["ac-3"] })])).toEqual({ verdict: "killed" }); // no verdict at all
+    const automation = r({ status: "failed", criteriaFailed: ["ac-3"], verdict: { bugTitle: "empty form", family: "automation_bug" } });
+    expect(falsifyVerdict("ac-3", [automation])).toEqual({ verdict: "invalid", note: "inconclusive: t-3: automation_bug: empty form" });
+    // an inconclusive test next to tests that passed may have been the one that caught it
+    expect(falsifyVerdict("ac-3", [r({}), r({ testId: "t-4", status: "error", reason: "timeout" })])).toEqual({ verdict: "invalid", note: "inconclusive: t-4: timeout" });
+    // a kill by one test stands next to an inconclusive one
+    expect(falsifyVerdict("ac-3", [app, r({ testId: "t-4", status: "error", reason: "timeout" })])).toEqual({ verdict: "killed" });
   });
 });

@@ -347,7 +347,8 @@ async function checkWorker(ctx: Ctx, o: HookOptions): Promise<number> {
   const startedAt = Date.now();
   try {
     const r = await checkOnce(p, ctx.deps.hooks.check, ledgerLog(p), { reason });
-    await note(p, "check.log", `${reason}: ${r.status}${r.ran.length > 0 ? ` (Kane ran ${r.ran.join(", ")})` : ""}, ${r.allowStop ? "gate open" : `${r.owed.length} owed`}${r.detail ? `: ${r.detail}` : ""}`);
+    const unsure = r.inconclusive?.length ? `; inconclusive: ${r.inconclusive.join("; ")}` : "";
+    await note(p, "check.log", `${reason}: ${r.status}${r.ran.length > 0 ? ` (Kane ran ${r.ran.join(", ")})` : ""}, ${r.allowStop ? "gate open" : `${r.owed.length} owed`}${r.detail ? `: ${r.detail}` : ""}${unsure}`);
     return EXIT.ok;
   } catch (e) {
     // the hooks are waiting for a verdict: give them one that keeps the gate shut

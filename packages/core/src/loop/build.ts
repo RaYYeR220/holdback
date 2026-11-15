@@ -6,7 +6,9 @@ import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
 import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, PortInUse, startApp, type RunningApp } from "../app.js";
 import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
-import { runTests, type TestRunResult } from "../kane/testmd.js";
+import { balance } from "../kane/assurance.js";
+import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
+import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
@@ -30,10 +32,12 @@ export type BuildDeps = {
   bisect?: typeof bisectRegression;
   /** Shell command for the agent's PreToolUse guard. Default: the built guard entry run by this node binary. */
   guardCommand?: string;
+  /** Kane's balance, read around every Kane batch (`credits` events); leave out to log none. */
+  balance?: BalanceReader;
 };
 
 // the wrapper keeps bisect.ts (which imports this file) out of this module's start-up
-export const defaultBuildDeps: BuildDeps = { claude: runClaudeTurn, tests: runTests, app: startApp, bisect: (...a) => bisectRegression(...a) };
+export const defaultBuildDeps: BuildDeps = { claude: runClaudeTurn, tests: runTests, app: startApp, bisect: (...a) => bisectRegression(...a), balance };
 
 export type BuildOptions = {
   /** A human raising the turn cap for this run; turn numbers are global, so this is the highest turn allowed. */
@@ -140,13 +144,18 @@ export class VerifySession {
   app: RunningApp | undefined;
   /** Every git call of Holdback's runs with no repo hook, fsmonitor or signing program. */
   readonly gitOpts: GitOptions;
+  /** Each Kane batch is metered by Kane's balance (`credits` events). */
+  readonly meter: KaneMeter;
 
   constructor(
     readonly p: Project,
-    readonly deps: Pick<BuildDeps, "tests" | "app">,
+    readonly deps: Pick<BuildDeps, "tests" | "app" | "balance">,
     readonly log: Log,
+    /** What the batches are logged as in `credits` events: the headless build loop, or the hooks' single-shot check. */
+    readonly source: "build" | "check" = "build",
   ) {
     this.gitOpts = { hooksDir: path.join(p.home, EMPTY_HOOKS_DIR) };
+    this.meter = new KaneMeter(deps.balance, (e) => this.emit(e));
   }
 
   at(): string {
@@ -159,6 +168,7 @@ export class VerifySession {
     const e = { at: this.at(), ...body } as LedgerEvent;
     this.mark = await appendVouched(this.p.ledgerFile, this.mark, this.log, e);
     this.events.push(e);
+    this.meter.add(e);
   }
 
   /**
@@ -199,9 +209,9 @@ export class VerifySession {
     assertTestsSealed(this.p.verifierDir, this.manifest, files);
   }
 
-  /** Copy a failed run's screenshot to where the agent may open it. A failed copy just drops the brief line. */
+  /** Copy a failed run's screenshot to where the agent may open it (an app failure's only). A failed copy just drops the brief line. */
   async keepEvidence(r: TestRunResult, turn: number): Promise<void> {
-    if (r.status === "passed" || !r.screenshot || !r.testId) return;
+    if (r.status === "passed" || notAnAppFailure(r) !== undefined || !r.screenshot || !r.testId) return;
     const { appDir } = this.p;
     const src = path.resolve(r.screenshot.replace(/^~(?=[\\/])/, os.homedir()));
     const dest = path.join(appDir, ...evidencePath(turn, r.testId, r.failedStep).split("/"));
@@ -315,35 +325,41 @@ export class VerifySession {
   /**
    * With the app up (`startApp`): Kane runs the owed files, then replays the green criteria's
    * files that have not run yet when `replay` is set or nothing is owed any more. Build runs keep
-   * adaptive heal on: the UI is expected to change between turns. Each result is logged as
-   * `run{kind:"build", turn}` (a criterion that turns from green to failing also as `regression`).
-   * The app is stopped afterwards whatever happens. `tampered`: a sealed file changed meanwhile, and
-   * nothing but `tamper` was logged for that batch.
+   * adaptive heal on: the UI is expected to change between turns. A run that failed for a reason
+   * other than the app is run once more (`runSettled`); one that does again is logged inconclusive,
+   * changes no criterion and is listed in `inconclusive` for the human. Each result is logged as
+   * `run{kind:"build", turn}` (a criterion that turns from green to failing also as `regression`),
+   * each batch as `credits`. The app is stopped afterwards whatever happens. `tampered`: a sealed
+   * file changed meanwhile, and nothing but `tamper` was logged for that batch.
    */
   async verify(
     turn: number,
     owedFiles: string[],
     fileOf: Map<string, string>,
     replay: boolean,
-  ): Promise<{ tampered: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[] }> {
+  ): Promise<{ tampered: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[]; inconclusive: string[] }> {
     const { p } = this;
     const ran = new Set<string>();
     const regressed: { ac: string; turn: number }[] = [];
+    const inconclusive: string[] = [];
     const idOf = new Map([...fileOf].map(([id, f]) => [f, id]));
     /** Runs one batch and logs it; true (and nothing logged but `tamper`) when a sealed file changed meanwhile. */
     const runBatch = async (batch: string[], runOpts: Parameters<typeof runTests>[2]): Promise<boolean> => {
       if (batch.length === 0) return false;
       this.assertSealed(batch);
       for (const f of batch) ran.add(f);
+      return this.meter.batch(this.source, () => logBatch(batch, runOpts));
+    };
+    const logBatch = async (batch: string[], runOpts: Parameters<typeof runTests>[2]): Promise<boolean> => {
       this.kaneWindow = true;
-      const results = await this.deps.tests(p.verifierDir, batch, runOpts);
-      if (results.length !== batch.length) throw new Error(`Kane returned ${results.length} results for ${batch.length} tests`);
+      const results = await runSettled(this.deps.tests, p.verifierDir, batch, runOpts);
       // results produced against a changed test or variable never reach the ledger
       if (await this.tampered(false)) return true;
       const was = reduce(this.events);
       for (const [i, r] of results.entries()) {
         // a run that never read its file has no id: attribute it, so the failure counts against its ACs
         const result = r.testId == null ? { ...r, testId: idOf.get(batch[i]!) ?? null } : r;
+        if (notAnAppFailure(result) !== undefined) inconclusive.push(inconclusiveNote(result));
         await this.keepEvidence(result, turn);
         await this.emit({ t: "run", kind: "build", turn, result });
       }
@@ -358,18 +374,18 @@ export class VerifySession {
       return false;
     };
     try {
-      if (await this.tampered(true)) return { tampered: true, ran, regressed };
+      if (await this.tampered(true)) return { tampered: true, ran, regressed, inconclusive };
       const runOpts = { startUrl: `${this.app!.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
-      if (await runBatch(owedFiles, runOpts)) return { tampered: true, ran, regressed };
+      if (await runBatch(owedFiles, runOpts)) return { tampered: true, ran, regressed, inconclusive };
       const state = reduce(this.events);
       const left = gate(state);
       if (replay || (left.owed.length === 0 && left.regressed.length === 0)) {
         const green = Object.values(state.acs)
           .filter((a) => a.status === "passing" || a.status === "proved")
           .sort(byAcId);
-        if (await runBatch(filesOf(green, fileOf).filter((f) => !ran.has(f)), runOpts)) return { tampered: true, ran, regressed };
+        if (await runBatch(filesOf(green, fileOf).filter((f) => !ran.has(f)), runOpts)) return { tampered: true, ran, regressed, inconclusive };
       }
-      return { tampered: false, ran, regressed };
+      return { tampered: false, ran, regressed, inconclusive };
     } finally {
       await this.stopApp();
     }
@@ -507,7 +523,14 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
           if (r.turn - good < 2) continue;
           s.kaneWindow = true;
           try {
-            const blamed = await deps.bisect(p, r.ac, good, r.turn, { tests: deps.tests, app: deps.app, guard: () => s.tampered(false) }, (e) => s.emit(e as EventBody));
+            const blamed = await deps.bisect(
+              p,
+              r.ac,
+              good,
+              r.turn,
+              { tests: deps.tests, app: deps.app, guard: () => s.tampered(false), ...(deps.balance ? { balance: deps.balance } : {}) },
+              (e) => s.emit(e as EventBody),
+            );
             if (blamed === null) await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: "bisect inconclusive: no turn could be blamed" });
           } catch (e) {
             if (e instanceof BisectTampered) return done(false, "tamper");

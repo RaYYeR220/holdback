@@ -352,6 +352,35 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked", allowStop: true });
   });
 
+  it("a run Kane could not finish is re-run once, surfaced to the human, never briefed, and the next check runs Kane again (R34)", async () => {
+    await setup();
+    const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout", credits: 160 });
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (idOf(f) === "t-3" ? timeout(f) : pass(f))) });
+    const r = await checkOnce(p, deps, log, { reason: "edit" });
+    expect(r).toMatchObject({ status: "checked", allowStop: false, owed: ["ac-3"], ran: ["t-1", "t-3"], inconclusive: ["t-3: timeout"] });
+    expect(calls.tests).toEqual([[T1, T3], [T3]]);
+    expect(r.brief).toContain("## ac-3 — ");
+    expect(r.brief).not.toMatch(/timeout|Kane reported/);
+    expect(await readCheckState(p.home)).toMatchObject({ inconclusive: ["t-3: timeout"] });
+
+    // nothing changed, but the last verdict proved nothing about t-3: Kane runs again
+    const again = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(again.status).toBe("checked");
+    expect(calls.tests).toHaveLength(4);
+  });
+
+  it("meters the check's Kane batch by the balance", async () => {
+    await setup();
+    let bal = 50;
+    const { deps } = fakes({ kane: (_c, files) => files.map((f) => ({ ...pass(f), credits: 1 })) });
+    const tests = deps.tests;
+    deps.tests = async (...a) => ((bal -= 2), tests(...a));
+    deps.balance = async () => bal;
+    await checkOnce(p, deps, log, { reason: "edit" });
+    const credits = (await readEvents(p.ledgerFile)).filter((e) => e.t === "credits");
+    expect(credits).toEqual([{ at: expect.any(String), t: "credits", source: "check", delta: 2, perRunSum: 2 }]);
+  });
+
   it("an abort before Kane runs checks nothing", async () => {
     await setup();
     const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });

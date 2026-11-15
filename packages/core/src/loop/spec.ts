@@ -14,6 +14,7 @@ import {
   type Paused,
 } from "../kane/assurance.js";
 import { holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
+import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
@@ -154,8 +155,18 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   return r as Exclude<R, Paused>;
 }
 
-export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<void> {
-  const emit = (e: EventBody) => log({ at: new Date().toISOString(), ...e } as LedgerEvent);
+export type SpecDeps = {
+  /** Kane's balance, read around the ingest and each design (`credits` events); leave out to log none. */
+  balance?: BalanceReader;
+};
+
+export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: SpecDeps = {}): Promise<void> {
+  const at = () => new Date().toISOString();
+  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
+  const emit = async (e: EventBody) => {
+    await log({ at: at(), ...e } as LedgerEvent);
+    meter.add(e);
+  };
   const cwd = p.verifierDir;
 
   const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first);
@@ -170,18 +181,20 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   }
   const sources = [...p.config.spec, ...p.config.specUrls];
 
-  // 2. ingest + extraction, answering Kane's questions
-  const first = await ingest(cwd, sources);
-  if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
-  // Kane's own source ids (`PRD.md` is `prd`); `file` keeps the spec path each came from, so drift can map back
-  const mapped = first.sources.length === sources.length;
-  await emit({
-    t: "spec.ingested",
-    sources: first.sources.map((s, i) => ({ id: s.id, cid: s.cid, status: s.status, ...(mapped ? { file: sources[i]! } : {}) })),
-    credits: first.status === "complete" ? first.credits : 0,
+  // 2. ingest + extraction, answering Kane's questions (one metered Kane batch)
+  await meter.batch("spec", async () => {
+    const first = await ingest(cwd, sources);
+    if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
+    // Kane's own source ids (`PRD.md` is `prd`); `file` keeps the spec path each came from, so drift can map back
+    const mapped = first.sources.length === sources.length;
+    await emit({
+      t: "spec.ingested",
+      sources: first.sources.map((s, i) => ({ id: s.id, cid: s.cid, status: s.status, ...(mapped ? { file: sources[i]! } : {}) })),
+      credits: first.status === "complete" ? first.credits : 0,
+    });
+    const extracted = await drive<IngestResult>(first);
+    if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
   });
-  const extracted = await drive<IngestResult>(first);
-  if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
 
   // 3. human approves the extracted use cases
   const ucs = (await listNodes(cwd)).filter((n) => n.label === "usecase" && n.trust === "derived");
@@ -195,20 +208,22 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   if (designable.length === 0) throw new Error("spec stage: no use case approved, nothing to design");
   await review(cwd, designable);
 
-  // 4. design acceptance criteria + tests per use case
+  // 4. design acceptance criteria + tests per use case (a metered Kane batch each)
   for (const uc of designable) {
-    const d = await drive(await designTests(cwd, uc, { max: p.config.kane.designMax }));
-    if (d.status !== "complete") throw new Error(`design for ${uc} ${d.status}: ${d.message ?? ""}`);
-    const g = await readGraph(cwd);
-    const acs = g.acs.filter((a) => a.useCase === uc);
-    const acIds = new Set(acs.map((a) => a.id));
-    await emit({
-      t: "design",
-      useCase: uc,
-      acs,
-      tests: g.tests.filter((t) => t.verifies.some((v) => acIds.has(v))),
-      gaps: g.gaps,
-      credits: d.credits,
+    await meter.batch("design", async () => {
+      const d = await drive(await designTests(cwd, uc, { max: p.config.kane.designMax }));
+      if (d.status !== "complete") throw new Error(`design for ${uc} ${d.status}: ${d.message ?? ""}`);
+      const g = await readGraph(cwd);
+      const acs = g.acs.filter((a) => a.useCase === uc);
+      const acIds = new Set(acs.map((a) => a.id));
+      await emit({
+        t: "design",
+        useCase: uc,
+        acs,
+        tests: g.tests.filter((t) => t.verifies.some((v) => acIds.has(v))),
+        gaps: g.gaps,
+        credits: d.credits,
+      });
     });
   }
 

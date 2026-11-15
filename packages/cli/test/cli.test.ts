@@ -186,6 +186,23 @@ describe("status and owed", () => {
     expect(doc.gate).toMatchObject({ open: false, owed: ["ac-2"], tampered: false });
   });
 
+  it("status shows Kane credits by balance beside the per-run sum, and the runs that proved nothing (R34)", async () => {
+    await fixture();
+    // the fixture's two runs (1.5 each) as one metered batch: the balance dropped 4.5
+    await log({ at, t: "credits", source: "build", delta: 4.5, perRunSum: 3 });
+    await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "failed", { status: "error", reason: "timeout", inconclusive: "timeout", credits: 0 }) });
+    const r = await cli(["status"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("| Kane credits 16.5 (per-run sum 15) |");
+    expect(r.out).toContain("Inconclusive Kane runs (not counted; their criteria kept their status): t-2 turn 2: timeout");
+    expect(r.out).toMatch(/ac-2\s+owed\s+t-2\s+Limit off by one/); // its last real failure still shows
+    const doc = JSON.parse((await cli(["status", "--json"])).out);
+    expect(doc.state).toMatchObject({ credits: 15, kaneCredits: 16.5, kaneUnmeasured: 0, inconclusive: [{ test: "t-2", turn: 2, reason: "timeout" }] });
+
+    await log({ at, t: "credits", source: "check", delta: null, perRunSum: 0, error: "balance: offline" });
+    expect((await cli(["status"])).out).toContain("Kane credits 16.5 (per-run sum 15; 1 batch without a balance reading)");
+  });
+
   it("status prints a table with each criterion's status, tests and last failure", async () => {
     await fixture();
     const r = await cli(["status"]);
@@ -432,7 +449,7 @@ describe("run", () => {
     expect(r.out).toMatch(/Gate: open/);
     expect(r.out).toContain("Criteria: 0 owed, 2 passing, 0 proved, 0 vacuous, 0 needs-spec");
     expect(r.out).toContain("Turns this run: 2");
-    expect(r.out).toContain("Kane credits: 16.5");
+    expect(r.out).toContain("Kane credits: 16.5\n"); // no metered batch: the per-run sum is all there is
     expect(r.out).toContain("Breaker spend: $0.0000 of $2");
     expect(s.io.closed).toBe(1);
   });

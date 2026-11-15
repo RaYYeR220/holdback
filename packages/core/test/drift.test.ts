@@ -165,6 +165,28 @@ describe("runDrift", () => {
     expect(verifierPrd()).toBe(OLD_PRD);
   });
 
+  it("logs Kane's balance drop for the whole drift run before the re-seal, applied or declined (R34)", async () => {
+    editPrd();
+    const calls: Calls = [];
+    const balances = [300, 288];
+    await runDrift(p, human(calls, all), log, { kane: fakeKane(calls), balance: async () => balances.shift()! });
+    let events = await readEvents(p.ledgerFile);
+    const tail = events.slice(-3).map((e) => e.t);
+    expect(tail).toEqual(["design", "credits", "seal"]);
+    // plan 5 + apply 3 + design 2 by Kane's own figures; the balance says 12
+    expect(events.find((e) => e.t === "credits")).toMatchObject({ source: "drift", delta: 12, perRunSum: 10 });
+
+    // a declined plan still cost the plan
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\nRule 3.\n");
+    const before = events.length;
+    const more = [288, 283];
+    const r = await runDrift(p, human([], () => []), log, { kane: fakeKane([]), balance: async () => more.shift()! });
+    expect(r).toMatchObject({ changed: true, applied: false });
+    events = (await readEvents(p.ledgerFile)).slice(before);
+    expect(events.map((e) => e.t)).toEqual(["drift", "credits"]);
+    expect(events[1]).toMatchObject({ source: "drift", delta: 5, perRunSum: 5 });
+  });
+
   it("plan not approved: nothing applied or sealed, verifier restored, app edit kept", async () => {
     editPrd();
     const calls: Calls = [];
