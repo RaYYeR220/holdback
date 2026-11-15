@@ -228,3 +228,37 @@ describe("buildBrief", () => {
     expect(brief.match(/^## ac-\d+/gm)).toEqual(["## ac-1", "## ac-2", "## ac-10"]);
   });
 });
+
+describe("buildBrief: Broke in turn", () => {
+  const green = (turn: number): TestRunResult => ({ ...passed(), testFile: "t1_test.md", testId: "t-1" });
+  function passed(): TestRunResult {
+    return { ...mutantRun, testId: "t-1", status: "passed", criteriaPassed: ["ac-1"], criteriaFailed: [], verdict: undefined, failedStep: undefined, failedStepText: undefined, screenshot: undefined, reason: undefined };
+  }
+  const broken = (): TestRunResult => ({ ...passed(), status: "failed", criteriaPassed: [], criteriaFailed: ["ac-1"], reason: "timeout" });
+
+  it("puts the blamed turn, commit and files under the regressed criterion", () => {
+    const state = reduce([design([AC1]), run(green(1), 1), run(broken(), 5)]);
+    const brief = buildBrief(state, { broke: new Map([["ac-1", { turn: 3, commit: "a1b2c3d", files: ["src/eligibility.ts", "src/form.ts"] }]]) });
+    expect(brief).toBe(
+      [
+        "# Holdback — 1 criterion still owed",
+        "",
+        `## ac-1 — ${AC1.text}`,
+        "Regressed: this passed on an earlier turn and fails now.",
+        "Broke in turn 3 (a1b2c3d): files src/eligibility.ts, src/form.ts",
+        `Spec: "${AC1.cites[0]!.quote}" (prd L12-L12)`,
+        "Kane reported: timeout",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("omits the line for a criterion that is not regressed or has no blame", () => {
+    const state = reduce([design([AC1]), run(broken(), 1)]);
+    expect(buildBrief(state, { broke: new Map([["ac-1", { turn: 1, commit: "abc", files: [] }]]) })).not.toContain("Broke in turn");
+    const reg = reduce([design([AC1]), run(green(1), 1), run(broken(), 5)]);
+    expect(buildBrief(reg, {})).not.toContain("Broke in turn");
+    expect(buildBrief(reg, { broke: new Map([["ac-1", { turn: 2, commit: "abc", files: [] }]]) })).toContain("Broke in turn 2 (abc)\n");
+  });
+});
+

@@ -360,6 +360,42 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(reduce(await readEvents(p.ledgerFile)).acs["ac-1"]!.status).toBe("regressed");
   });
 
+  it("bisects a regression only when the AC was last green two or more turns earlier, and briefs the blame", async () => {
+    await setup({ config: { loop: { maxTurns: 4 } } });
+    const { deps, calls } = fakes({
+      kane: (turn, files) => files.map((f) => (idOf(f) === "t-3" || turn >= 3 ? fail(f) : pass(f))),
+    });
+    const bisected: unknown[][] = [];
+    deps.bisect = async (_p, ac, good, bad, _d, lg) => {
+      bisected.push([ac, good, bad]);
+      const end = (await readEvents(p.ledgerFile)).find((e) => e.t === "turn.end" && e.n === 2);
+      await lg({ at, t: "regression", ac, turn: bad, blamedTurn: 2, blamedCommit: end && end.t === "turn.end" ? end.commit : "?" });
+      return { turn: 2, commit: "x" };
+    };
+    await runBuildLoop(p, deps, log);
+    expect(bisected).toEqual([["ac-1", 1, 3]]);
+    const ends = (await readEvents(p.ledgerFile)).filter((e) => e.t === "turn.end");
+    const sha = ends[1]!.t === "turn.end" ? ends[1]!.commit : "";
+    const brief = calls.claude[3]!.prompt;
+    expect(brief).toContain(`Broke in turn 2 (${sha}): files app.js`);
+  });
+
+  it("does not bisect a regression one turn after the AC was green", async () => {
+    await setup({ config: { loop: { maxTurns: 2 } } });
+    const { deps } = fakes({
+      // turn 1: t-3 fails; turn 2: t-3 passes, the owed list empties, the replay catches t-1 failing
+      kane: (turn, files) => files.map((f) => (idOf(f) === "t-3" ? (turn === 1 ? fail(f) : pass(f)) : turn === 2 ? fail(f) : pass(f))),
+    });
+    let called = 0;
+    deps.bisect = async () => {
+      called++;
+      return null;
+    };
+    await runBuildLoop(p, deps, log);
+    expect((await loopEvents()).filter((e) => e.t === "regression")).toHaveLength(1);
+    expect(called).toBe(0);
+  });
+
   it("ignores Kane's output-* recording folders and never re-seals", async () => {
     await setup();
     const { deps } = fakes({

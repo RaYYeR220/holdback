@@ -15,6 +15,7 @@ import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type
 import type { Project } from "../project.js";
 import { checkRecordings, checkSeal } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
+import { bisectRegression, BisectTampered, blameOf, lastGoodTurn } from "./bisect.js";
 import { buildBrief, byAcId, type AcFailure } from "./brief.js";
 import { appSealFiles } from "./spec.js";
 
@@ -25,11 +26,14 @@ export type BuildDeps = {
   claude: typeof runClaudeTurn;
   tests: typeof runTests;
   app: typeof startApp;
+  /** Finds the turn that broke an AC (default: `bisectRegression`); leave out to skip bisecting. */
+  bisect?: typeof bisectRegression;
   /** Shell command for the agent's PreToolUse guard. Default: the built guard entry run by this node binary. */
   guardCommand?: string;
 };
 
-export const defaultBuildDeps: BuildDeps = { claude: runClaudeTurn, tests: runTests, app: startApp };
+// the wrapper keeps bisect.ts (which imports this file) out of this module's start-up
+export const defaultBuildDeps: BuildDeps = { claude: runClaudeTurn, tests: runTests, app: startApp, bisect: (...a) => bisectRegression(...a) };
 
 export type BuildOptions = {
   /** A human raising the turn cap for this run; turn numbers are global, so this is the highest turn allowed. */
@@ -285,7 +289,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       const before = await headSha(p.appDir, gitOpts);
       const agent = await deps.claude({
         cwd: p.appDir,
-        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, screenshot }),
+        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, screenshot, broke: blameOf(events) }),
         settingsFile,
         contractFile: contractPath(),
         maxTurns: p.config.agent.maxTurnsPerCall,
@@ -331,6 +335,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       if (await tampered(true)) return done(false, "tamper");
       const runOpts = { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
       const ran = new Set<string>();
+      const regressed: { ac: string; turn: number }[] = [];
       /** Runs one batch and logs it; true (and nothing logged but `tamper`) when a sealed file changed meanwhile. */
       const runBatch = async (batch: string[]): Promise<boolean> => {
         if (batch.length === 0) return false;
@@ -351,7 +356,10 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         const now = reduce(events);
         for (const ac of Object.values(now.acs).sort(byAcId)) {
           const prev = was.acs[ac.id]?.status;
-          if ((prev === "passing" || prev === "proved") && ac.status === "regressed") await emit({ t: "regression", ac: ac.id, turn: n });
+          if ((prev === "passing" || prev === "proved") && ac.status === "regressed") {
+            await emit({ t: "regression", ac: ac.id, turn: n });
+            regressed.push({ ac: ac.id, turn: n });
+          }
         }
         return false;
       };
@@ -367,6 +375,21 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         }
       } finally {
         await stopApp();
+      }
+      // a criterion that was green at least two turns ago: find the turn that broke it (the app is down)
+      if (deps.bisect) {
+        for (const r of regressed) {
+          const good = lastGoodTurn(events, r.ac, r.turn);
+          if (r.turn - good < 2) continue;
+          kaneWindow = true;
+          try {
+            await deps.bisect(p, r.ac, good, r.turn, { tests: deps.tests, app: deps.app, guard: () => tampered(false) }, (e) => emit(e as EventBody));
+          } catch (e) {
+            if (e instanceof BisectTampered) return done(false, "tamper");
+            if (e instanceof LedgerTampered) throw e;
+            // best effort: without a blame the brief just omits the line
+          }
+        }
       }
       // the app is down: Kane's recordings as they are now are what the next check (and run) holds them to
       if (kaneWindow) await closeKaneWindow();

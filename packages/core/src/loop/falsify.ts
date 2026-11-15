@@ -201,6 +201,38 @@ export async function restoreSealed(p: Project, copy: SealedCopy): Promise<void>
 }
 
 /**
+ * Removes a throwaway worktree of the app repo; the node_modules link goes first, so no recursive
+ * delete can reach the app's own. Used for mutants and bisect probes.
+ */
+export async function dropWorktreeSafely(p: Project, dir: string, gitOpts: GitOptions): Promise<void> {
+  const nm = path.join(dir, "node_modules");
+  try {
+    if ((await lstat(nm)).isSymbolicLink()) await unlink(nm);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") return; // leave the directory rather than risk the link's target
+  }
+  try {
+    await worktreeRemove(p.appDir, dir, gitOpts);
+  } catch {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await git(p.appDir, ["worktree", "prune"], gitOpts).catch(() => {});
+  }
+}
+
+/** Shares the app's dependencies with a worktree through a directory junction (a symlink off Windows). */
+export async function linkAppNodeModules(p: Project, dir: string): Promise<void> {
+  const src = path.join(p.appDir, "node_modules");
+  try {
+    if (!(await stat(src)).isDirectory()) return;
+  } catch {
+    return;
+  }
+  const dst = path.join(dir, "node_modules");
+  if (existsSync(dst)) return; // committed with the app
+  await symlink(src, dst, "junction");
+}
+
+/**
  * Falsify every `passing` AC: the breaker (a different model family, via Venice) writes the
  * smallest patch that violates exactly that AC; it is applied in a throwaway worktree of HEAD,
  * started on a spare port, and the AC's sealed tests are replayed against it with healing off.
@@ -265,21 +297,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   /** The breaker's key never reaches an app under test. */
   const appEnv = (extra: Record<string, string> = {}) => ({ ...p.config.start.env, ...extra, VENICE_API_KEY: "" });
 
-  /** Removes a mutant's worktree; the node_modules link goes first, so no recursive delete can reach the app's own. */
-  const dropWorktree = async (dir: string) => {
-    const nm = path.join(dir, "node_modules");
-    try {
-      if ((await lstat(nm)).isSymbolicLink()) await unlink(nm);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return; // leave the directory rather than risk the link's target
-    }
-    try {
-      await worktreeRemove(p.appDir, dir, gitOpts);
-    } catch {
-      await rm(dir, { recursive: true, force: true }).catch(() => {});
-      await git(p.appDir, ["worktree", "prune"], gitOpts).catch(() => {});
-    }
-  };
+  const dropWorktree = (dir: string) => dropWorktreeSafely(p, dir, gitOpts);
 
   /** Mutant worktrees a crashed pass left behind still link the app's node_modules: remove them the safe way. */
   const dropStaleMutants = async () => {
@@ -292,18 +310,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     await git(p.appDir, ["worktree", "prune"], gitOpts);
   };
 
-  /** Shares the app's dependencies with a mutant through a directory junction (a symlink off Windows). */
-  const linkNodeModules = async (dir: string) => {
-    const src = path.join(p.appDir, "node_modules");
-    try {
-      if (!(await stat(src)).isDirectory()) return;
-    } catch {
-      return;
-    }
-    const dst = path.join(dir, "node_modules");
-    if (existsSync(dst)) return; // committed with the app
-    await symlink(src, dst, "junction");
-  };
+  const linkNodeModules = (dir: string) => linkAppNodeModules(p, dir);
 
   /** Returns git's complaint, or undefined once the patch is applied. */
   const applyPatch = async (dir: string, patchFile: string, patch: string, shown: string[]): Promise<string | undefined> => {

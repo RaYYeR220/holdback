@@ -13,11 +13,17 @@ export type BriefOptions = {
    * path on the `Screenshot:` line, and `undefined` drops the line.
    */
   screenshot?: (failure: AcFailure) => string | undefined;
+  /** Per regressed AC id, the turn a bisect found to have broken it. */
+  broke?: ReadonlyMap<string, Blame>;
 };
+
+/** The turn a bisect blamed for a regression: its number, short commit and the files it changed. */
+export type Blame = { turn: number; commit: string; files: string[] };
 
 export type AcFailure = NonNullable<AcState["lastFailure"]>;
 
 const LOG_TAIL_LINES = 40;
+const MAX_BLAME_FILES = 8;
 
 const oneLine = (t: string): string => t.replace(/\s+/g, " ").trim();
 
@@ -61,6 +67,12 @@ const stepText = (t: string): string => oneLine(t.replace(/\{\{\s*start_url\s*\}
 function section(ac: AcState, opts: BriefOptions): string[] {
   const out = [`## ${ac.id} — ${oneLine(ac.text)}`];
   if (ac.status === "regressed") out.push("Regressed: this passed on an earlier turn and fails now.");
+  const blame = ac.status === "regressed" ? opts.broke?.get(ac.id) : undefined;
+  if (blame) {
+    const shown = blame.files.slice(0, MAX_BLAME_FILES).map(oneLine);
+    const more = blame.files.length > shown.length ? `, …and ${blame.files.length - shown.length} more` : "";
+    out.push(`Broke in turn ${blame.turn} (${oneLine(blame.commit)})${shown.length > 0 ? `: files ${shown.join(", ")}${more}` : ""}`);
+  }
   const cite = ac.cites[0];
   if (cite) out.push(`Spec: "${oneLine(cite.quote)}" (${cite.source} ${cite.anchor})`);
   const f = ac.lastFailure;

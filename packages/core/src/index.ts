@@ -64,7 +64,8 @@ export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
 export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls } from "./loop/spec.js";
 export { runDrift, watchSpec, defaultDriftKane, type DriftKane } from "./loop/drift.js";
-export { buildBrief, type BriefOptions, type AcFailure } from "./loop/brief.js";
+export { buildBrief, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";
+export { bisectRegression, BisectTampered, blameOf, lastGoodTurn, probeVerdict, type BisectDeps } from "./loop/bisect.js";
 export {
   runBuildLoop,
   defaultBuildDeps,
