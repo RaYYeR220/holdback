@@ -392,11 +392,18 @@ export class VerifySession {
     }
   }
 
-  /** `runSettled`'s re-run: the app stopped and started again on its port, on a fresh data dir. Throws when it does not come back. */
-  private readonly restartApp = async (): Promise<string> => {
+  /** The app stopped and started again on its port, on a fresh data dir labelled `<label>-<suffix>`; undefined, or why it did not start. */
+  private async startAgain(suffix: string): Promise<string | undefined> {
     const { port, label } = this.started!;
     await this.stopApp();
-    const why = await this.startApp(port, `${label}-rerun`);
+    const why = await this.startApp(port, `${label}-${suffix}`);
+    this.started = { port, label };
+    return why;
+  }
+
+  /** `runSettled`'s re-run: the app stopped and started again on its port, on a fresh data dir. Throws when it does not come back. */
+  private readonly restartApp = async (): Promise<string> => {
+    const why = await this.startAgain("rerun");
     // the reason is the last line of the start failure (the log tail comes first)
     if (why !== undefined || !this.app) throw new Error(why?.trim().split(/\r?\n/).at(-1) ?? "the app did not start");
     return `${this.app.url}/`;
@@ -478,6 +485,9 @@ export class VerifySession {
         .sort(byAcId);
       const unsure = left.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []);
       const again = [...new Set([...filesOf(green, fileOf), ...unsure])].filter((f) => !done.ran.has(f));
+      // the replay gets an app of its own on a fresh data dir: rows the owed batch wrote never reach
+      // it, where a collision would read as a regression (N-m1). One that does not start runs nothing
+      if (again.length > 0 && done.ran.size > 0) await this.startAgain("replay");
       return this.runLogged(turn, again, fileOf, done);
     });
   }

@@ -224,10 +224,12 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     ]);
     expect(calls.tests[0]!.cwd).toBe(p.verifierDir);
     expect(calls.tests[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 120, parallel: 3 });
-    expect(calls.starts).toBe(2);
-    expect(calls.stops).toBe(2);
+    // turn 2's replay batch gets an app start of its own (N-m1)
+    expect(calls.starts).toBe(3);
+    expect(calls.stops).toBe(3);
     // the breaker's key never reaches the app; every start gets its own data dir
     expect(calls.appEnv).toEqual([
+      { DATA_DIR: expect.any(String), VENICE_API_KEY: "" },
       { DATA_DIR: expect.any(String), VENICE_API_KEY: "" },
       { DATA_DIR: expect.any(String), VENICE_API_KEY: "" },
     ]);
@@ -279,14 +281,32 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     };
     const r = await runBuildLoop(p, deps, log);
     expect(r.reason).toBe("gate-open");
-    expect(dirs).toHaveLength(2);
-    expect(new Set(dirs.map((d) => d.dir)).size).toBe(2);
+    expect(dirs).toHaveLength(3); // turn 1, turn 2's owed batch, turn 2's replay
+    expect(new Set(dirs.map((d) => d.dir)).size).toBe(3);
     for (const d of dirs) {
       expect(d.emptyAtStart).toBe(true);
       expect(d.dir.startsWith(join(p.home, "data"))).toBe(true);
     }
     expect(calls.appEnv.every((e) => e?.HOLDBACK_TODAY === "2026-11-19" && e?.VENICE_API_KEY === "")).toBe(true);
     expect(existsSync(join(appDir, "data"))).toBe(false);
+  });
+
+  it("starts the app again on a fresh DATA_DIR for the replay batch: the owed batch's rows never reach it (N-m1)", async () => {
+    await setup();
+    let current = "";
+    const seen: { files: string[]; dataDir: string }[] = [];
+    const { deps, calls } = fakes({ kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    const app = deps.app;
+    deps.app = async (o) => ((current = o.env!.DATA_DIR!), app(o));
+    const tests = deps.tests;
+    deps.tests = async (cwd, files, opts) => (seen.push({ files: [...files], dataDir: current }), tests(cwd, files, opts));
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("gate-open");
+    // turn 2: the owed t-3, then the replay of t-1, each on an app started for it
+    expect(seen.map((s) => s.files)).toEqual([[T1, T3], [T3], [T1]]);
+    expect(new Set(seen.map((s) => s.dataDir)).size).toBe(3);
+    expect(calls.starts).toBe(3);
+    expect(calls.stops).toBe(3);
   });
 
   it("a re-run whose app does not come back leaves the test inconclusive and runs nothing more against the dead app", async () => {
@@ -329,9 +349,9 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       [2, [T3]],
       [2, [T1]],
     ]);
-    expect(calls.starts).toBe(3);
-    expect(calls.stops).toBe(3);
-    expect(new Set(calls.appEnv.map((e) => e?.DATA_DIR)).size).toBe(3);
+    expect(calls.starts).toBe(4); // turn 1, its re-run, turn 2, turn 2's replay
+    expect(calls.stops).toBe(4);
+    expect(new Set(calls.appEnv.map((e) => e?.DATA_DIR)).size).toBe(4);
 
     // turn 2's brief: ac-3 still owed, nothing of Kane's own failure
     const second = calls.claude[1]!.prompt;
@@ -370,7 +390,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       [2, [T1]],
       [2, [T1]],
     ]);
-    expect(calls.starts).toBe(3); // the re-run meets the app started again on a fresh data dir
+    expect(calls.starts).toBe(4); // the replay and its re-run each meet the app started again on a fresh data dir
     expect(reduce(await readEvents(p.ledgerFile)).acs["ac-1"]!.status).toBe("passing");
   });
 
@@ -441,7 +461,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       [1, [T3]], // the fake counts agent calls: ledger turn 2 is the agent's first here
       [1, [T1]],
     ]);
-    expect(calls.starts).toBe(1); // in the turn's own replay, not a separate re-check
+    expect(calls.starts).toBe(2); // in the turn's own replay (its own start), not a separate re-check
     expect((await loopEvents()).filter((e) => e.t === "run" && e.turn === 2).map((e) => e.t === "run" && e.result.testId)).toEqual(["t-3", "t-1"]);
     const state = reduce(await readEvents(p.ledgerFile));
     expect(state.acs["ac-1"]!.status).toBe("vacuous");
