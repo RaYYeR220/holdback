@@ -33,3 +33,13 @@ export {
   type TestRunResult,
   type RunTestOptions,
 } from "./kane/testmd.js";
+export type {
+  RunKind,
+  LedgerEvent,
+  AcStatus,
+  AcState,
+  LedgerState,
+} from "./ledger/types.js";
+export { appendEvent, readEvents } from "./ledger/store.js";
+export { reduce } from "./ledger/reduce.js";
+export { gate } from "./ledger/gate.js";
