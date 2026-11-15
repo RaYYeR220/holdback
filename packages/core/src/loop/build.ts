@@ -574,6 +574,8 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         durationMs: agent.durationMs,
         appUp: s.app !== undefined,
         agentExit: agent.exitCode,
+        ...(agent.costUsd !== undefined ? { agentUsd: agent.costUsd } : {}),
+        ...(agent.numTurns !== undefined ? { agentTurns: agent.numTurns } : {}),
       });
       if (opts.signal?.aborted) return done(false, "aborted"); // the turn is committed and on record; the app stops in `finally`
       if (!s.app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top

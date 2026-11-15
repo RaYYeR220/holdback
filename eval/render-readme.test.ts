@@ -30,8 +30,8 @@ describe("render-readme", () => {
   it("fills the table and one sentence from the summary, leaving the rest of the README alone", () => {
     writeFileSync(summary, JSON.stringify(SUMMARY));
     const out = renderReadme(readme, summary);
-    expect(out).toContain("| A: Claude Code alone | 17/22 | yes | 88 | 0 | $6.50 | $0 | 31.4 |");
-    expect(out).toContain("| C: Holdback | 21/22 | yes | 120 | 1340.5 | $9.25 | $0.40 | 75 |");
+    expect(out).toContain("| A: Claude Code alone | 17/22 | 0 | yes | 88 | 0.0 | $6.50 | $0.00 | 31.4 |");
+    expect(out).toContain("| C: Holdback | 21/22 | 1 | yes | 120 | 1340.5 | $9.25 | $0.40 | 75.0 |");
     expect(out).not.toContain("B: Claude Code");
     expect(out).toContain("A 17/22, C 21/22");
     expect(out.startsWith("# Holdback\n\nIntro.\n\n## Results\n\n")).toBe(true);

@@ -10,18 +10,19 @@ export const END = "<!-- results:end -->";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const NAMES = { A: "A: Claude Code alone", B: "B: Claude Code + its own Kane checks", C: "C: Holdback" };
 
-const num = (n, digits = 0) => (typeof n === "number" ? n.toFixed(digits).replace(/\.0+$/, "") : "n/a");
+const num = (n, digits = 0) => (typeof n === "number" ? n.toFixed(digits) : "n/a");
+const usd = (n) => (typeof n === "number" ? "$" + n.toFixed(2) : "n/a");
 
 export function renderResults(summary) {
   const arms = ["A", "B", "C"].filter((a) => summary && typeof summary[a] === "object" && summary[a] !== null);
   if (arms.length === 0) return "Results pending.";
   const rows = arms.map((a) => {
     const s = summary[a];
-    return `| ${NAMES[a]} | ${s.examPassed}/${s.examTotal} | ${s.claimedDone ? "yes" : "no"} | ${num(s.turns)} | ${num(s.kaneCredits, 1)} | $${num(s.agentUsd, 2)} | $${num(s.breakerUsd, 2)} | ${num(s.wallMin, 1)} |`;
+    return `| ${NAMES[a]} | ${s.examPassed}/${s.examTotal} | ${num(s.inconclusive)} | ${s.claimedDone ? "yes" : "no"} | ${num(s.turns)} | ${num(s.kaneCredits, 1)} | ${usd(s.agentUsd)} | ${usd(s.breakerUsd)} | ${num(s.wallMin, 1)} |`;
   });
   const table = [
-    "| Arm | Exam passed | Claimed done | Agent turns | Kane credits | Agent cost | Breaker cost | Wall minutes |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Arm | Exam passed | Inconclusive | Claimed done | Agent turns | Build credits | Agent cost | Breaker cost | Wall minutes |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows,
   ].join("\n");
   const score = arms.map((a) => `${a} ${summary[a].examPassed}/${summary[a].examTotal}`).join(", ");

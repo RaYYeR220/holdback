@@ -1,12 +1,14 @@
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { registerPrd, DEFAULT_RESULTS_DIR } from "./prd.ts";
 import { recordArmC, runArm } from "./run-arm.ts";
 import { defaultEvalHome, scoreApp } from "./score.ts";
 
-const USAGE = `usage:
+const USAGE = `usage (run the arms one after another, never at the same time):
+  register-prd --prd <PRD.md> --stack <STACK.md> --model <id>      right after the spec stage, before C's build
   arm A|B --model <id> --prd <PRD.md> --stack <STACK.md> [--out <dir>]
-  arm C <appDir> [--turns n] [--agent-usd n] [--breaker-usd n] [--wall-min n] [--kane-credits n] [--claimed-done] [--model id]
-  score <A|B|C> <appDir>`;
+  arm C <appDir>                                                    numbers come from the Holdback ledger (set HOLDBACK_HOME as it ran)
+  score <A|B|C> <appDir> [--min-credits n]`;
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -15,37 +17,27 @@ const { values, positionals } = parseArgs({
     prd: { type: "string" },
     stack: { type: "string" },
     out: { type: "string" },
-    turns: { type: "string" },
-    "agent-usd": { type: "string" },
-    "breaker-usd": { type: "string" },
-    "wall-min": { type: "string" },
-    "kane-credits": { type: "string" },
-    "claimed-done": { type: "boolean" },
+    "min-credits": { type: "string" },
   },
 });
 const [cmd, armArg, dir] = positionals;
-const num = (v: string | undefined) => (v === undefined ? undefined : Number(v));
+// pnpm runs scripts from the package dir: relative paths mean relative to where the user typed the command
+const base = process.env.INIT_CWD ?? process.cwd();
+const abs = (p: string) => path.resolve(base, p);
 
 async function main(): Promise<void> {
-  if (cmd === "arm" && (armArg === "A" || armArg === "B")) {
+  if (cmd === "register-prd") {
     if (!values.model || !values.prd || !values.stack) throw new Error(`--model, --prd and --stack are required\n${USAGE}`);
-    const out = values.out ?? path.join(defaultEvalHome(), `arm-${armArg.toLowerCase()}`);
-    console.log(JSON.stringify(await runArm(armArg, { outDir: out, prdPath: values.prd, stackPath: values.stack, model: values.model }), null, 2));
+    console.log(JSON.stringify(await registerPrd(abs(values.prd), abs(values.stack), values.model, DEFAULT_RESULTS_DIR), null, 2));
+  } else if (cmd === "arm" && (armArg === "A" || armArg === "B")) {
+    if (!values.model || !values.prd || !values.stack) throw new Error(`--model, --prd and --stack are required\n${USAGE}`);
+    const out = values.out ? abs(values.out) : path.join(defaultEvalHome(), `arm-${armArg.toLowerCase()}`);
+    console.log(JSON.stringify(await runArm(armArg, { outDir: out, prdPath: abs(values.prd), stackPath: abs(values.stack), model: values.model }), null, 2));
   } else if (cmd === "arm" && armArg === "C" && dir) {
-    const run = await recordArmC(dir, {
-      turns: num(values.turns),
-      agentUsd: num(values["agent-usd"]),
-      breakerUsd: num(values["breaker-usd"]),
-      wallMin: num(values["wall-min"]),
-      kaneCredits: num(values["kane-credits"]),
-      claimedDone: values["claimed-done"],
-      model: values.model,
-    });
-    console.log(JSON.stringify(run, null, 2));
-  } else if (cmd === "score" && (armArg === "A" || armArg === "B" || armArg === "C")) {
-    if (!dir) throw new Error(USAGE);
-    const s = await scoreApp(dir, armArg);
-    console.log(`${armArg}: ${s.examPassed}/${s.examTotal} passed (${s.inconclusive} inconclusive), exam day ${s.today}`);
+    console.log(JSON.stringify(await recordArmC(abs(dir)), null, 2));
+  } else if (cmd === "score" && (armArg === "A" || armArg === "B" || armArg === "C") && dir) {
+    const s = await scoreApp(abs(dir), armArg, { minCredits: values["min-credits"] === undefined ? undefined : Number(values["min-credits"]) });
+    console.log(`${armArg}: ${s.examPassed}/${s.examTotal} passed (${s.inconclusive} inconclusive)${s.appFailure ? `, ${s.appFailure}` : ""}, exam day ${s.today}`);
   } else {
     throw new Error(USAGE);
   }

@@ -19,6 +19,9 @@ export type LedgerEvent = { at: string } & (
       durationMs: number;
       appUp: boolean;
       agentExit: number;
+      /** The agent's own cost and turn count for this turn, as the agent reported them (eval reads these). */
+      agentUsd?: number;
+      agentTurns?: number;
     }
   | { t: "run"; kind: RunKind; turn?: number; mutantId?: string; result: TestRunResult }
   | {

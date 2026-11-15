@@ -1,43 +1,70 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { balance, commitAll, ensureHead, git, runClaudeTurn, type BalanceReader, type ClaudeTurnResult, type GitOptions } from "@holdback/core";
-import { DEFAULT_RESULTS_DIR, EVAL_DIR, registerPrd } from "./prd.ts";
+import {
+  balance,
+  commitAll,
+  ensureHead,
+  gate,
+  git,
+  loadProject,
+  readEvents,
+  reduce,
+  runClaudeTurn,
+  type BalanceReader,
+  type ClaudeTurnResult,
+  type GitOptions,
+} from "@holdback/core";
+import { DEFAULT_RESULTS_DIR, EVAL_DIR, PrdChanged, sha256, verifyInputs } from "./prd.ts";
 
 export type ArmId = "A" | "B" | "C";
+
+/** The budget caps an arm ran under. */
+export type ArmCaps = { maxCalls: number; maxTurnsPerCall: number; timeoutMs: number; maxRetries: number };
 
 /** What one arm cost and did; written to `<results>/<arm>-run.json` and merged into summary.json by the scorer. */
 export type ArmRun = {
   arm: ArmId;
   appDir: string;
-  model?: string;
+  model: string;
   calls: number;
-  turns: number;
-  agentUsd: number;
-  breakerUsd: number;
-  wallMin: number;
-  /** The agent stopped on its own with a successful result (it said it was done). */
+  retries: number;
+  /** null: not recorded (never a made-up zero). */
+  turns: number | null;
+  agentUsd: number | null;
+  breakerUsd: number | null;
+  wallMin: number | null;
+  /** The agent stopped on its own with a successful result (A, B); the gate was open (C). */
   claimedDone: boolean;
   stopReason: string;
-  /** Kane credits the arm spent building (balance drop around the run); null when the balance could not be read. */
+  /** Kane credits the arm spent building (balance drops); null when the balance could not be read. */
   kaneCredits: number | null;
   head: string | null;
+  /** Uncommitted changes in the app dir when the run was recorded (scoring uses HEAD only). */
+  dirty: boolean;
   prdSha256: string;
+  stackSha256: string;
+  caps?: ArmCaps;
+  recordedAt: string;
 };
 
 export type RunArmOptions = {
   /** Fresh directory for the arm's app, outside the holdback repository. */
   outDir: string;
-  /** The final PRD.md (with Kane's Clarifications appended) and STACK.md every arm builds from. */
+  /** The final PRD.md (with Kane's Clarifications appended) and STACK.md, as registered by `register-prd`. */
   prdPath: string;
   stackPath: string;
-  /** Same `agent.model` for every arm: explicit, never inherited. */
+  /** Same `agent.model` for every arm: explicit, never inherited, and equal to the registered one. */
   model: string;
   resultsDir?: string;
   /** Cap on `claude -p` calls (a call that ran out of turns is continued). Default 3. */
   maxCalls?: number;
   maxTurnsPerCall?: number;
   timeoutMs?: number;
+  /** Retries of one call after a transient API error (overload, rate limit, network). Default 3. */
+  maxRetries?: number;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   claude?: typeof runClaudeTurn;
   /** Kane's balance; B only. Default: `kane-cli balance`. */
   balance?: BalanceReader;
@@ -47,6 +74,7 @@ export type RunArmOptions = {
 
 const ARM_FILES: Record<"A" | "B", string> = { A: "a-self.md", B: "b-self-kane.md" };
 const CONTINUE = "You stopped before the app was finished. Carry on from where the working tree stands, and stop when the app is done.";
+const TRANSIENT = /overloaded|rate.?limit|\b(?:429|500|502|503|504|529)\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|api error|temporarily unavailable/i;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 const inside = (parent: string, child: string) => {
@@ -65,25 +93,47 @@ async function isEmptyOrMissing(dir: string): Promise<boolean> {
 
 export const runFile = (resultsDir: string, arm: ArmId) => path.join(resultsDir, `${arm.toLowerCase()}-run.json`);
 
+async function exists(file: string): Promise<boolean> {
+  try {
+    await readFile(file);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
+}
+
 async function writeRun(resultsDir: string, run: ArmRun): Promise<void> {
   await mkdir(resultsDir, { recursive: true });
   await writeFile(runFile(resultsDir, run.arm), JSON.stringify(run, null, 2) + "\n", "utf8");
 }
 
-/** Arm A or B: a fresh repo with the final PRD and STACK, one headless Claude Code agent without web access, commit what it built. */
+const isDone = (r: ClaudeTurnResult) => r.exitCode === 0 && r.isError !== true && !r.timedOut;
+const isTransient = (r: ClaudeTurnResult) => !isDone(r) && !r.timedOut && r.subtype !== "error_max_turns" && TRANSIENT.test(`${r.resultText}\n${r.stderrTail}`);
+
+/**
+ * Arm A or B: a fresh repo with the final PRD and STACK, one headless Claude Code agent without web access, commit
+ * what it built. Arms run one after another, never at the same time (same machine, same Kane balance). An arm is
+ * built once: a second build of the same arm is refused, so a bad run cannot be quietly replaced by a better one.
+ */
 export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRun> {
   const outDir = path.resolve(opts.outDir);
   const repoRoot = path.dirname(EVAL_DIR);
   if (inside(repoRoot, outDir)) throw new Error(`arm dir ${outDir} is inside the holdback repository: use a fresh directory outside it`);
   if (!(await isEmptyOrMissing(outDir))) throw new Error(`arm dir ${outDir} is not empty: every arm starts from a fresh directory`);
   const resultsDir = path.resolve(opts.resultsDir ?? DEFAULT_RESULTS_DIR);
-  const prd = await registerPrd(opts.prdPath, resultsDir, { stackPath: opts.stackPath, now: opts.now });
+  if (await exists(runFile(resultsDir, arm))) throw new Error(`${runFile(resultsDir, arm)} exists: arm ${arm} was already built, and an arm is built once`);
+  // bound to the registration made by `register-prd`: the same PRD, STACK and model as every other arm
+  const prdSha256 = sha256(await readFile(opts.prdPath));
+  const stackSha256 = sha256(await readFile(opts.stackPath));
+  await verifyInputs(resultsDir, { prdSha256, stackSha256, model: opts.model }, `arm ${arm}`);
 
   const prompt = await readFile(path.join(EVAL_DIR, "arms", ARM_FILES[arm]), "utf8");
   await mkdir(outDir, { recursive: true });
   await copyFile(opts.prdPath, path.join(outDir, "PRD.md"));
   await copyFile(opts.stackPath, path.join(outDir, "STACK.md"));
   await writeFile(path.join(outDir, "PROMPT.md"), prompt, "utf8");
+  await writeFile(path.join(outDir, ".gitignore"), "node_modules/\n", "utf8");
 
   // settings and the agent's system-prompt file live outside the app repo
   const meta = await mkdtemp(path.join(os.tmpdir(), `holdback-arm-${arm.toLowerCase()}-`));
@@ -102,40 +152,64 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
   if (init.code !== 0) throw new Error(`git init failed: ${init.stderr.trim()}`);
   await ensureHead(outDir, `arm ${arm}: PRD, STACK and prompt`, gitOpts);
 
-  const deny = ["WebFetch", "WebSearch", ...(arm === "A" ? ["Bash(kane-cli:*)"] : [])];
+  // A has no Kane at all; B has Kane for its own checks but not the assurance commands (the exam is self-written checks)
+  const deny = [
+    "WebFetch",
+    "WebSearch",
+    ...(arm === "A" ? ["Bash(kane-cli:*)"] : ["Bash(kane-cli context:*)", "Bash(kane-cli design:*)", "Bash(kane-cli maintain:*)"]),
+  ];
   const settingsFile = path.join(meta, "settings.json");
   await writeFile(settingsFile, JSON.stringify({ permissions: { deny } }, null, 2) + "\n", "utf8");
   const contractFile = path.join(meta, "agent.md");
   await writeFile(contractFile, "Work in the current directory. Stop when the app is finished.\n", "utf8");
 
+  const caps: ArmCaps = {
+    maxCalls: Math.max(1, opts.maxCalls ?? 3),
+    maxTurnsPerCall: opts.maxTurnsPerCall ?? 60,
+    timeoutMs: opts.timeoutMs ?? 90 * 60_000,
+    maxRetries: Math.max(0, opts.maxRetries ?? 3),
+  };
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const claude = opts.claude ?? runClaudeTurn;
   const read = arm === "B" ? (opts.balance ?? balance) : undefined;
   const before = read ? await read().catch(() => undefined) : undefined;
-  const maxCalls = Math.max(1, opts.maxCalls ?? 3);
   let calls = 0;
+  let retries = 0;
   let turns = 0;
   let usd = 0;
   let ms = 0;
   let last: ClaudeTurnResult | undefined;
-  while (calls < maxCalls) {
-    last = await claude({
-      cwd: outDir,
-      prompt: calls === 0 ? prompt : CONTINUE,
-      settingsFile,
-      contractFile,
-      maxTurns: opts.maxTurnsPerCall ?? 60,
-      model: opts.model,
-      timeoutMs: opts.timeoutMs ?? 90 * 60_000,
-      env: opts.env,
-    });
+  while (calls < caps.maxCalls) {
+    const callPrompt = calls === 0 ? prompt : CONTINUE;
+    let tries = 0;
+    for (;;) {
+      last = await claude({
+        cwd: outDir,
+        prompt: callPrompt,
+        settingsFile,
+        contractFile,
+        maxTurns: caps.maxTurnsPerCall,
+        model: opts.model,
+        timeoutMs: caps.timeoutMs,
+        env: opts.env,
+      });
+      turns += last.numTurns ?? 0;
+      usd += last.costUsd ?? 0;
+      ms += last.durationMs;
+      // a transient API error is retried inside the attempt, like the Holdback loop does
+      if (isTransient(last) && tries < caps.maxRetries) {
+        tries++;
+        retries++;
+        await sleep((opts.retryDelayMs ?? 30_000) * tries);
+        continue;
+      }
+      break;
+    }
     calls++;
-    turns += last.numTurns ?? 0;
-    usd += last.costUsd ?? 0;
-    ms += last.durationMs;
-    if (last.exitCode === 0 && last.isError !== true) break;
+    if (isDone(last)) break;
     if (last.timedOut || last.subtype !== "error_max_turns") break;
   }
-  const claimedDone = last !== undefined && last.exitCode === 0 && last.isError !== true && !last.timedOut;
+  const claimedDone = last !== undefined && isDone(last);
   const stopReason = claimedDone ? "done" : last?.timedOut ? "timeout" : (last?.subtype ?? "error");
   const after = read ? await read().catch(() => undefined) : undefined;
   const kaneCredits = arm === "A" ? 0 : typeof before === "number" && typeof after === "number" && before >= after ? round2(before - after) : null;
@@ -148,6 +222,7 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
     appDir: outDir,
     model: opts.model,
     calls,
+    retries,
     turns,
     agentUsd: round2(usd),
     breakerUsd: 0,
@@ -156,33 +231,63 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
     stopReason,
     kaneCredits,
     head,
-    prdSha256: prd.prdSha256,
+    dirty: false,
+    prdSha256,
+    stackSha256,
+    caps,
+    recordedAt: (opts.now?.() ?? new Date()).toISOString(),
   };
   await writeRun(resultsDir, run);
   return run;
 }
 
-/** Arm C is the Holdback demo run: record where its app is and what the run cost. */
-export async function recordArmC(
-  appDir: string,
-  metrics: Partial<Pick<ArmRun, "turns" | "agentUsd" | "breakerUsd" | "wallMin" | "claimedDone" | "kaneCredits" | "model">>,
-  opts: { resultsDir?: string } = {},
-): Promise<ArmRun> {
+/**
+ * Arm C is the Holdback demo run. Its numbers come from the Holdback ledger of the app dir, never from the keyboard:
+ * the gate (claimed done), the agent turns and cost the build loop recorded per turn, Kane credits by balance, the
+ * breaker's spend, the wall time from the first to the last event. Its PRD.md and STACK.md must equal the registered
+ * ones and its `agent.model` the registered model. A figure the ledger does not hold is recorded as null.
+ */
+export async function recordArmC(appDir: string, opts: { resultsDir?: string; now?: () => Date } = {}): Promise<ArmRun> {
+  const abs = path.resolve(appDir);
   const resultsDir = path.resolve(opts.resultsDir ?? DEFAULT_RESULTS_DIR);
+  if (await exists(runFile(resultsDir, "C"))) throw new Error(`${runFile(resultsDir, "C")} exists: arm C was already recorded`);
+  const project = await loadProject(abs);
+  const model = project.config.agent.model;
+  if (!model) throw new PrdChanged(`${abs}: agent.model is not set in holdback.config.json; arm C must name the same model as the registration`);
+  const prdSha256 = sha256(await readFile(path.join(abs, "PRD.md")));
+  const stackSha256 = sha256(await readFile(path.join(abs, "STACK.md")));
+  await verifyInputs(resultsDir, { prdSha256, stackSha256, model }, "arm C");
+
+  const events = await readEvents(project.ledgerFile);
+  if (events.length === 0) throw new Error(`no Holdback ledger for ${abs} (${project.ledgerFile}): run Holdback on it first (HOLDBACK_HOME must be the one it ran with)`);
+  const state = reduce(events);
+  const ends = events.flatMap((e) => (e.t === "turn.end" ? [e] : []));
+  const sum = (f: (e: (typeof ends)[number]) => number | undefined): number | null => {
+    const v = ends.map(f).filter((n): n is number => typeof n === "number");
+    return v.length === 0 ? null : v.reduce((a, b) => a + b, 0);
+  };
+  const at = events.map((e) => Date.parse(e.at)).filter(Number.isFinite);
+  const usd = sum((e) => e.agentUsd);
+  const head = (await git(abs, ["rev-parse", "--short", "HEAD"])).stdout.trim() || null;
+  const dirty = (await git(abs, ["status", "--porcelain"])).stdout.trim().length > 0;
   const run: ArmRun = {
     arm: "C",
-    appDir: path.resolve(appDir),
-    calls: 0,
-    turns: metrics.turns ?? 0,
-    agentUsd: metrics.agentUsd ?? 0,
-    breakerUsd: metrics.breakerUsd ?? 0,
-    wallMin: metrics.wallMin ?? 0,
-    claimedDone: metrics.claimedDone ?? false,
+    appDir: abs,
+    model,
+    calls: ends.length,
+    retries: 0,
+    turns: sum((e) => e.agentTurns),
+    agentUsd: usd === null ? null : round2(usd),
+    breakerUsd: round2(state.breakerUsd),
+    wallMin: at.length > 1 ? round2((Math.max(...at) - Math.min(...at)) / 60_000) : null,
+    claimedDone: gate(state).allowStop,
     stopReason: "holdback",
-    kaneCredits: metrics.kaneCredits ?? null,
-    head: null,
-    prdSha256: "",
-    ...(metrics.model ? { model: metrics.model } : {}),
+    kaneCredits: round2(state.kaneCredits),
+    head,
+    dirty,
+    prdSha256,
+    stackSha256,
+    recordedAt: (opts.now?.() ?? new Date()).toISOString(),
   };
   await writeRun(resultsDir, run);
   return run;
