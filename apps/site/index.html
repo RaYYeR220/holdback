@@ -48,8 +48,8 @@
     <div class="ctas rv d4">
       <a class="btn" href="#demo"><i aria-hidden="true"></i>Watch a run</a>
       <div class="chip">
-        <span class="chip-pr" aria-hidden="true">$</span><code>npx holdback init</code>
-        <button type="button" class="copy-btn" data-copy="npx holdback init" aria-label="Copy npx holdback init">
+        <span class="chip-pr" aria-hidden="true">$</span><code>holdback init</code>
+        <button type="button" class="copy-btn" data-copy="holdback init" aria-label="Copy holdback init">
           <svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg>
           <svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg>
         </button>
@@ -171,26 +171,38 @@
     <div class="wrap split">
       <div class="split-l">
         <h2 id="install-h">Three commands.</h2>
-        <p>Run them in your app&rsquo;s folder, next to the spec.</p>
-        <p class="aside">Needs Node 24+, Kane CLI signed in to your TestMu AI account, Claude Code, and a Venice API key for the breaker.</p>
+        <p>Holdback installs from source for now. Build it once, then run the three commands in your app&rsquo;s folder, next to the spec.</p>
+        <p class="aside">Needs Node 24+ and pnpm 9, git, Kane CLI signed in to your TestMu AI account, and Claude Code. The planted-bug pass also needs a Venice API key.</p>
       </div>
       <div class="card cmds">
+        <p class="cmd-head">Once, in a clone of <a data-gh href="#install">the repository</a></p>
         <div class="cmd">
-          <code><span class="pr">$</span>npx holdback init</code>
+          <code><span class="pr">$</span>pnpm i &amp;&amp; pnpm -r build</code>
+          <p>Install and build every package.</p>
+          <button type="button" class="copy-btn" data-copy="pnpm i &amp;&amp; pnpm -r build" aria-label="Copy pnpm i and pnpm -r build"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
+        </div>
+        <div class="cmd">
+          <code><span class="pr">$</span>cd packages/cli &amp;&amp; npm link</code>
+          <p>Put <code>holdback</code> on your PATH.</p>
+          <button type="button" class="copy-btn" data-copy="cd packages/cli &amp;&amp; npm link" aria-label="Copy cd packages/cli and npm link"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
+        </div>
+        <p class="cmd-head">Then, in your app&rsquo;s folder</p>
+        <div class="cmd">
+          <code><span class="pr">$</span>holdback init</code>
           <p>Point Holdback at your spec and the command that starts your app.</p>
-          <button type="button" class="copy-btn" data-copy="npx holdback init" aria-label="Copy npx holdback init"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
+          <button type="button" class="copy-btn" data-copy="holdback init" aria-label="Copy holdback init"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
         </div>
         <div class="cmd">
-          <code><span class="pr">$</span>npx holdback spec</code>
+          <code><span class="pr">$</span>holdback spec</code>
           <p>Answer Kane&rsquo;s questions, approve the criteria, seal the tests.</p>
-          <button type="button" class="copy-btn" data-copy="npx holdback spec" aria-label="Copy npx holdback spec"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
+          <button type="button" class="copy-btn" data-copy="holdback spec" aria-label="Copy holdback spec"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
         </div>
         <div class="cmd">
-          <code><span class="pr">$</span>npx holdback run</code>
+          <code><span class="pr">$</span>holdback run</code>
           <p>Build until Kane proves every criterion, then plant bugs and replay.</p>
-          <button type="button" class="copy-btn" data-copy="npx holdback run" aria-label="Copy npx holdback run"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
+          <button type="button" class="copy-btn" data-copy="holdback run" aria-label="Copy holdback run"><svg class="ic-copy" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="4.5" y="4.5" width="8" height="8" rx="1.6"/><path d="M9.5 4.5V3.1c0-.9-.7-1.6-1.6-1.6H3.1c-.9 0-1.6.7-1.6 1.6v4.8c0 .9.7 1.6 1.6 1.6h1.4"/></svg><svg class="ic-ok" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 7.4 5.6 10.4 11.5 3.8"/></svg></button>
         </div>
-        <p class="cmd-alt">Or inside Claude Code: <code>npx holdback init --agent claude</code> installs the hooks for an interactive session.</p>
+        <p class="cmd-alt">Or for your own Claude Code session: <code>holdback init --agent claude</code> installs the hooks.</p>
       </div>
     </div>
   </section>
@@ -204,7 +216,7 @@
       <ul class="claims-list">
         <li><strong>OS-level isolation.</strong><span>The tests sit outside the repo, pinned by hash, with a hook on every agent tool call. That&rsquo;s a seal, not a sandbox.</span></li>
         <li><strong>Private test runs.</strong><span>Kane CLI uploads its runs to LambdaTest Test Manager.</span></li>
-        <li><strong>Cheap authoring.</strong><span>Kane charges about 17 credits for each test step it authors. Replaying a recorded test cost 0 to 3 credits in our runs.</span></li>
+        <li><strong>Cheap authoring.</strong><span>In the first live run, Kane charged about 16 credits for each test step it authored. Replays cost 0 to 3 credits, and 17.6 when Kane had to heal one.</span></li>
       </ul>
     </div>
   </section>
