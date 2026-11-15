@@ -40,8 +40,12 @@ export type TestRunResult = {
 export type RunTestOptions = {
   startUrl?: string;
   noHeal?: boolean;
+  /**
+   * Kane's `--timeout`: it bounds each step (every step is its own Kane agent run), not the whole
+   * test. The process is killed only after `timeoutS` for every step of the test, plus `graceS`.
+   */
   timeoutS?: number;
-  /** Extra seconds on top of timeoutS before the process is killed. Default 30. */
+  /** Extra seconds on top of the steps' timeouts before the process is killed. Default 30. */
   graceS?: number;
 };
 
@@ -115,8 +119,10 @@ export async function runTest(cwd: string, testFile: string, opts: RunTestOption
   if (opts.noHeal) args.push("--no-adaptive-heal");
 
   const parsed = readTestMd(cwd, testFile);
+  // a whole-run kill at one step's timeout lost a long authoring run (and its credits) mid-way
+  const steps = Math.max(1, parsed?.steps.length ?? 1);
 
-  const r = await runKane(args, { cwd, timeoutMs: (timeoutS + (opts.graceS ?? 30)) * 1000 });
+  const r = await runKane(args, { cwd, timeoutMs: (timeoutS * steps + (opts.graceS ?? 30)) * 1000 });
   const ev = r.events;
 
   const result = emptyResult(testFile, parsed?.id ?? null);

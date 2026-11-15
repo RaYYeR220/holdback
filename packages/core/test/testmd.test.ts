@@ -93,6 +93,19 @@ describe("runTest", () => {
     expect(r.status).toBe("error");
     expect(r.reason).toBe("timeout");
   });
+  it("gives every step the Kane timeout before the whole run is killed", async () => {
+    // live smoke: Kane's --timeout bounds each step (each step is its own agent run). An 11-step
+    // authoring run (~40 s a step) was killed at timeoutS + 30 s with 9 steps done: 165 credits lost
+    process.env.FAKE_KANE_HANG = "1";
+    delete process.env.FAKE_KANE_FIXTURE;
+    const file = join(cwd, "three_test.md");
+    writeFileSync(file, "---\nassurance:\n  id: t-9\n---\n# Three\n\n## Step 1 @verifies ac-1\n\nOne.\n\n## Step 2 @verifies ac-1\n\nTwo.\n\n## Step 3 @verifies ac-1\n\nThree.\n");
+    const r = await runTest(cwd, file, { timeoutS: 1, graceS: 0 });
+    expect(r.reason).toBe("timeout");
+    expect(r.durationS).toBeGreaterThanOrEqual(2.9);
+    const argv = JSON.parse(readFileSync(argvLog, "utf8").trim().split("\n")[0]!) as string[];
+    expect(argv.slice(argv.indexOf("--timeout"), argv.indexOf("--timeout") + 2)).toEqual(["--timeout", "1"]);
+  });
   it("no done event is an error", async () => {
     delete process.env.FAKE_KANE_FIXTURE;
     process.env.FAKE_KANE_EXIT = "1";
