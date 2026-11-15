@@ -730,21 +730,20 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     prior: TestNode[] = [],
   ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
     evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
-    /** A verifier path as Holdback compares it: relative to the verifier, `/`-separated, case-folded where the file system folds case. */
-    const key = (f: string) => {
-      const r = path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
-      return process.platform === "win32" || process.platform === "darwin" ? r.toLowerCase() : r;
-    };
+    /** A verifier path exactly: relative to the verifier, `/`-separated. The allowlist matches only these. */
+    const key = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
+    /** The same, case-folded on every platform: only to catch a collision (a duplicate, a shared file), which is stricter. */
+    const folded = (f: string) => key(f).toLowerCase();
     /** dev+ino of a verifier file, or undefined when it does not exist. */
     const identity = (f: string) =>
       stat(path.resolve(p.verifierDir, f), { bigint: true }).then(
         (s) => `${s.dev}:${s.ino}`,
         () => undefined,
       );
-    /** True when `f` is one of `others`: the same path, or the same file where both exist. */
+    /** True when `f` may be one of `others`: the same path but for its case, or the same file where both exist. */
     const sameAsAny = async (f: string, others: string[]): Promise<boolean> => {
       const id = await identity(f);
-      for (const o of others) if (key(o) === key(f) || (id !== undefined && (await identity(o)) === id)) return true;
+      for (const o of others) if (folded(o) === folded(f) || (id !== undefined && (await identity(o)) === id)) return true;
       return false;
     };
     // every sealed test as the ledger last designed it (file, verified criteria), and this use case's
@@ -772,7 +771,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         const g = await deps.kane.readGraph(cwd);
         const minted = r.minted.map((m) => m.test);
         // one entry per test id and per file, or the graph says two things at once: a tamper
-        const keys = g.tests.filter((t) => t.file).map((t) => key(t.file));
+        const keys = g.tests.filter((t) => t.file).map((t) => folded(t.file));
         const twiceIds = g.tests.filter((t, i) => g.tests.findIndex((x) => x.id === t.id) !== i).map((t) => t.id);
         const twice = [
           ...new Set([...keys.filter((k, i) => keys.indexOf(k) !== i), ...g.tests.filter((t) => twiceIds.includes(t.id)).map((t) => (t.file ? key(t.file) : t.id))]),
@@ -785,12 +784,13 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         // the tests of this use case it retired; any other sealed entry it added, changed or removed
         // (a variable, another use case's test, an unknown file) is never sealed: a tamper
         const retired = r.superseded.map((s) => s.test).filter((t) => t !== "");
-        const allowed = new Set<string>();
+        /** Exact relative path -> the file Kane named: a changed entry is allowed only on an exact match. */
+        const allowed = new Map<string, string>();
         const bad: string[] = [];
         // criteria this use case may be verified by: the ledger's own, and ones Kane newly adds under it
         // (never one the ledger has under another use case)
         const mayVerify = new Set([...ucAcs, ...g.acs.filter((a) => a.useCase === uc && !(a.id in state.acs)).map((a) => a.id)]);
-        const sealedKeys = [...copy.verifier.keys()].map(key);
+        const sealedKeys = [...copy.verifier.keys()].map(folded);
         const sealedFiles = [...sealedTests.values()].map((s) => s.file);
         // a minted test: a new regular file under the tests folder, verifying this use case's criteria only
         for (const id of minted) {
@@ -803,11 +803,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
             st !== undefined &&
             st.isFile() &&
             !st.isSymbolicLink() &&
-            !sealedKeys.includes(k) &&
+            !sealedKeys.includes(folded(t.file)) &&
             !(await sameAsAny(t.file, sealedFiles)) &&
             t.verifies.length > 0 &&
             t.verifies.every((v) => mayVerify.has(v));
-          if (ok) allowed.add(k);
+          if (ok) allowed.set(k, t.file);
           else bad.push(k);
         }
         // a retired test: one of this use case's, verifying its criteria only, no longer live, its file
@@ -818,9 +818,17 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           if (g.tests.some((t) => t.id === id && t.verifies.length > 0)) continue;
           if (await sameAsAny(was.file, g.tests.filter((t) => t.id !== id && t.file).map((t) => t.file))) continue;
           if (await sameAsAny(was.file, [...sealedTests].filter(([other]) => other !== id).map(([, o]) => o.file))) continue;
-          allowed.add(key(was.file));
+          allowed.set(key(was.file), was.file);
         }
-        const stray = [...new Set([...bad, ...(await verifierDiffersFrom(p, copy)).map(key).filter((k) => !allowed.has(k))])];
+        const changed: string[] = [];
+        for (const d of await verifierDiffersFrom(p, copy)) {
+          const k = key(d);
+          const named = allowed.get(k);
+          // an exact path and, where both exist, the very file Kane named
+          const [a, b] = named === undefined ? [undefined, undefined] : [await identity(d), await identity(named)];
+          if (named === undefined || (a !== undefined && b !== undefined && a !== b)) changed.push(k);
+        }
+        const stray = [...new Set([...bad, ...changed])];
         if (stray.length > 0) throw new EvolveStray(stray);
         // a criterion never leaves the gate silently: the use case keeps every one it had
         const now = new Set(g.acs.filter((a) => a.useCase === uc).map((a) => a.id));

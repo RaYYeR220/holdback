@@ -845,7 +845,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       );
     });
 
-    it.runIf(process.platform === "win32" || process.platform === "darwin")("paths compare as the file system does: a minted test written to another use case's test under another case is caught", async () => {
+    it.runIf(process.platform === "win32" || process.platform === "darwin")("a minted test whose path collides with a sealed one but for its case is a tamper (case folds only to catch a collision)", async () => {
       await strayed(
         {
           ...evolveWith((kit) => {
@@ -853,8 +853,25 @@ describe("runFalsify", { timeout: 60_000 }, () => {
             kit.retire("t-1", "t-3");
           }),
         },
-        [".testmuai/tests/t9_test.md"],
+        [".testmuai/tests/T9_TEST.md", ".testmuai/tests/t9_test.md"],
         otherUseCase(),
+      );
+    });
+
+    it("a changed path that differs from an allowed file only by its case is a tamper: the allowlist takes exact paths", async () => {
+      const upper = () => testFile("t-4").replace("t4_test.md", "T4_TEST.md");
+      const insensitive = process.platform === "win32" || process.platform === "darwin";
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            // Kane wrote t4_test.md; its graph names the minted test T4_TEST.md
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3", "t-4");
+            kit.alias("t-4", upper(), ["ac-1", "ac-3"]);
+          }),
+        },
+        // where the file system tells the two names apart, the graph's file does not exist at all
+        insensitive ? [".testmuai/tests/t4_test.md"] : [".testmuai/tests/T4_TEST.md", ".testmuai/tests/t4_test.md"],
       );
     });
 
