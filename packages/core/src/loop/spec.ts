@@ -15,6 +15,7 @@ import {
 import type { LedgerEvent } from "../ledger/types.js";
 import type { Project } from "../project.js";
 import { seal } from "../seal.js";
+import { clearTamper } from "../tamper.js";
 import type { HumanIO } from "./human.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
@@ -174,4 +175,5 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   // 6. point the tests at the app, then seal
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
   await emit({ t: "seal", manifest: await seal(cwd, { appDir: p.appDir, files: appSealFiles(p) }) });
+  await clearTamper(p); // a fresh seal is the only thing that lifts a tamper
 }

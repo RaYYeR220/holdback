@@ -9,6 +9,7 @@ import { resealAppFiles, runSpecStage } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { loadProject } from "../src/project.js";
+import { markTampered, tamperMarker } from "../src/tamper.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n: string) => join(here, "fixtures", "kane", n);
@@ -58,7 +59,9 @@ describe("runSpecStage", () => {
         return items.map((i) => i.ref);
       },
     };
+    await markTampered(p, "left over from an earlier build"); // a fresh seal lifts it
     await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    expect(await tamperMarker(p)).toBeNull();
 
     const events = await readEvents(p.ledgerFile);
     expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.approved", "design", "spec.approved", "seal"]);

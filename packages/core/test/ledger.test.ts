@@ -329,7 +329,7 @@ describe("aggregates", () => {
     const s = reduce([
       { t: "spec.approved", at, refs: [] },
       { t: "regression", at, ac: "ac-1", turn: 1 },
-      { t: "recordings", at, manifest: { ".testmuai/tests/output-a/r.json": "h" } },
+      { t: "recordings", at, digest: "d", gitConfig: "g" },
     ]);
     expect(s).toEqual({
       acs: {},
@@ -346,9 +346,29 @@ describe("aggregates", () => {
     const seal: LedgerEvent = { t: "seal", at, manifest: {} };
     const tamper: LedgerEvent = { t: "tamper", at, detail: "x" };
     expect(reduce([seal, tamper]).tampered).toBe(true);
-    expect(reduce([seal, tamper, { t: "recordings", at, manifest: {} }, run(result("t-1", [], []))]).tampered).toBe(true);
+    expect(reduce([seal, tamper, { t: "recordings", at, digest: "d", gitConfig: "g" }, run(result("t-1", [], []))]).tampered).toBe(true);
     expect(reduce([seal, tamper, seal]).tampered).toBe(false);
     expect(reduce([tamper, seal, tamper]).tampered).toBe(true);
+  });
+
+  it("a seal after a tamper drops every earlier build result; a plain re-seal keeps them", () => {
+    const seal: LedgerEvent = { t: "seal", at, manifest: {} };
+    const d = design(["ac-1", "ac-2", "ac-3"], [["t-1", ["ac-1"]], ["t-2", ["ac-2"]]]);
+    const forged = [d, seal, run(result("t-1", ["ac-1"], [])), run(result("t-2", [], ["ac-2"]))];
+    const after = reduce([...forged, { t: "tamper", at, detail: "ledger modified outside Holdback" }, seal]);
+    expect(Object.values(after.acs).map((a) => [a.id, a.status])).toEqual([
+      ["ac-1", "owed"],
+      ["ac-2", "owed"],
+      ["ac-3", "needs-spec"],
+    ]);
+    expect(after.acs["ac-2"]!.lastFailure).toBeUndefined();
+    expect(gate(after).allowStop).toBe(false);
+    // results after the re-seal count again
+    expect(reduce([...forged, { t: "tamper", at, detail: "x" }, seal, run(result("t-1", ["ac-1"], []))]).acs["ac-1"]!.status).toBe("passing");
+    // no tamper in between: a re-seal (e.g. after drift) keeps what was verified
+    const kept = reduce([...forged, seal]);
+    expect(kept.acs["ac-1"]!.status).toBe("passing");
+    expect(kept.acs["ac-2"]!.lastFailure?.test).toBe("t-2");
   });
 
   it("reduce does not mutate input events", () => {
@@ -379,8 +399,13 @@ describe("gate", () => {
     expect(g).toMatchObject({ allowStop: false, tampered: true, owed: [], regressed: [] });
     // more green runs do not clear it
     expect(gate(reduce([...green, tamper, run(result("t-1", ["ac-1"], []))])).allowStop).toBe(false);
-    const resealed = gate(reduce([...green, tamper, { t: "seal", at, manifest: {} }]));
-    expect(resealed).toMatchObject({ allowStop: true, tampered: false });
+    // a fresh seal lifts the flag, but what was green before the tamper must be verified again
+    const sealEv: LedgerEvent = { t: "seal", at, manifest: {} };
+    const resealed = gate(reduce([...green, tamper, sealEv]));
+    expect(resealed).toMatchObject({ allowStop: false, tampered: false });
+    expect(resealed.owed.map((a) => a.id)).toEqual(["ac-1", "ac-2"]);
+    const reverified = [...green, tamper, sealEv, run(result("t-1", ["ac-1"], [])), run(result("t-2", ["ac-2"], []))];
+    expect(gate(reduce(reverified))).toMatchObject({ allowStop: true, tampered: false });
     expect(gate(reduce(green)).tampered).toBe(false);
   });
 

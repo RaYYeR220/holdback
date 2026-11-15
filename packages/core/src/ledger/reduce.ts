@@ -26,6 +26,14 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         state.tampered = true;
         break;
       case "seal":
+        if (state.tampered) {
+          // results from before the tamper (possibly forged) do not survive the re-seal: verify again
+          latest.clear();
+          for (const ac of Object.values(state.acs)) {
+            ac.status = ac.tests.length > 0 ? "owed" : "needs-spec";
+            delete ac.lastFailure;
+          }
+        }
         state.tampered = false;
         break;
       case "design": {

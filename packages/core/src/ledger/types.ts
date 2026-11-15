@@ -34,8 +34,11 @@ export type LedgerEvent = { at: string } & (
   | { t: "drift"; rows: { kind: string; ref: string; why: string }[]; applied: boolean }
   | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string }
   | { t: "tamper"; detail: string }
-  /** Hashes of Kane's own `output-*` run recordings, taken after a Kane batch with the app stopped. */
-  | { t: "recordings"; manifest: Record<string, string> }
+  /**
+   * Baseline after a Kane batch (app stopped): digest of Kane's own `output-*` run recordings and the
+   * app repo's git config hash. The next build loop holds the disk to the latest one at start.
+   */
+  | { t: "recordings"; digest: string; gitConfig: string }
 );
 
 export type AcStatus = "owed" | "passing" | "proved" | "vacuous" | "regressed" | "needs-spec";

@@ -86,5 +86,15 @@ export {
   worktreeAdd,
   worktreeRemove,
   type GitResult,
-  type CommitOptions,
+  type GitOptions,
 } from "./git.js";
+export {
+  TAMPER_MARKER,
+  markTampered,
+  tamperMarker,
+  clearTamper,
+  manifestDigest,
+  snapshotRecordings,
+  logRecordings,
+  type RecordingsSnapshot,
+} from "./tamper.js";
