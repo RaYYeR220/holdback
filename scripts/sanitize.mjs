@@ -8,11 +8,19 @@ const HOME_JSON = "C:\\\\Users\\\\user"; // as it appears inside JSON strings
 const HOME_FWD = "C:/Users/user";
 const HOME_RAW = "C:\\Users\\user";
 
+const SEP = "(?:\\\\\\\\|\\\\|/)"; // JSON-escaped backslash, backslash or slash
+const TMP_RE = new RegExp(
+  `~${SEP}AppData${SEP}Local${SEP}Temp${SEP}(?:claude${SEP}[0-9a-f]+${SEP}[0-9a-f-]+${SEP}scratchpad${SEP})?`,
+  "gi",
+);
+
 export function sanitize(text) {
   return text
     .replaceAll(HOME_JSON, "~")
     .replaceAll(HOME_FWD, "~")
     .replaceAll(HOME_RAW, "~")
+    // Session temp dirs (incl. tool scratchpad ids) collapse to <tmp>, any slash/escape style.
+    .replace(TMP_RE, (m) => "<tmp>" + (m.endsWith("\\\\") ? "\\\\" : m.slice(-1)))
     .replace(/https:\/\/test-manager\.lambdatest\.com\/[^"\s]*/g, "<share-url>");
 }
 

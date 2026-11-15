@@ -1,0 +1,2 @@
+Available credits: 42.5
+{"type":"done","exit_code":0}

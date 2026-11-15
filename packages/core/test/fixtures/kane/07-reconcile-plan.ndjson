@@ -35,6 +35,6 @@
 {"type":"commit","v":1,"verb":"reconcile","source_id":"prd","proposal_id":"20261115T025613-prd","trusted":0,"derived":0,"archived":0,"superseded":0,"assumed":4,"evidence_matched":1,"minted":[]}
 {"type":"extract_use_cases","v":1,"verb":"reconcile","use_cases":[]}
 {"type":"defaults_taken","v":1,"verb":"reconcile","count":4}
-{"type":"reconcile_plan","v":1,"verb":"reconcile","source_id":"prd","plan_path":"~\\AppData\\Local\\Temp\\claude\\c38b866eadadd451\\36f9f834-e29f-45ea-8236-7f64e76c8d83\\scratchpad\\spike\\verifier\\.context\\reconcile\\plans\\2026-11-15T02-56-41-618Z-prd.json","rows":[{"kind":"MODIFY","ref":"uc-1","why":"updated: description, summary, value, criteria (staged — commits on approval)"}],"archive":[]}
+{"type":"reconcile_plan","v":1,"verb":"reconcile","source_id":"prd","plan_path":"<tmp>\\spike\\verifier\\.context\\reconcile\\plans\\2026-11-15T02-56-41-618Z-prd.json","rows":[{"kind":"MODIFY","ref":"uc-1","why":"updated: description, summary, value, criteria (staged — commits on approval)"}],"archive":[]}
 {"type":"reconcile_summary","v":1,"verb":"reconcile","applied":0,"skipped":0,"deferred":0,"plan_only":0,"failed":0,"paused":0,"stale_created":0}
 {"type":"done","v":1,"verb":"reconcile","status":"complete","exit_code":0}
