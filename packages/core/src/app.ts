@@ -1,5 +1,5 @@
+import { spawn } from "node:child_process";
 import { createConnection, createServer } from "node:net";
-import spawn from "cross-spawn";
 import treeKill from "tree-kill";
 
 export interface StartAppOptions {
@@ -96,6 +96,8 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
   };
   const logs = () => (partial ? [...lines, partial] : lines).join("\n");
 
+  // node's own spawn: the shell resolves the command. cross-spawn would report any shell command
+  // that exits with 1 on Windows as "spawn <cmd> ENOENT", hiding the app's own crash
   const child = spawn(opts.cmd, [], {
     cwd: opts.cwd,
     shell: true,
@@ -109,8 +111,10 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
   child.stderr?.on("data", push);
 
   let exited = false;
+  let exitCode: number | null = null;
   let spawnError: Error | undefined;
-  child.on("exit", () => {
+  child.on("exit", (code) => {
+    exitCode = code;
     exited = true;
   });
   child.on("error", (e) => {
@@ -144,7 +148,9 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
       await sleep(50); // let trailing output drain
       await stop();
       throw new AppStartError(
-        `app exited before becoming ready${spawnError ? `: ${spawnError.message}` : ""}`,
+        spawnError
+          ? `app did not start: ${spawnError.message}`
+          : `app exited${exitCode === null ? "" : ` with code ${exitCode}`} before becoming ready`,
         logs(),
       );
     }

@@ -39,6 +39,18 @@ describe("app process manager", () => {
     expect((err as AppStartError).logs).toContain("boom-output");
   }, 30000);
 
+  it("says the app crashed with its exit code, never that the command was not found", async () => {
+    // live smoke (Windows): a crashing app (exit 1, here EADDRINUSE) was reported as
+    // "spawn <cmd> ENOENT", cross-spawn's guess for any shell command that exits with 1
+    const port = await freePort();
+    const err = await startApp({
+      cwd: here, cmd: nodeCmd(`-e "console.error('crash-output'); process.exit(1)"`), port, readyPath: "/", timeoutMs: 10000,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(AppStartError);
+    expect((err as AppStartError).message).toBe("app exited with code 1 before becoming ready");
+    expect((err as AppStartError).logs).toContain("crash-output");
+  }, 30000);
+
   it("rejects after timeoutMs when the server never listens", async () => {
     const port = await freePort();
     const t = Date.now();
