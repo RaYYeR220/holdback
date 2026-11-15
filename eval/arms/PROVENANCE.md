@@ -15,3 +15,5 @@ Retrieved 2026-11-15, kane-cli 0.10.4 (`kane-cli --version`).
 Left out on purpose: the "Test cases from requirements" section and rule 2 (assurance commands, `kane-cli context`, `design`, `maintain`, `cover`): the pre-registration has arm B write its own checks. Arm B's settings deny `Bash(kane-cli context:*)`, `Bash(kane-cli design:*)` and `Bash(kane-cli maintain:*)`. Arm A denies every `kane-cli` command.
 
 Carriage returns were stripped from the copied lines; nothing else changed.
+
+Arm A's prompt has no instruction about git; arms may commit inside their own arm repo, and the runner commits anything left over at the end.
