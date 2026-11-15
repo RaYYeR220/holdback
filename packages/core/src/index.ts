@@ -25,3 +25,11 @@ export {
   type GapNode,
   type Graph,
 } from "./kane/assurance.js";
+export {
+  parseTestMd,
+  runTest,
+  runTests,
+  type BugVerdict,
+  type TestRunResult,
+  type RunTestOptions,
+} from "./kane/testmd.js";

@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runKane, type RunKaneResult } from "./run.js";
 import type { KaneEvent } from "./ndjson.js";
+import { parseTestMd } from "./testmd-parse.js";
 
 // ---------------------------------------------------------------- types
 
@@ -394,17 +395,11 @@ function readTestFiles(cwd: string): Map<string, TestFile> {
     const dir = join(cwd, ".testmuai", "tests");
     for (const name of readdirSync(dir).filter((n) => n.endsWith("_test.md"))) {
       const file = join(dir, name);
-      const text = readFileSync(file, "utf8");
-      const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
-      const id = fm ? /^\s*id:\s*(\S+)/m.exec(fm[1] ?? "")?.[1] : undefined;
+      const parsed = parseTestMd(readFileSync(file, "utf8"));
+      const id = parsed.id;
       if (!id) continue;
       const verifies: string[] = [];
-      for (const line of text.split("\n")) {
-        if (!/^##\s/.test(line)) continue;
-        const tag = /@verifies\s+(.*)$/.exec(line);
-        if (!tag) continue;
-        for (const ac of tag[1]?.match(/ac-\d+/g) ?? []) if (!verifies.includes(ac)) verifies.push(ac);
-      }
+      for (const st of parsed.steps) for (const ac of st.verifies) if (!verifies.includes(ac)) verifies.push(ac);
       out.set(id, { file, verifies });
     }
   } catch {
