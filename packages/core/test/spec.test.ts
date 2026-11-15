@@ -318,6 +318,73 @@ describe("runSpecStage", () => {
     expect(Object.keys(reduce(events).acs).length).toBeGreaterThan(0);
   }, 60_000);
 
+  /** A first attempt that gets through the design approval (rejecting t-1) and fails at the seal step. */
+  async function failAtSeal(appDir: string) {
+    const p = await loadProject(appDir);
+    const vars = join(p.verifierDir, ".testmuai", "variables");
+    mkdirSync(dirname(vars), { recursive: true });
+    writeFileSync(vars, "a file where the variables folder goes"); // writing the start URL fails
+    const io: HumanIO = { ...acceptAll, approve: async (items) => items.map((i) => i.ref).filter((r) => r !== "t-1") };
+    await expect(runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow();
+    rmSync(vars, { force: true });
+    const first = await readEvents(p.ledgerFile);
+    expect(first.some((e) => e.t === "seal")).toBe(false);
+    expect(first.filter((e) => e.t === "design").at(-1)).toMatchObject({ useCase: "uc-1", rejected: ["t-1"] });
+    // the resumed stage: list (use cases), list (derived nodes: Kane still lists the rejected t-1), review
+    const seq = join(root, "seq-resume.txt");
+    writeFileSync(seq, [fx("10-list-derived.ndjson"), fx("10-list-derived.ndjson"), "-"].join("\n"));
+    process.env.FAKE_KANE_SEQUENCE = seq;
+    return p;
+  }
+
+  it("a stage resumed after its design approval never offers a node the human rejected again, and keeps that rejection (N-m3)", async () => {
+    const p = await failAtSeal(setup("# PRD\n"));
+    const approvals: string[][] = [];
+    const io: HumanIO = { ...acceptAll, approve: async (items) => (approvals.push(items.map((i) => i.ref)), items.map((i) => i.ref)) };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    expect(approvals).toEqual([["ac-1", "sc-1"]]);
+    const events = await readEvents(p.ledgerFile);
+    expect(events.at(-1)!.t).toBe("seal");
+    expect(events.filter((e) => e.t === "design").at(-1)).toMatchObject({ rejected: ["t-1"] });
+    expect(Object.values(reduce(events).acs).some((a) => a.tests.includes("t-1"))).toBe(false);
+  }, 60_000);
+
+  it("a stage resumed after its design approval seals even when the human turns down everything offered again: the earlier approval stands (N-m3)", async () => {
+    const p = await failAtSeal(setup("# PRD\n"));
+    const io: HumanIO = { ...acceptAll, approve: async () => [] };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    const events = await readEvents(p.ledgerFile);
+    expect(events.at(-1)!.t).toBe("seal");
+    // what they turned down now is added to what they turned down before
+    expect(events.filter((e) => e.t === "design").at(-1)).toMatchObject({ rejected: ["t-1", "ac-1"] });
+  }, 60_000);
+
+  it("a design re-emitted by a resumed stage carries its own timestamp, not the earlier attempt's (N-m4)", async () => {
+    const appDir = setup("# PRD\n");
+    const p = await loadProject(appDir);
+    const closing: HumanIO = {
+      ...acceptAll,
+      approve: async (items) => {
+        if (items[0]?.kind !== "usecase") throw new Error("the dashboard server closed");
+        return items.map((i) => i.ref);
+      },
+    };
+    await expect(runSpecStage(p, closing, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/dashboard server closed/);
+    await new Promise((r) => setTimeout(r, 15));
+    const seq = join(root, "seq-resume.txt");
+    writeFileSync(seq, [fx("10-list-derived.ndjson"), fx("10-list-derived.ndjson"), "-"].join("\n"));
+    process.env.FAKE_KANE_SEQUENCE = seq;
+    const io: HumanIO = { ...acceptAll, approve: async (items) => items.map((i) => i.ref).filter((r) => r !== "t-1") };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    const events = await readEvents(p.ledgerFile);
+    const designs = events.filter((e) => e.t === "design");
+    expect(designs).toHaveLength(2);
+    expect(designs[1]).toMatchObject({ rejected: ["t-1"], credits: 0 });
+    expect(designs[1]!.at).not.toBe(designs[0]!.at);
+    const times = events.map((e) => Date.parse(e.at));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+  }, 60_000);
+
   it("re-ingests on a resume when the spec changed since the extraction", async () => {
     const appDir = setup("# PRD\n");
     const p = await loadProject(appDir);

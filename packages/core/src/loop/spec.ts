@@ -511,19 +511,30 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   }
 
   // 5. human approves the derived design (ACs, scenarios, tests); what they turn down goes on each
-  //    use case's design, so it is never owed (a criterion) and never run (a test)
-  const derived = (await listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label));
+  //    use case's design, so it is never owed (a criterion) and never run (a test). A resumed stage
+  //    never offers again what an earlier attempt's approval turned down (Kane still lists it as
+  //    derived), and that approval stands: no new approval is needed to seal (N-m3)
+  const decided = earlier.filter((e): e is Extract<LedgerEvent, { t: "spec.approved" }> => e.t === "spec.approved");
+  const rejectedBefore = new Set(decided.flatMap((e) => e.rejected ?? []));
+  const designIds = new Set([...designed.values()].flatMap((d) => [...d.acs.map((a) => a.id), ...d.tests.map((t) => t.id)]));
+  const approvedDesignBefore = decided.some((e) => e.refs.some((r) => designIds.has(r)));
+  const derived = (await listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label) && !rejectedBefore.has(n.id));
   if (derived.length > 0) {
     const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
     const approvedSet = derived.map((n) => n.id).filter((id) => approved.includes(id));
     const turnedDown = derived.map((n) => n.id).filter((id) => !approvedSet.includes(id));
     await emit({ t: "spec.approved", refs: approvedSet, rejected: turnedDown });
-    if (approvedSet.length === 0) throw new Error("spec stage: no designed test was approved, refusing to seal");
-    await review(cwd, approvedSet);
+    if (approvedSet.length === 0 && !approvedDesignBefore) throw new Error("spec stage: no designed test was approved, refusing to seal");
+    if (approvedSet.length > 0) await review(cwd, approvedSet);
     for (const d of designed.values()) {
       const mine = new Set([...d.acs.map((a) => a.id), ...d.tests.map((t) => t.id)]);
-      const rejected = turnedDown.filter((id) => mine.has(id));
-      if (JSON.stringify(rejected) !== JSON.stringify(d.rejected ?? [])) await emit({ ...d, credits: 0, rejected });
+      const before = d.rejected ?? [];
+      const rejected = [...before.filter((id) => !approvedSet.includes(id)), ...turnedDown.filter((id) => mine.has(id) && !before.includes(id))];
+      if (JSON.stringify(rejected) !== JSON.stringify(before)) {
+        // an earlier attempt's event carries its own time: the re-emitted one is logged now (N-m4)
+        const { at: _at, ...body } = d as Extract<EventBody, { t: "design" }> & { at?: string };
+        await emit({ ...body, credits: 0, rejected });
+      }
     }
   }
 
