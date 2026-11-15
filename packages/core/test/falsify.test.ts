@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppStartError, type StartAppOptions } from "../src/app.js";
 import { estimateUsd, VeniceHttpError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
-import type { AcNode, Graph, TestNode } from "../src/kane/assurance.js";
+import { evolve as kaneEvolve, type AcNode, type EvolveResult, type Graph, type TestNode } from "../src/kane/assurance.js";
+import type { Slip } from "../src/breaker/mutate.js";
 import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
@@ -14,7 +15,7 @@ import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
 import { falsifyVerdict, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
-import type { ApprovalItem, HumanIO } from "../src/loop/human.js";
+import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { checkSeal, seal } from "../src/seal.js";
@@ -22,7 +23,8 @@ import { checkRecordingsAnchor, logRecordings, markTampered, tamperMarker } from
 import { logSpecAttempt } from "../src/agent/attempts.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const fxTests = join(here, "fixtures", "kane", "tests");
+const fxKane = join(here, "fixtures", "kane");
+const fxTests = join(fxKane, "tests");
 const at = "2026-11-15T00:00:00.000Z";
 const MODEL = "deepseek-v4-flash";
 const USD_PER_CALL = (1500 * 0.138 + 300 * 0.275) / 1e6;
@@ -92,14 +94,15 @@ beforeEach(() => {
   process.env.HOLDBACK_HOME = join(root, "home");
 });
 afterEach(() => {
-  for (const k of ["HOLDBACK_HOME", "VENICE_API_KEY"]) {
+  for (const k of ["HOLDBACK_HOME", "VENICE_API_KEY", "HOLDBACK_KANE_BIN", "FAKE_KANE_SEQUENCE", "FAKE_KANE_ARGV_LOG"]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
   rmSync(root, { recursive: true, force: true });
 });
 
-const idOf = (file: string) => (file.endsWith("t1_test.md") ? "t-1" : file.endsWith("t3b_test.md") ? "t-3b" : "t-3");
+/** `t1_test.md` is t-1, `t3b_test.md` t-3b, `t4_test.md` t-4. */
+const idOf = (file: string) => `t-${/t(\w+?)_test\.md$/.exec(file)?.[1] ?? "3"}`;
 const pass = (file: string): TestRunResult => ({
   testFile: file,
   testId: idOf(file),
@@ -169,6 +172,30 @@ async function greenTurn(n: number) {
   await log({ at, t: "run", kind: "build", turn: n, result: pass(T3) });
 }
 
+/** An earlier pass: ac-3's planted bug survived, Kane evolved uc-1 (t-4 replaced t-1 and t-3), sealed it, and t-4 passed. */
+async function evolvedEarlier() {
+  await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"] });
+  await log({ at, t: "falsify.evolved", uc: "uc-1", because: "b", minted: ["t-4"], retired: ["t-1", "t-3"], credits: 11.39, mutants: ["m-ac-3-1"] });
+  writeFileSync(testFile("t-4"), "---\nassurance:\n  id: t-4\n---\n# t-4\n");
+  await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests: [{ id: "t-4", title: "minted t-4", file: testFile("t-4"), verifies: ["ac-1", "ac-3"] }], gaps: [], credits: 0 });
+  await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }), by: "kane" });
+  await log({ at, t: "run", kind: "build", turn: 1, result: pass(testFile("t-4")) });
+}
+
+/** The breaker's account of the bug it planted for each AC. */
+const SLIP: Record<string, Slip> = {
+  "ac-1": { behaviour: "A SNAP household is told it is not eligible.", inputs: "household size 1, monthly income $3,000, SNAP checked", expected: "Eligible.", observed: "Not eligible." },
+  "ac-3": {
+    behaviour: "A one-person household one dollar over the limit is told it is eligible.",
+    inputs: "household size 1, monthly income $2,462, SNAP unchecked",
+    expected: "Not eligible. with the limit $2,461",
+    observed: "Eligible. with the limit $2,461",
+  },
+};
+
+/** What Kane's evolve does to the verifier in a fake: write a minted test, retire live ones. */
+type EvolveKit = { mint: (id: string, verifies: string[]) => void; retire: (...ids: string[]) => void };
+
 type Plan = {
   /** Patch the breaker returns for an AC on its Nth call (0-based). */
   patch?: (ac: string, call: number) => string;
@@ -177,13 +204,35 @@ type Plan = {
   /** Kane results for the closing replay against the real build. Default: all pass. */
   replay?: (files: string[]) => TestRunResult[];
   mutantStarts?: boolean;
-  approve?: (items: ApprovalItem[]) => string[];
   onBatch?: (ac: string) => void;
-  /** Extra effect of Kane's re-design (after it wrote the new test t-3b). */
-  onDesign?: () => void;
+  /**
+   * Kane's Nth `maintain evolve` (0-based). Default: like the live capture, it mints t-4 (verifying
+   * ac-1 and ac-3) and retires t-1 and t-3.
+   */
+  evolve?: (n: number, kit: EvolveKit) => EvolveResult | Promise<EvolveResult>;
+  /** Extra effect of Kane's evolve, after it wrote its tests. */
+  onEvolve?: (n: number) => void;
   /** The breaker call fails instead of answering. */
   chatError?: (ac: string) => Error | undefined;
+  /** The breaker leaves its account of the bug out. */
+  noSlip?: boolean;
 };
+
+const EVOLVED: EvolveResult = {
+  status: "complete",
+  minted: [{ scenario: "sc-4", test: "t-4" }],
+  superseded: [
+    { scenario: "sc-1", test: "t-1" },
+    { scenario: "sc-3", test: "t-3" },
+  ],
+  retained: [],
+  moves: [],
+  testsCommitted: 1,
+  credits: 11.39,
+};
+
+/** A test file Kane minted: `t-4` lives in `t4_test.md`. */
+const testFile = (id: string) => join(p.verifierDir, ".testmuai", "tests", `${id.replace("-", "")}_test.md`);
 
 function fakes(plan: Plan) {
   const calls = {
@@ -191,22 +240,22 @@ function fakes(plan: Plan) {
     tests: [] as { ac: string; cwd: string; files: string[]; opts: RunTestOptions & { parallel?: number } }[],
     apps: [] as StartAppOptions[],
     stops: 0,
-    design: [] as { cwd: string; uc: string; opts: unknown }[],
-    review: [] as string[][],
-    approvals: [] as ApprovalItem[][],
+    evolve: [] as { cwd: string; uc: string; because: string }[],
     /** Per mutant start: the patched source and whether the app's node_modules showed through. */
     mutantSrc: [] as { src: string; deps: boolean }[],
   };
   let current = "";
-  let designed = false;
   const perAc = new Map<string, number>();
-  // after the re-design Kane keeps ac-3 (re-derived, awaiting approval) and verifies it with a new test t-3b
-  const graph = (): Graph => ({
-    useCases: [],
-    acs: [AC1, AC3, AC9],
-    tests: [testNodes()[0]!, { id: "t-3b", title: "redesigned", file: T3B, verifies: ["ac-3"] }],
-    gaps: [],
-  });
+  // Kane's live tests: what its graph shows (an evolve's new set replaces the use case's old one)
+  let live: TestNode[] = testNodes();
+  const kit: EvolveKit = {
+    mint: (id, verifies) => {
+      writeFileSync(testFile(id), `---\nassurance:\n  id: ${id}\n---\n# ${id}\n\n## Step 1 @verifies ${verifies.join(", ")}\n\nCheck it.\n`);
+      live = [...live.filter((t) => t.id !== id), { id, title: `minted ${id}`, file: testFile(id), verifies }];
+    },
+    retire: (...ids) => void (live = live.filter((t) => !ids.includes(t.id))),
+  };
+  const graph = (): Graph => ({ useCases: [], acs: [AC1, AC3, AC9], tests: live, gaps: [] });
   const deps: FalsifyDeps = {
     apiKey: "test-key",
     port: async () => 5178,
@@ -219,11 +268,13 @@ function fakes(plan: Plan) {
       const err = plan.chatError?.(ac);
       if (err) throw err;
       const patch = plan.patch ? plan.patch(ac, n) : PATCH[ac]!;
-      return { json: { patch, rationale: `breaks ${ac}` }, usage: { prompt_tokens: 1500, completion_tokens: 300 } };
+      return { json: { patch, rationale: `breaks ${ac}`, ...(plan.noSlip ? {} : SLIP[ac]) }, usage: { prompt_tokens: 1500, completion_tokens: 300 } };
     },
     app: async (o) => {
       calls.apps.push(o);
       if (o.cwd !== appDir) {
+        // a re-checked survivor plants its patch without asking the breaker: name the AC from its worktree
+        current = /m-(ac-\d+)-\d+$/.exec(o.cwd)?.[1] ?? current;
         calls.mutantSrc.push({ src: readFileSync(join(o.cwd, "src", "eligibility.js"), "utf8"), deps: existsSync(join(o.cwd, "node_modules", "dep", "index.js")) });
         if (plan.mutantStarts === false) throw new AppStartError("app exited before becoming ready", "SyntaxError: Unexpected token");
       }
@@ -242,47 +293,31 @@ function fakes(plan: Plan) {
       return (plan.replay ?? ((f) => f.map(pass)))(files);
     },
     kane: {
-      designTests: async (cwd, uc, opts) => {
-        calls.design.push({ cwd, uc, opts });
-        writeFileSync(T3B, "---\nassurance:\n  id: t-3b\n---\n# A one-person household earning $2,462 is not eligible\n");
-        const rec = join(p.verifierDir, ".testmuai", "tests", "output-design");
-        mkdirSync(rec, { recursive: true });
-        writeFileSync(join(rec, "authoring.json"), "{}");
-        designed = true;
-        plan.onDesign?.();
-        return { status: "complete", tests: ["t-3b"], acs: ["ac-3"], gaps: [], variables: [], credits: 9, next: [] };
+      evolve: async (cwd, uc, because) => {
+        const n = calls.evolve.length;
+        calls.evolve.push({ cwd, uc, because });
+        let r: EvolveResult;
+        if (plan.evolve) r = await plan.evolve(n, kit);
+        else {
+          kit.mint("t-4", ["ac-1", "ac-3"]);
+          kit.retire("t-1", "t-3");
+          r = EVOLVED;
+        }
+        plan.onEvolve?.(n);
+        return r;
       },
-      listNodes: async () => [
-        { id: "uc-1", label: "usecase", title: "Check eligibility", trust: "approved" },
-        { id: "ac-9", label: "ac", title: AC9.text, trust: "derived" },
-        ...(designed
-          ? [
-              { id: "ac-3", label: "ac", title: AC3.text, trust: "derived" },
-              { id: "t-3b", label: "test", title: "redesigned", trust: "derived" },
-              { id: "sc-7", label: "scenario", title: "income just above the limit", trust: "derived" },
-            ]
-          : []),
-      ],
-      review: async (_cwd, refs) => void calls.review.push(refs),
       readGraph: async () => graph(),
-      resumeSession: async () => {
-        throw new Error("no pause expected");
-      },
-      extractResume: async () => {
-        throw new Error("no pause expected");
-      },
     },
   };
   const io: HumanIO = {
     answer: async () => {
-      throw new Error("no question expected");
+      throw new Error("falsify asks the human nothing");
     },
-    approve: async (items) => {
-      calls.approvals.push(items);
-      return plan.approve ? plan.approve(items) : items.map((i) => i.ref);
+    approve: async () => {
+      throw new Error("falsify asks the human nothing");
     },
   };
-  return { deps, io, calls };
+  return { deps, io, calls, kit };
 }
 
 const after = async (since: number) => (await readEvents(p.ledgerFile)).slice(since);
@@ -356,7 +391,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "run:build:t-3:passed",
       "recordings",
     ]);
-    expect(ev[4]).toEqual({ at: expect.any(String), t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"], model: MODEL, usd: expect.closeTo(USD_PER_CALL, 12), verdict: "killed" });
+    expect(ev[4]).toEqual({ at: expect.any(String), t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"], model: MODEL, usd: expect.closeTo(USD_PER_CALL, 12), verdict: "killed", slip: SLIP["ac-3"] });
     expect(ev[5]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1" });
     expect(ev[7]).toMatchObject({ t: "run", kind: "build", turn: 1 });
 
@@ -389,23 +424,22 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect((await checkRecordingsAnchor(p, await readEvents(p.ledgerFile))).moved).toEqual([]);
   });
 
-  it("marks a surviving AC vacuous and re-designs its use case once, with the human's approval and a fresh seal", async () => {
+  const survives3 = (ac: string, files: string[]) => files.map(ac === "ac-1" ? failOn("ac-1") : pass);
+
+  it("a surviving AC sends its use case to Kane's maintain evolve: told what slipped through, its new set replaces the old tests, sealed by Kane, every criterion owed again and the new tests replayed (R40)", async () => {
     await setup();
+    const sealedBefore = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
     const since = (await readEvents(p.ledgerFile)).length;
-    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass) });
+    const { deps, io, calls } = fakes({ mutantRun: survives3 });
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], invalid: [], redesigned: ["uc-1"], vacuous: [], reason: "done" });
 
-    expect(calls.design).toEqual([{ cwd: p.verifierDir, uc: "uc-1", opts: { force: true, max: 5 } }]);
-    // only nodes of the re-designed use case: the derived ac-9 of uc-2 is not the human's question here
-    expect(calls.approvals).toEqual([
-      [
-        { ref: "ac-3", title: AC3.text, kind: "ac" },
-        { ref: "t-3b", title: "redesigned", kind: "test" },
-        { ref: "sc-7", title: "income just above the limit", kind: "scenario" },
-      ],
-    ]);
-    expect(calls.review).toEqual([["ac-3", "t-3b", "sc-7"]]);
+    // Kane, the verifier, is told what slipped through in a user's terms: the inputs, expected and observed
+    expect(calls.evolve).toHaveLength(1);
+    const { cwd, uc, because } = calls.evolve[0]!;
+    expect([cwd, uc]).toEqual([p.verifierDir, "uc-1"]);
+    for (const part of [`ac-3 ("${AC3.text}")`, SLIP["ac-3"]!.behaviour, SLIP["ac-3"]!.inputs, SLIP["ac-3"]!.expected, SLIP["ac-3"]!.observed]) expect(because).toContain(part);
+    expect(because).not.toContain("LIMITS[size]"); // the bug in a user's terms, not its code
 
     const ev = await after(since);
     expect(tags(ev)).toEqual([
@@ -416,66 +450,75 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "mutant:ac-3:survived",
       "run:falsify:t-3:passed",
       "recordings",
-      "spec.approved",
+      "falsify.evolved",
       "design",
       "seal",
       "recordings",
-      "run:build:t-1:passed",
-      "run:build:t-3b:passed",
+      "run:build:t-4:passed",
       "recordings",
     ]);
-    expect(ev[7]).toMatchObject({ t: "spec.approved", refs: ["ac-3", "t-3b", "sc-7"], rejected: [] });
-    expect(ev[8]).toMatchObject({ t: "design", useCase: "uc-1", acs: [AC1, AC3], credits: 9 });
-    expect((ev[8] as Extract<LedgerEvent, { t: "design" }>).tests.map((t) => t.id)).toEqual(["t-1", "t-3b"]);
+    expect(ev[4]).toMatchObject({ t: "mutant", id: "m-ac-3-1", slip: SLIP["ac-3"] });
+    expect(ev[7]).toEqual({ at: expect.any(String), t: "falsify.evolved", uc: "uc-1", because, minted: ["t-4"], retired: ["t-1", "t-3"], credits: 11.39, mutants: ["m-ac-3-1"] });
+    // Kane's new set replaces the old one: no retired test is run or kept on any criterion
+    const design = ev[8] as Extract<LedgerEvent, { t: "design" }>;
+    expect(design).toMatchObject({ useCase: "uc-1", acs: [AC1, AC3], credits: 0 });
+    expect(design.tests.map((t) => t.id)).toEqual(["t-4"]);
     const sealEv = ev[9] as Extract<LedgerEvent, { t: "seal" }>;
-    expect(Object.keys(sealEv.manifest)).toContain(".testmuai/tests/t3b_test.md");
+    expect(sealEv.by).toBe("kane");
+    expect(Object.keys(sealEv.manifest)).toContain(".testmuai/tests/t4_test.md");
+    expect(sealEv.manifest["app:PRD.md"]).toBe(sealedBefore.manifest["app:PRD.md"]);
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
 
-    // the survivor stays on record; the redesigned use case went back to owed, and the replay ran its new tests
+    // every criterion of the use case was owed again; the closing replay ran the new tests against the real build
     const all = await readEvents(p.ledgerFile);
-    expect(all.some((e) => e.t === "mutant" && e.ac === "ac-3" && e.verdict === "survived")).toBe(true);
     const beforeReplay = reduce(all.slice(0, since + 11));
-    expect(beforeReplay.acs["ac-1"]!.status).toBe("owed");
-    expect(beforeReplay.acs["ac-3"]).toMatchObject({ status: "owed", tests: ["t-3b"] });
+    expect(beforeReplay.acs["ac-1"]).toMatchObject({ status: "owed", tests: ["t-4"] });
+    expect(beforeReplay.acs["ac-3"]).toMatchObject({ status: "owed", tests: ["t-4"] });
+    expect(calls.tests.filter((t) => !t.opts.noHeal).map((t) => t.files)).toEqual([[testFile("t-4")]]);
     expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
+    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(4.7 + 11.39, 9);
   });
 
-  it("logs Kane's balance drop for each mutant's batch, the re-design (before its seal) and the closing replay (R34)", async () => {
+  it("logs Kane's balance drop for each mutant's batch, the evolve (before its seal) and the closing replay, counting the evolve once (R34, R40)", async () => {
     await setup();
     const since = (await readEvents(p.ledgerFile)).length;
     let bal = 1000;
-    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass) });
+    const { deps, io } = fakes({ mutantRun: survives3 });
     const tests = deps.tests;
     deps.tests = async (...a) => ((bal -= 6), tests(...a));
-    const design = deps.kane.designTests;
-    deps.kane = { ...deps.kane, designTests: async (...a) => ((bal -= 11), design(...a)) };
+    const evolveOnce = deps.kane.evolve;
+    deps.kane = { ...deps.kane, evolve: async (...a) => ((bal -= 12), evolveOnce(...a)) };
     deps.balance = async () => bal;
     await runFalsify(p, deps, io, log);
-    const ev = await after(since);
-    expect(tags(ev).filter((t) => ["credits", "design", "seal"].includes(t) || t.startsWith("mutant"))).toEqual([
+    const all = await readEvents(p.ledgerFile);
+    const ev = all.slice(since);
+    expect(tags(ev).filter((t) => ["credits", "falsify.evolved", "design", "seal"].includes(t) || t.startsWith("mutant"))).toEqual([
       "mutant:ac-1:killed",
       "credits",
       "mutant:ac-3:survived",
       "credits",
-      "design",
       "credits",
+      "falsify.evolved",
+      "design",
       "seal",
       "credits",
     ]);
     expect(ev.filter((e) => e.t === "credits").map((e) => e.t === "credits" && [e.source, e.delta, e.perRunSum])).toEqual([
       ["falsify", 6, 4.7],
       ["falsify", 6, 0],
-      ["design", 11, 9],
+      ["evolve", 12, 11.39],
       ["falsify", 6, 0],
     ]);
+    // by the balance: 6 + 6 + 12 + 6, the evolve's own figure never added on top
+    expect(reduce(all).kaneCredits - reduce(all.slice(0, since)).kaneCredits).toBeCloseTo(30, 9);
   });
 
   it("a survivor's test that proved nothing twice in the closing replay is re-checked by the next build loop, and the gate can open", async () => {
     await setup();
     const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
     const { deps, io } = fakes({
-      mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass),
-      approve: () => [], // the re-design is turned down: ac-3 stays vacuous
+      mutantRun: survives3,
+      evolve: () => ({ status: "nothing", note: "nothing to change", credits: 5 }), // ac-3 stays vacuous
       replay: (files) => files.map((f) => (idOf(f) === "t-3" ? timeout(f) : pass(f))),
     });
     await runFalsify(p, deps, io, log);
@@ -504,55 +547,77 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(gate(state).inconclusive).toEqual([]);
   });
 
-  it.each([
-    ["a kept", true],
-    ["a rolled-back", false],
-  ])("%s re-design: the Clarifications it added to PRD.md are committed before its seal only when it is kept", async (_which, keep) => {
+  it("runs the live capture through Holdback's own evolve runner: Kane 0.10.4 retired every old test of the use case (R40)", async () => {
     await setup();
-    const head = git(appDir, "rev-parse", "HEAD");
-    const prd = readFileSync(join(appDir, "PRD.md"), "utf8");
-    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass), ...(keep ? {} : { approve: () => [] }) });
-    const design = deps.kane.designTests;
-    deps.kane = {
-      ...deps.kane,
-      designTests: async (...a) => {
-        await design(...a);
-        return {
-          status: "paused",
-          verb: "design",
-          sid: "s1",
-          resume: "kane-cli design tests --resume s1 --mode agent",
-          questions: [{ id: "q1", text: "Is $2,462 above the limit?", risk: "low", rationale: "", options: [{ label: "Yes" }], recommendedIndex: 0, allowFreeText: false }],
-          credits: 2,
-        };
-      },
-      resumeSession: async () => ({ status: "complete", tests: ["t-3b"], acs: ["ac-3"], gaps: [], variables: [], credits: 7, next: [] }),
+    const seq = join(root, "seq.txt");
+    writeFileSync(seq, [join(fxKane, "14-evolve-paused.ndjson"), join(fxKane, "15-evolve-complete.ndjson")].join("\n"));
+    const argvLog = join(root, "argv.log");
+    for (const [k, v] of Object.entries({ HOLDBACK_KANE_BIN: join(here, "fake-kane.mjs"), FAKE_KANE_SEQUENCE: seq, FAKE_KANE_ARGV_LOG: argvLog })) process.env[k] = v;
+    const { deps, io, kit } = fakes({ mutantRun: survives3 });
+    deps.kane.evolve = async (cwd, uc, because) => {
+      kit.mint("t-4", ["ac-1", "ac-3"]);
+      kit.retire("t-1", "t-3");
+      return kaneEvolve(cwd, uc, because);
     };
-    io.answer = async () => ({ q1: "Yes" });
     const r = await runFalsify(p, deps, io, log);
-    expect(r.redesigned).toEqual(keep ? ["uc-1"] : []);
-    if (!keep) {
-      // the rollback put PRD.md back as it was: nothing to commit, nothing left over
-      expect(git(appDir, "rev-parse", "HEAD")).toBe(head);
-      expect(readFileSync(join(appDir, "PRD.md"), "utf8")).toBe(prd);
-      expect(git(appDir, "status", "--porcelain", "--", "PRD.md")).toBe("");
-      return;
-    }
-    expect(git(appDir, "log", "-1", "--format=%s")).toBe("spec: clarifications");
-    expect(git(appDir, "show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
-    expect(git(appDir, "status", "--porcelain", "--", "PRD.md")).toBe("");
-    expect(readFileSync(join(appDir, "PRD.md"), "utf8")).toContain("- Q: Is $2,462 above the limit? — A: Yes");
+    expect(r.redesigned).toEqual(["uc-1"]);
+    const argv = readFileSync(argvLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+    expect(argv.map((a) => a.slice(0, 3).join(" "))).toEqual(["maintain evolve uc-1", "maintain evolve uc-1"]);
+    expect(argv[1]!.slice(-2)).toEqual(["--answer", "evolve:uc-1=1"]);
+    expect((await readEvents(p.ledgerFile)).find((e) => e.t === "falsify.evolved")).toMatchObject({ minted: ["t-4"], retired: ["t-1", "t-2", "t-3"], credits: 11.39 });
   });
 
-  it("rolls the verifier back and keeps the survivor vacuous when the human approves none of the re-design", async () => {
+  it("the next pass re-checks the survivor's own planted bug against the new tests first, with no breaker call: killed proves it (R40)", async () => {
+    await setup({ before: evolvedEarlier });
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], survived: [], vacuous: [], redesigned: [], reason: "done" });
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]); // ac-3's bug is the one that slipped through before
+    expect(calls.mutantSrc[1]!.src).toContain("LIMITS[size] + 1");
+    expect(calls.tests.filter((t) => t.opts.noHeal).map((t) => [t.ac, t.files])).toEqual([
+      ["ac-1", [testFile("t-4")]],
+      ["ac-3", [testFile("t-4")]],
+    ]);
+    const m = (await after(since)).find((e) => e.t === "mutant" && e.ac === "ac-3");
+    expect(m).toMatchObject({ recheck: "m-ac-3-1", patch: PATCH["ac-3"], usd: 0, verdict: "killed", slip: SLIP["ac-3"] });
+    expect(calls.evolve).toEqual([]);
+    expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("proved");
+  });
+
+  it("a re-checked survivor that gets past the new tests too stays vacuous, with the reason, and never goes back to Kane (R40)", async () => {
+    await setup({ before: evolvedEarlier });
+    const { deps, io, calls } = fakes({ mutantRun: survives3 });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], vacuous: ["ac-3"], redesigned: [], reason: "done" });
+    expect(calls.evolve).toEqual([]);
+    expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/got past the new tests too/) });
+  });
+
+  it("when the code moved under the survivor's patch, the breaker plants the same bug in the code as it is now, once (R40)", async () => {
+    await setup({ before: evolvedEarlier });
+    writeFileSync(join(appDir, "src", "eligibility.js"), SRC.replace(': "Not eligible."', ': "Not eligible!"'));
+    git(appDir, "commit", "-q", "-am", "turn 2");
+    const moved = PATCH["ac-3"]!.replaceAll('"Not eligible."', '"Not eligible!"');
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), patch: (ac) => PATCH[ac]!.replaceAll('"Not eligible."', '"Not eligible!"') });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], reason: "done" });
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1", "ac-3"]);
+    const asked = calls.chat[1]!.o.messages.map((x) => x.content).join("\n");
+    expect(asked).toContain("plant the same bug in the code as it is now");
+    expect(asked).toContain("LIMITS[size] + 1"); // the survivor's own patch
+    const m = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3");
+    expect(m).toMatchObject({ recheck: "m-ac-3-1", patch: moved, verdict: "killed", usd: expect.closeTo(USD_PER_CALL, 12) });
+  });
+
+  it("an evolve that adds no test leaves the survivor vacuous with a plain-words reason; the verifier is rolled back and Kane's credits count (R40)", async () => {
     await setup();
     const since = (await readEvents(p.ledgerFile)).length;
-    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass), approve: () => [] });
+    const { deps, io, calls } = fakes({ mutantRun: survives3, evolve: () => ({ status: "nothing", note: "I found no requested change to apply.", credits: 5.69 }) });
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: [], vacuous: ["ac-3"], reason: "done" });
-    expect(r.redesignError).toMatch(/approved/);
-    expect(calls.review).toEqual([]);
-    expect(existsSync(T3B)).toBe(false);
+    expect(r.redesignError).toMatch(/Kane added no test to uc-1: I found no requested change/);
+    expect(calls.evolve).toHaveLength(1); // never retried blindly
     const all = await readEvents(p.ledgerFile);
     expect(tags(all.slice(since))).toEqual([
       "recordings",
@@ -562,37 +627,32 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "mutant:ac-3:survived",
       "run:falsify:t-3:passed",
       "recordings",
-      "spec.approved",
-      "recordings", // what Kane wrote while designing, anchored right after the rollback
+      "recordings", // anchored right after the rollback
       "redesign.dropped",
       "run:build:t-1:passed",
       "run:build:t-3:passed",
       "recordings",
     ]);
+    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 5.69, acs: ["ac-3"], reason: "Kane could not add a test that catches this planted bug" });
+    expect(reduce(all).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: "Kane could not add a test that catches this planted bug" });
+    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(4.7 + 5.69, 9);
     const sealEv = all.filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>;
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
-    expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
-    // what Kane recorded while designing is anchored, so the next build loop sees no tamper
     expect((await checkRecordingsAnchor(p, all)).moved).toEqual([]);
-    // the closing replay still runs the sealed tests
-    expect(calls.tests.filter((t) => !t.opts.noHeal).map((t) => t.files)).toEqual([[T1, T3]]);
-    // the re-design's Kane credits are still accounted
-    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 9, detail: expect.stringMatching(/approved/) });
-    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(4.7 + 9, 9);
   });
 
-  /** Runs a pass where ac-1 is killed and ac-3 survives, and expects the re-design to be rolled back. */
+  /** Runs a pass where ac-1 is killed and ac-3 survives, and expects Kane's evolve to be rolled back. */
   async function rolledBack(plan: Partial<Plan>, why: RegExp) {
     await setup();
     const t1 = readFileSync(T1);
-    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass), ...plan });
+    const { deps, io, calls } = fakes({ mutantRun: survives3, ...plan });
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: [], vacuous: ["ac-3"], reason: "done" });
     expect(r.redesignError).toMatch(why);
     const all = await readEvents(p.ledgerFile);
-    expect(all.some((e) => e.t === "design" && e.at !== at)).toBe(false);
-    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], detail: expect.stringMatching(why) });
-    expect(existsSync(T3B)).toBe(false);
+    expect(all.some((e) => e.t === "falsify.evolved" || (e.t === "design" && e.at !== at))).toBe(false);
+    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], detail: expect.stringMatching(why), acs: ["ac-3"] });
+    expect(existsSync(testFile("t-4"))).toBe(false);
     expect(readFileSync(T1).equals(t1)).toBe(true);
     const sealEv = all.filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>;
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
@@ -602,35 +662,114 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     return { r, calls };
   }
 
-  it("rolls the re-design back when Kane rewrote a test file the human did not approve in it", async () => {
-    await rolledBack({ onDesign: () => appendFileSync(T1, "\nAlso accept a blank result.\n") }, /nobody approved: \.testmuai\/tests\/t1_test\.md/);
+  it("rolls Kane's evolve back when it changed a test file it did not mint", async () => {
+    await rolledBack({ onEvolve: () => appendFileSync(T1, "\nAlso accept a blank result.\n") }, /changed test files it did not mint: \.testmuai\/tests\/t1_test\.md/);
   });
 
-  it("rolls the re-design back when the human rejects the survivor's re-derived AC, so it never leaves the gate silently", async () => {
-    const { calls } = await rolledBack({ approve: (items) => items.map((i) => i.ref).filter((r) => r !== "ac-3") }, /no longer holds ac-3/);
-    expect(calls.review).toEqual([]); // Kane is never told to approve a design that is rolled back
+  it("rolls Kane's evolve back when it reports a minted test the verifier has no file of", async () => {
+    await rolledBack({ evolve: () => EVOLVED }, /minted t-4 but no test file of it/);
   });
 
-  it("rolls the re-design back when Kane fails during it", async () => {
+  it("rolls Kane's evolve back when Kane fails during it", async () => {
     await rolledBack(
       {
-        onDesign: () => {
+        evolve: (_n, kit) => {
+          kit.mint("t-4", ["ac-3"]);
           throw new Error("kane-cli exited with code 3");
         },
       },
-      /Kane failed during the re-design: kane-cli exited with code 3/,
+      /Kane failed during the evolve of uc-1: kane-cli exited with code 3/,
     );
   });
 
-  it("restores the sealed files before stopping with tamper when the ledger is forged during the re-design", async () => {
+  it("a criterion the evolve left without a test gets one bounded follow-up evolve; still uncovered, it needs the spec, with the reason (R40)", async () => {
     await setup();
-    const { deps, io } = fakes({
-      mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass),
-      onDesign: () => appendFileSync(p.ledgerFile, JSON.stringify({ at, t: "seal", manifest: {} }) + "\n"),
+    const { deps, io, calls } = fakes({
+      mutantRun: survives3,
+      evolve: (n, kit) => {
+        if (n > 0) return { status: "nothing", note: "nothing to change", credits: 4 };
+        kit.mint("t-4", ["ac-3"]);
+        kit.retire("t-1", "t-3");
+        return EVOLVED;
+      },
     });
     const r = await runFalsify(p, deps, io, log);
+    expect(r.redesigned).toEqual(["uc-1"]);
+    expect(calls.evolve).toHaveLength(2);
+    expect(calls.evolve[1]!.because.startsWith(`cover ac-1 ("${AC1.text}") again`)).toBe(true);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 4, detail: expect.stringMatching(/^follow-up evolve of uc-1/) });
+    const design = all.findLast((e) => e.t === "design") as Extract<LedgerEvent, { t: "design" }>;
+    expect(design.notes).toEqual({ "ac-1": "Kane's evolved tests no longer cover it; a follow-up evolve did not cover it either" });
+    const s = reduce(all);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "needs-spec", tests: [], reason: expect.stringMatching(/no longer cover it/) });
+    expect(s.acs["ac-3"]).toMatchObject({ status: "passing", tests: ["t-4"] });
+  });
+
+  it("a follow-up evolve that covers the criterion again is on record as one, and its set is what gets sealed (R40)", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({
+      mutantRun: survives3,
+      evolve: (n, kit) => {
+        if (n === 0) {
+          kit.mint("t-4", ["ac-3"]);
+          kit.retire("t-1", "t-3");
+          return EVOLVED;
+        }
+        kit.mint("t-5", ["ac-1"]);
+        return { ...EVOLVED, minted: [{ scenario: "sc-5", test: "t-5" }], superseded: [], credits: 7.33 };
+      },
+    });
+    await runFalsify(p, deps, io, log);
+    expect(calls.evolve).toHaveLength(2);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.filter((e) => e.t === "falsify.evolved")).toMatchObject([
+      { minted: ["t-4"], retired: ["t-1", "t-3"], credits: 11.39 },
+      { minted: ["t-5"], retired: [], credits: 7.33, followUp: true, mutants: ["m-ac-3-1"] },
+    ]);
+    const s = reduce(all);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "passing", tests: ["t-5"] });
+    expect(s.acs["ac-3"]).toMatchObject({ status: "passing", tests: ["t-4"] });
+    const sealEv = all.findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
+    expect(Object.keys(sealEv.manifest)).toEqual(expect.arrayContaining([".testmuai/tests/t4_test.md", ".testmuai/tests/t5_test.md"]));
+  });
+
+  it("checks the Kane credit cap before an evolve: at the cap, Kane is not called and the pass stops", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-3" ? failOn("ac-3") : pass) });
+    // the spec stage spent 12 credits; ac-3's caught bug costs 4.7 more
+    const r = await runFalsify(p, deps, io, log, { kaneCap: 16 });
+    expect(r).toMatchObject({ killed: ["ac-3"], survived: ["ac-1"], reason: "kane-budget" });
+    expect(calls.evolve).toEqual([]);
+    expect(existsSync(testFile("t-4"))).toBe(false);
+  });
+
+  it("a spec edited while Kane evolves the tests is never sealed: the evolve is rolled back, the edit kept, the change on record as unverified (N-I2)", async () => {
+    await setup();
+    const sealsBefore = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
+    const edited = "# Food pantry\n\nNot eligible above 2461.\nA rule written while Kane evolved the tests.\n";
+    const { deps, io } = fakes({ mutantRun: survives3, onEvolve: () => writeFileSync(join(appDir, "PRD.md"), edited) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ reason: "drift", redesigned: [], vacuous: ["ac-3"], specChange: { files: ["PRD.md"], duringAgentTurn: true } });
+    const all = await readEvents(p.ledgerFile);
+    expect(all.filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+    expect(all.some((e) => e.t === "falsify.evolved")).toBe(false);
+    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ credits: 11.39, detail: expect.stringMatching(/spec changed while Kane evolved the tests/) });
+    expect(all.findLast((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true });
+    expect(existsSync(testFile("t-4"))).toBe(false);
+    expect(readFileSync(join(appDir, "PRD.md"), "utf8")).toBe(edited);
+  });
+
+  it("restores the verifier before stopping with tamper when the ledger is forged during the evolve", async () => {
+    await setup();
+    const { deps, io } = fakes({
+      mutantRun: survives3,
+      onEvolve: () => appendFileSync(p.ledgerFile, JSON.stringify({ at, t: "seal", manifest: {} }) + "\n"),
+    });
+    deps.balance = async () => 100; // the batch's credits line is the first append after the forgery
+    const r = await runFalsify(p, deps, io, log);
     expect(r.reason).toBe("tamper");
-    expect(existsSync(T3B)).toBe(false);
+    expect(existsSync(testFile("t-4"))).toBe(false);
     expect(await tamperMarker(p)).not.toBeNull();
   });
 
@@ -717,28 +856,23 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(calls.tests.filter((t) => t.opts.noHeal)).toHaveLength(4);
   });
 
-  it("counts a pass after a heal as survived-by-heal; a second survival of a use case stays vacuous without another re-design", async () => {
-    await setup({
-      before: async () => {
-        // an earlier pass: ac-3 survived, its use case was re-designed, and the build loop made it green again
-        await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived" });
-        await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests: testNodes(), gaps: [], credits: 9 });
-        await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
-        await greenTurn(2);
-      },
-    });
+  it("counts a pass after a heal as survived-by-heal; at most two evolves per use case per run, so a later survivor stays vacuous with the reason (R40)", async () => {
+    await setup();
     const { deps, io, calls } = fakes({
       mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : (f) => ({ ...pass(f), healTriggered: true })),
     });
-    const r = await runFalsify(p, deps, io, log);
+    // this run already evolved uc-1 twice (an evolve and its follow-up)
+    const evolves = new Map([["uc-1", 2]]);
+    const r = await runFalsify(p, deps, io, log, { evolves });
     expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], invalid: [], redesigned: [], vacuous: ["ac-3"], reason: "done" });
-    expect(calls.design).toEqual([]);
-    expect(calls.approvals).toEqual([]);
+    expect(r.redesignError).toMatch(/already evolved uc-1 2 times in this run/);
+    expect(calls.evolve).toEqual([]);
+    expect(evolves.get("uc-1")).toBe(2);
     const all = await readEvents(p.ledgerFile);
     expect(all.at(-1)!.t).toBe("recordings");
     const m = all.filter((e) => e.t === "mutant").pop();
-    expect(m).toMatchObject({ id: "m-ac-3-2", ac: "ac-3", verdict: "survived-by-heal", note: expect.stringContaining("heal") });
-    expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
+    expect(m).toMatchObject({ id: "m-ac-3-1", ac: "ac-3", verdict: "survived-by-heal", note: expect.stringContaining("heal") });
+    expect(reduce(all).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: "Kane could not add a test that catches this planted bug" });
   });
 
   it("retries a patch that does not apply once with git's error, then counts it invalid without any Kane run", async () => {
@@ -863,19 +997,6 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(r.killed).toEqual(["ac-1", "ac-3"]);
   });
 
-  it("says so when a forced re-design finds nothing to change (live: Kane keeps an unchanged design), and the survivor stays vacuous", async () => {
-    await setup();
-    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => (ac === "ac-3" ? files.map(pass) : files.map(failOn(ac))) });
-    deps.kane.designTests = async (cwd, uc, opts) => {
-      calls.design.push({ cwd, uc, opts });
-      return { status: "complete", tests: [], acs: [], gaps: [], variables: [], credits: 11.03, next: [] };
-    };
-    const r = await runFalsify(p, deps, io, log);
-    expect(r).toMatchObject({ survived: ["ac-3"], redesigned: [], vacuous: ["ac-3"] });
-    expect(r.redesignError).toMatch(/Kane found nothing to change in uc-1/);
-    expect(calls.approvals).toEqual([]);
-  });
-
   it("stops with drift, not tamper, before any breaker call when only the spec changed since the seal", async () => {
     await setup();
     appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n");
@@ -888,16 +1009,16 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(await tamperMarker(p)).toBeNull();
   });
 
-  it("a spec edit made while Kane attacks a mutant stops the pass with drift: that verdict stands, nothing else is attacked or re-designed, the real build is still replayed", async () => {
+  it("a spec edit made while Kane attacks a mutant stops the pass with drift: that verdict stands, nothing else is attacked or evolved, the real build is still replayed", async () => {
     await setup();
     const { deps, io, calls } = fakes({
-      mutantRun: (_ac, files) => files.map(pass), // a survivor, which would otherwise be re-designed
+      mutantRun: (_ac, files) => files.map(pass), // a survivor, which would otherwise go to Kane
       onBatch: () => appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n"),
     });
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ reason: "drift", survived: ["ac-1"], redesigned: [], vacuous: ["ac-1"] });
     expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
-    expect(calls.design).toEqual([]);
+    expect(calls.evolve).toEqual([]);
     expect(calls.tests.filter((t) => !t.opts.noHeal)).toHaveLength(1); // the closing replay
     const ev = await readEvents(p.ledgerFile);
     expect(ev.some((e) => e.t === "tamper")).toBe(false);

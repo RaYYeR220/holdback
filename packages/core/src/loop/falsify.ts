@@ -3,10 +3,10 @@ import { lstat, mkdir, readdir, readFile, readlink, rm, stat, symlink, unlink, w
 import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
-import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, type Mutant } from "../breaker/mutate.js";
+import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
 import { Budget, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
-import { balance, designTests, extractResume, listNodes, readGraph, resumeSession, review, type ListedNode } from "../kane/assurance.js";
+import { balance, evolve, readGraph, type Graph } from "../kane/assurance.js";
 import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneCapReached, KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
@@ -16,23 +16,21 @@ import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type
 import { kaneCapCredits, type Project } from "../project.js";
 import { checkSeal, tier1Entries, type SealEntry } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
+import { escapeControls } from "../text.js";
 import { byAcId } from "./brief.js";
 import { logMarkedTamper, recordTamperIn } from "./session.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
-import { appSealFiles, clarifiedFile, classifySpecChange, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specFileOf, type Warn } from "./spec.js";
+import { appSealFiles, classifySpecChange, driftHint, isSpecKey, reseal, specFileOf, specKept, specMovedFrom, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Verdict = Extract<LedgerEvent, { t: "mutant" }>["verdict"];
+type MutantEvent = Extract<LedgerEvent, { t: "mutant" }>;
 
-/** The Kane Assurance calls a re-design makes (injectable for tests). */
+/** The Kane Assurance calls falsify makes after a survivor (injectable for tests). */
 export type FalsifyKane = {
-  designTests: typeof designTests;
-  listNodes: typeof listNodes;
-  review: typeof review;
+  evolve: typeof evolve;
   readGraph: typeof readGraph;
-  resumeSession: typeof resumeSession;
-  extractResume: typeof extractResume;
 };
 
 export type FalsifyDeps = {
@@ -53,7 +51,7 @@ export const defaultFalsifyDeps: FalsifyDeps = {
   chat: veniceChat,
   tests: runTests,
   app: startApp,
-  kane: { designTests, listNodes, review, readGraph, resumeSession, extractResume },
+  kane: { evolve, readGraph },
   balance,
 };
 
@@ -71,9 +69,12 @@ export type FalsifyResult = {
   survived: string[];
   /** ACs whose mutant proved nothing: the patch never applied, the mutant did not start, or a test failed on other ACs only. */
   invalid: string[];
-  /** Use cases Kane re-designed after a survivor: their ACs are `owed` again (back to the build loop). */
+  /** Use cases Kane evolved after a survivor (R40): their ACs are `owed` again (back to the build loop, then a re-check). */
   redesigned: string[];
-  /** Survivors left `vacuous` (a second survival, or a re-design that failed or was turned down): reported, not blocked on. */
+  /**
+   * Survivors left `vacuous`: Kane's evolve added no test, the run's evolves of the use case are
+   * spent, or a re-checked survivor got past the new tests too. Reported, not blocked on.
+   */
   vacuous: string[];
   /** Passing ACs not attacked because the next breaker call could pass the budget cap. */
   skipped: string[];
@@ -81,10 +82,12 @@ export type FalsifyResult = {
   usd: number;
   reason: FalsifyStopReason;
   error?: string;
-  /** Why a re-design was rolled back. */
+  /** Why the last evolve added no test. */
   redesignError?: string;
   /** Why the closing replay against the real build did not run. */
   replayError?: string;
+  /** For a `drift` stop on a spec that moved while Kane evolved the tests (N-I2): what changed; its origin is unverified. */
+  specChange?: { files: string[]; duringAgentTurn: boolean };
 };
 
 const MUT_DIR = "mut";
@@ -125,25 +128,70 @@ function recentChanges(events: LedgerEvent[]): string[] {
   return out;
 }
 
-/** Use cases already re-designed after a survivor: a `design` of the use case after a surviving mutant of one of its ACs. */
-function redesignedAfterSurvival(events: LedgerEvent[]): Set<string> {
-  const ucOf = new Map<string, string>();
-  const survived = new Set<string>();
-  const out = new Set<string>();
-  for (const e of events) {
-    if (e.t === "design") {
-      if (survived.delete(e.useCase)) out.add(e.useCase);
-      for (const a of e.acs) ucOf.set(a.id, e.useCase);
-    } else if (e.t === "mutant" && (e.verdict === "survived" || e.verdict === "survived-by-heal")) {
-      const uc = ucOf.get(e.ac);
-      if (uc !== undefined) survived.add(uc);
+/** R40: at most this many `maintain evolve` calls per use case per run (the evolve and one follow-up). */
+export const MAX_EVOLVES = 2;
+/** The longest `--because` Holdback sends Kane. */
+const MAX_BECAUSE = 1500;
+/** Why a survivor stays vacuous when Kane's evolve adds no test (plain words, for the human). */
+export const NO_TEST = "Kane could not add a test that catches this planted bug";
+/** Why a criterion an evolve left without a test needs the spec. */
+const UNCOVERED = "Kane's evolved tests no longer cover it";
+
+/** A survivor of this pass: what Kane is told about it if its use case is evolved. */
+type Survivor = { ac: AcState; id: string; patch: string; rationale: string; slip?: Slip };
+
+/** Kane's evolve cannot be used; the verifier is rolled back. */
+class EvolveFailed extends Error {}
+
+/** One line, control and format characters escaped: text a model wrote, on its way to a command line. */
+const oneLine = (t: string): string => escapeControls(t.replace(/\s+/g, " ").trim());
+
+/**
+ * What Kane is told slipped through (R40): each surviving bug in a user's terms, the inputs that show
+ * it, and what the page should show against what it showed, from the breaker's own account (else its
+ * rationale and the lines it changed). Kane is the verifier and may see it; the builder never does.
+ */
+export function becauseText(list: Pick<Survivor, "ac" | "patch" | "rationale" | "slip">[]): string {
+  const one = (s: (typeof list)[number]) => {
+    const head = `${s.ac.id} ("${s.ac.text}")`;
+    if (s.slip) return `${head}: ${s.slip.behaviour} With ${s.slip.inputs}, the page should show ${s.slip.expected}, but it showed ${s.slip.observed}.`;
+    const changed = s.patch
+      .split("\n")
+      .filter((l) => /^[-+]/.test(l) && !/^(---|\+\+\+) /.test(l))
+      .slice(0, 8)
+      .join(" | ");
+    return `${head}: ${s.rationale || "a planted change"}. The planted change: ${changed}.`;
+  };
+  const intro = list.length === 1 ? "A planted bug got past every test of this use case." : `${list.length} planted bugs got past every test of this use case.`;
+  const text = oneLine(`${intro} ${list.map(one).join(" ")} Add a test that catches ${list.length === 1 ? "it" : "each"}.`);
+  return text.length > MAX_BECAUSE ? `${text.slice(0, MAX_BECAUSE - 1)}…` : text;
+}
+
+/**
+ * The surviving mutant of `acId` that a later `falsify.evolved` answered, when no mutant of the AC
+ * came after that evolve: the bug the AC's new tests must now catch (R40).
+ */
+export function pendingRecheck(events: LedgerEvent[], acId: string): MutantEvent | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.t === "mutant" && e.ac === acId) return undefined;
+    if (e.t === "falsify.evolved") {
+      const m = events.find((x): x is MutantEvent => x.t === "mutant" && x.ac === acId && e.mutants.includes(x.id));
+      if (m) return m;
     }
+  }
+  return undefined;
+}
+
+/** The files `rel` (app-relative) as the breaker is shown them, from `dir`; missing ones left out. */
+async function readSources(dir: string, rels: string[]): Promise<SourceFile[]> {
+  const out: SourceFile[] = [];
+  for (const rel of rels) {
+    const content = await readFile(path.join(dir, ...rel.split("/")), "utf8").catch(() => null);
+    if (content !== null) out.push({ path: rel, content: content.replace(/\r\n/g, "\n") });
   }
   return out;
 }
-
-/** A re-design that cannot go ahead; the verifier is rolled back. */
-class RedesignDropped extends Error {}
 
 /**
  * The tier-1 entries as the seal lists them (file bytes, or a link's target) and the sealed app
@@ -175,6 +223,18 @@ export async function copySealed(p: Project): Promise<SealedCopy> {
 }
 
 const same = (a: Buffer | string, b: Buffer | string) => (Buffer.isBuffer(a) && Buffer.isBuffer(b) ? a.equals(b) : a === b);
+
+/** Tier-1 entries (tests and variables) that are not as `copy` holds them: added, changed or gone. */
+export async function verifierDiffersFrom(p: Project, copy: SealedCopy): Promise<string[]> {
+  const out: string[] = [];
+  const now = await tier1Entries(p.verifierDir);
+  for (const e of now) {
+    const was = copy.verifier.get(e.rel);
+    if (was === undefined || !same(was, await entryValue(inVerifier(p, e.rel), e.kind))) out.push(e.rel);
+  }
+  for (const rel of copy.verifier.keys()) if (!now.some((e) => e.rel === rel)) out.push(rel);
+  return out;
+}
 
 /** Tier-1 test entries added or changed since `copy`. */
 export async function changedTests(p: Project, copy: SealedCopy): Promise<string[]> {
@@ -280,6 +340,11 @@ export type FalsifyOptions = {
   warn?: Warn;
   /** A human's Kane credit cap for this command (`--kane-cap`), over `kane.capCredits` (I6). */
   kaneCap?: number;
+  /**
+   * The `maintain evolve` calls made so far in this run, by use case (R40: at most `MAX_EVOLVES` each):
+   * `holdback run` passes one map to each of its falsify passes. Default: this pass's own.
+   */
+  evolves?: Map<string, number>;
 };
 
 /**
@@ -287,12 +352,13 @@ export type FalsifyOptions = {
  * smallest patch that violates exactly that AC; it is applied in a throwaway worktree of HEAD,
  * started on a spare port, and the AC's sealed tests are replayed against it with healing off.
  * Kane failing the AC kills the mutant (the AC is `proved`); a mutant that passes makes the AC
- * `vacuous`, and its use case is re-designed once by Kane (the human approves the result, then a
- * fresh seal) so it goes back to the build loop. Afterwards every test is replayed once against
- * the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
+ * `vacuous`, and Kane evolves its use case (R40): it is told what slipped through, its new tests
+ * replace the old ones and are sealed with Kane as their author, and every AC of the use case is
+ * owed again, so it goes back to the build loop; the next pass re-checks the survivor's own bug
+ * against the new tests first. Afterwards every test is replayed once against the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
  * Throws, before anything else, when VENICE_API_KEY is not set.
  */
-export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log: Log, opts: FalsifyOptions = {}): Promise<FalsifyResult> {
+export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, log: Log, opts: FalsifyOptions = {}): Promise<FalsifyResult> {
   const apiKey = deps.apiKey ?? process.env.VENICE_API_KEY ?? "";
   if (!apiKey) throw new Error("VENICE_API_KEY is not set: the falsify stage needs it for the breaker (Venice API)");
 
@@ -309,6 +375,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   /** A Kane batch ran against a mutant in this pass (its coverage now sits in Kane's project store). */
   let attacked = false;
   let running: RunningApp | undefined;
+  /** This pass's surviving mutants, for Kane's evolve (R40). */
+  const survivors: Survivor[] = [];
+  const evolves = opts.evolves ?? new Map<string, number>();
 
   const at = () => new Date().toISOString();
   /** Every append goes through the same integrity check as the build loop's. */
@@ -403,22 +472,43 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     return `m-${safe}-${k}`;
   };
 
-  /** One mutant against one AC. Returns "budget" when the breaker call was refused before anything was spent. */
-  const falsifyOne = async (ac: AcState, files: string[], lastChanged: string[], budget: Budget): Promise<"budget" | "tamper" | "done"> => {
-    const model = p.config.breaker.model;
+  /**
+   * One mutant against one AC. Returns "budget" when the breaker call was refused before anything was
+   * spent. `recheck`: the surviving mutant whose use case Kane evolved since (R40): its own patch is
+   * planted again (re-planted by the breaker, once, when the code moved under it), and the new tests
+   * must kill it; any other verdict leaves the AC vacuous.
+   */
+  const falsifyOne = async (ac: AcState, files: string[], lastChanged: string[], budget: Budget, recheck?: MutantEvent): Promise<"budget" | "tamper" | "done"> => {
+    let model = recheck?.model ?? p.config.breaker.model;
     const id = nextMutantId(ac.id);
     const dir = path.join(p.home, MUT_DIR, id);
     const patchFile = path.join(p.home, MUT_DIR, `${id}.patch`);
     let usd = 0;
     let patch = "";
+    let slip: Slip | undefined = recheck?.slip;
+    let rationale = "";
     let logged = false;
     let stopNote = "results discarded: the pass stopped";
     const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = []) => {
       logged = true;
       out.usd += usd;
-      await emit({ t: "mutant", id, ac: ac.id, patch, model, usd, verdict, ...(note === undefined ? {} : { note }) });
+      await emit({
+        t: "mutant",
+        id,
+        ac: ac.id,
+        patch,
+        model,
+        usd,
+        verdict,
+        ...(note === undefined ? {} : { note }),
+        ...(slip ? { slip } : {}),
+        ...(recheck ? { recheck: recheck.id } : {}),
+      });
       for (const r of results) await emit({ t: "run", kind: "falsify", mutantId: id, result: r });
       (verdict === "killed" ? out.killed : verdict === "invalid" ? out.invalid : out.survived).push(ac.id);
+      // a re-checked survivor never goes back to Kane: killed proves it, anything else leaves it vacuous
+      if (recheck && verdict !== "killed") out.vacuous.push(ac.id);
+      else if (verdict === "survived" || verdict === "survived-by-heal") survivors.push({ ac, id, patch, rationale, ...(slip ? { slip } : {}) });
     };
     // at the Kane credit cap no batch could judge the mutant: never pay the breaker for one (N-m2)
     await meter.assertBudget();
@@ -426,15 +516,31 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       await mkdir(path.dirname(dir), { recursive: true });
       await worktreeAdd(p.appDir, dir, "HEAD", gitOpts);
       await linkNodeModules(dir);
-      const shown = await pickFiles(dir, ac, lastChanged, { exclude: appSealFiles(p) });
+      let shown: SourceFile[];
+      let failure: string | undefined;
+      let attempt = 0;
+      if (recheck) {
+        // 1. the survivor's own patch, against the code as it is now
+        const touched = patchedFiles(recheck.patch);
+        shown = await readSources(dir, touched);
+        patch = recheck.patch;
+        failure = shown.length === touched.length && shown.length > 0 ? await applyPatch(dir, patchFile, patch, touched) : "a file it changes is gone";
+        if (failure === undefined) attempt = 2;
+        else {
+          // the code moved under it: the breaker plants the same bug in the code as it is now, once
+          if (shown.length === 0) shown = await pickFiles(dir, ac, lastChanged, { exclude: appSealFiles(p) });
+          failure = `the code changed since this bug was planted (${failure}): plant the same bug in the code as it is now`;
+          model = p.config.breaker.model;
+          attempt = 1;
+        }
+      } else shown = await pickFiles(dir, ac, lastChanged, { exclude: appSealFiles(p) });
       if (shown.length === 0) {
         await finish("invalid", "no source file to mutate");
         return "done";
       }
 
       // 1. the breaker's patch, applied; one retry with git's (or the check's) complaint
-      let failure: string | undefined;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (; attempt < 2; attempt++) {
         let m: Mutant;
         try {
           m = await proposeMutant(ac, shown, {
@@ -465,6 +571,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
         }
         usd += m.usd;
         patch = m.patch;
+        rationale = m.rationale;
+        if (!recheck?.slip && m.slip) slip = m.slip;
         failure = await applyPatch(dir, patchFile, m.patch, shown.map((f) => f.path));
         if (failure === undefined) break;
       }
@@ -523,101 +631,138 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   const testIdsByFile = () => new Map([...testFileMap(events, p.verifierDir)].map(([id, f]) => [f, id]));
 
   /**
-   * Re-design the use cases once (Kane `design tests --force`), let the human approve the derived
-   * nodes of those use cases, then log the new design and re-seal. It is rolled back (sealed files
-   * restored byte for byte, recordings re-anchored, `redesign.dropped` logged with Kane's credits)
-   * unless the human approved something, every survivor is still in the approved design, and every
-   * test file Kane added or changed is one the human approved here.
+   * R40: a planted bug got past every test of use case `uc`. Kane evolves the use case
+   * (`maintain evolve --because <what slipped through>`), and its new set replaces the old tests.
+   * When the new set leaves criteria of the use case without a test, one bounded follow-up evolve
+   * asks Kane to cover them again; still uncovered, they need the spec. At most `MAX_EVOLVES` evolves
+   * per use case per run, each a metered batch under the credit cap. Returns the events to log once
+   * the whole pass checks out (`falsify.evolved`, the new `design`), or undefined when the use case
+   * was not evolved: the verifier is then rolled back and its survivors stay vacuous with a reason.
    */
-  const redesign = async (ucs: string[], survivors: string[]): Promise<void> => {
-    const clarifiedBefore = await clarifiedFile(p);
-    // one metered Kane batch: the designs and the human's approval (the re-seal after it is local)
-    if (!(await meter.batch("design", () => designAgain(ucs, survivors)))) return;
-    // kept only now: a rollback restores PRD.md, and a commit made right after the append would be left behind
-    await commitClarifications(p, clarifiedBefore, opts.warn);
-    await reseal(p, append, gitOpts); // also anchors the recordings as they are now
-    kaneWindow = false;
-    manifest = lastSeal(events);
-    out.redesigned.push(...ucs);
-  };
-  /** The re-design up to the seal: true once the approved design is logged, false when it was rolled back. */
-  const designAgain = async (ucs: string[], survivors: string[]): Promise<boolean> => {
-    const copy = await copySealed(p);
-    const credits = new Map<string, number>();
-    /** Per use case, how many tests and criteria Kane's re-design minted. */
-    const designed = new Map<string, number>();
-    const designs: Extract<EventBody, { t: "design" }>[] = [];
-    const designNode = (n: ListedNode) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label);
-    kaneWindow = true; // Kane writes into the verifier while it designs
-    try {
-      const derivedBefore = new Set((await deps.kane.listNodes(cwd)).filter(designNode).map((n) => n.id));
-      for (const uc of ucs) {
-        const first = await deps.kane.designTests(cwd, uc, { force: true, max: p.config.kane.designMax });
-        const d = await drivePaused(p, io, emit, first, deps.kane);
-        credits.set(uc, d.credits);
-        if (d.status === "complete") designed.set(uc, d.tests.length + d.acs.length);
-        if (d.status !== "complete") throw new RedesignDropped(`re-design of ${uc} ${d.status}${d.message ? `: ${d.message}` : ""}`);
-      }
-      // only nodes of these use cases: new since the re-design started, or attributed to them by the graph
-      const g = await deps.kane.readGraph(cwd);
-      const ucAcs = new Set(g.acs.filter((a) => ucs.includes(a.useCase)).map((a) => a.id));
-      const ucTests = new Set(g.tests.filter((t) => t.verifies.some((v) => ucAcs.has(v))).map((t) => t.id));
-      const derived = (await deps.kane.listNodes(cwd)).filter((n) => designNode(n) && (!derivedBefore.has(n.id) || ucAcs.has(n.id) || ucTests.has(n.id)));
-      if (derived.length === 0) {
-        // live (2026-11-15): forced on an unchanged spec, Kane keeps the design as it is (`nothing_to_change`)
-        const kept = [...designed.entries()].filter(([, n]) => n === 0).map(([uc]) => uc);
-        throw new RedesignDropped(
-          kept.length === ucs.length
-            ? `Kane found nothing to change in ${kept.join(", ")}: a forced re-design of an unchanged spec keeps the tests that let the planted bug through`
-            : "the re-design produced nothing to approve",
-        );
-      }
-      const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
-      const refs = derived.map((n) => n.id).filter((id) => approved.includes(id));
-      const rejected = new Set(derived.map((n) => n.id).filter((id) => !refs.includes(id)));
-      await emit({ t: "spec.approved", refs, rejected: [...rejected] });
-      if (refs.length === 0) throw new RedesignDropped("no re-designed test was approved");
-
-      for (const uc of ucs) {
-        const acs = g.acs.filter((a) => a.useCase === uc && !rejected.has(a.id));
-        const ids = new Set(acs.map((a) => a.id));
-        const tests = g.tests.filter((t) => !rejected.has(t.id) && t.verifies.some((v) => ids.has(v)));
-        designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.get(uc) ?? 0 });
-      }
-      // a survivor never leaves the gate silently: it stays vacuous unless the new design still holds it
-      const kept = new Set(designs.flatMap((d) => d.acs.map((a) => a.id)));
-      const gone = survivors.filter((id) => !kept.has(id));
-      if (gone.length > 0) throw new RedesignDropped(`the approved re-design no longer holds ${gone.join(", ")} (rejected or not re-derived)`);
-      // the seal below hashes whatever is on disk: every test byte Kane wrote must be one the human approved
-      const approvedFiles = new Set(
-        g.tests.filter((t) => refs.includes(t.id) && t.file).map((t) => path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)).split(path.sep).join("/")),
-      );
-      const unapproved = (await changedTests(p, copy)).filter((f) => !approvedFiles.has(f));
-      if (unapproved.length > 0) throw new RedesignDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
-      // only now is Kane told what the human approved
-      await deps.kane.review(cwd, refs);
-    } catch (e) {
-      // the sealed files go back first, whatever happened (local files only)
-      let restoreError: unknown;
-      try {
-        await restoreSealed(p, copy);
-      } catch (re) {
-        restoreError = re;
-      }
-      if (e instanceof LedgerTampered) throw e;
-      const left = restoreError === undefined && manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
-      if (restoreError !== undefined || left.length > 0) {
-        const why = restoreError !== undefined ? errText(restoreError) : `sealed files still differ (${left.join(", ")})`;
-        throw new Error(`re-design rolled back incompletely: ${why}: re-seal before building`);
-      }
-      await closeKaneWindow();
-      const detail = e instanceof RedesignDropped ? e.message : `Kane failed during the re-design: ${errText(e)}`;
+  const evolveUseCase = async (uc: string, list: Survivor[]): Promise<EventBody[] | undefined> => {
+    const ids = list.map((s) => s.ac.id);
+    const mutants = list.map((s) => s.id);
+    const spent = evolves.get(uc) ?? 0;
+    const giveUp = async (detail: string, credits: number) => {
       out.redesignError = detail;
-      await emit({ t: "redesign.dropped", useCases: ucs, detail, credits: [...credits.values()].reduce((a, b) => a + b, 0) });
-      return false;
+      out.vacuous.push(...ids);
+      await emit({ t: "redesign.dropped", useCases: [uc], detail, credits, acs: ids, reason: NO_TEST });
+      return undefined;
+    };
+    if (spent >= MAX_EVOLVES) return giveUp(`Kane already evolved ${uc} ${MAX_EVOLVES} times in this run`, 0);
+    const because = becauseText(list);
+    const first = await evolveOnce(uc, because, list);
+    if ("failed" in first) return giveUp(first.failed, first.credits);
+    const out_: EventBody[] = [{ t: "falsify.evolved", uc, because, minted: first.minted, retired: first.retired, credits: first.credits, mutants }];
+    let g = first.graph;
+    let left = uncoveredIn(g, uc);
+    let why = UNCOVERED;
+    if (left.length > 0) {
+      // measured as the ledger will be once this evolve is logged
+      const capped = capCredits !== undefined && reduce([...events, ...(out_ as LedgerEvent[])]).kaneCredits >= capCredits;
+      if (evolves.get(uc)! >= MAX_EVOLVES) why = `${UNCOVERED}; no follow-up evolve: ${uc} was evolved ${MAX_EVOLVES} times in this run`;
+      else if (capped) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
+      else {
+        const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
+        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list);
+        if ("failed" in again) {
+          // the first evolve stands; the follow-up's spend is still on record
+          await emit({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${again.failed}`, credits: again.credits });
+          why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
+        } else {
+          out_.push({ t: "falsify.evolved", uc, because: oneLine(cover).slice(0, MAX_BECAUSE), minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
+          g = again.graph;
+          left = uncoveredIn(g, uc);
+          why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
+        }
+      }
     }
-    for (const d of designs) await emit(d);
-    return true;
+    // the use case as Kane now has it: every criterion owed again; one left without a test needs the spec
+    const prev = events.findLast((e): e is Extract<LedgerEvent, { t: "design" }> => e.t === "design" && e.useCase === uc);
+    const acs = g.acs.filter((a) => a.useCase === uc);
+    const acIds = new Set(acs.map((a) => a.id));
+    const tests = g.tests.filter((t) => t.verifies.some((v) => acIds.has(v)));
+    const rejected = (prev?.rejected ?? []).filter((id) => acIds.has(id));
+    const notes = Object.fromEntries(left.filter((a) => !rejected.includes(a.id)).map((a) => [a.id, why]));
+    out_.push({
+      t: "design",
+      useCase: uc,
+      acs,
+      tests,
+      gaps: g.gaps,
+      credits: 0,
+      ...(rejected.length > 0 ? { rejected } : {}),
+      ...(Object.keys(notes).length > 0 ? { notes } : {}),
+    });
+    return out_;
+  };
+
+  /** The criteria of `uc` in `g` that no live test verifies. */
+  const uncoveredIn = (g: Graph, uc: string) => {
+    const covered = new Set(g.tests.flatMap((t) => t.verifies));
+    return g.acs.filter((a) => a.useCase === uc && !covered.has(a.id));
+  };
+
+  /**
+   * One `maintain evolve` of `uc`: a metered Kane batch, counted against the run's bound. Kane's new
+   * set is checked before anything is logged: it minted a test with a file, wrote no test file but
+   * those, and still holds every criterion of the use case. Otherwise the verifier is put back as it
+   * was before this call and the reason is returned.
+   */
+  const evolveOnce = async (
+    uc: string,
+    because: string,
+    list: Survivor[],
+  ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number }> => {
+    evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
+    return meter.batch("evolve", async () => {
+      const copy = await copySealed(p);
+      kaneWindow = true; // Kane writes into the verifier while it evolves
+      let credits = 0;
+      try {
+        const r = await deps.kane.evolve(cwd, uc, because);
+        credits = r.credits;
+        // the event that books these credits is logged after this batch: count them in it now
+        meter.count(credits);
+        if (r.status === "nothing") throw new EvolveFailed(`Kane added no test to ${uc}: ${r.note}`);
+        if (r.status === "error") throw new EvolveFailed(`Kane's evolve of ${uc} failed: ${r.message}`);
+        const g = await deps.kane.readGraph(cwd);
+        const minted = r.minted.map((m) => m.test);
+        const fileOf = new Map(g.tests.filter((t) => t.file).map((t) => [t.id, path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)).split(path.sep).join("/")]));
+        const missing = minted.filter((t) => !fileOf.has(t));
+        if (missing.length > 0) throw new EvolveFailed(`Kane minted ${missing.join(", ")} but no test file of it is in the verifier`);
+        // the seal hashes whatever is on disk: Kane may write the tests it minted, and nothing else
+        const mintedFiles = new Set(minted.map((t) => fileOf.get(t)!));
+        const stray = (await changedTests(p, copy)).filter((f) => !mintedFiles.has(f));
+        if (stray.length > 0) throw new EvolveFailed(`Kane changed test files it did not mint: ${stray.join(", ")}`);
+        // a criterion never leaves the gate silently: the use case keeps every one it had
+        const now = new Set(g.acs.filter((a) => a.useCase === uc).map((a) => a.id));
+        const had = Object.values(reduce(events).acs).filter((a) => a.useCase === uc).map((a) => a.id);
+        const gone = [...new Set([...had, ...list.map((s) => s.ac.id)])].filter((id) => !now.has(id));
+        if (gone.length > 0) throw new EvolveFailed(`Kane's evolve of ${uc} no longer holds ${gone.join(", ")}`);
+        return { minted, retired: r.superseded.map((s) => s.test).filter((t) => t !== ""), credits, graph: g };
+      } catch (e) {
+        if (e instanceof LedgerTampered || e instanceof KaneCapReached) throw e;
+        await rollBack(copy);
+        return { failed: e instanceof EvolveFailed ? e.message : `Kane failed during the evolve of ${uc}: ${errText(e)}`, credits };
+      }
+    });
+  };
+
+  /** The verifier put back as `copy` holds it, never the app side (a newer spec edit stays: N-I2), and its recordings re-anchored. */
+  const rollBack = async (copy: SealedCopy): Promise<void> => {
+    let restoreError: unknown;
+    try {
+      await restoreSealed(p, copy, { appFiles: false });
+    } catch (re) {
+      restoreError = re;
+    }
+    const left = restoreError === undefined ? await verifierDiffersFrom(p, copy) : [];
+    if (restoreError !== undefined || left.length > 0) {
+      const why = restoreError !== undefined ? errText(restoreError) : `sealed files still differ (${left.join(", ")})`;
+      throw new Error(`Kane's evolve rolled back incompletely: ${why}: re-seal before building`);
+    }
+    await closeKaneWindow();
   };
 
   /** Every test once against the real build, logged as build runs (Kane's own coverage then reflects the real build). */
@@ -746,7 +891,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       const files = filesOf([ac], fileOf);
       assertTestsSealed(p.verifierDir, manifest, files);
       const before = out.killed.length + out.survived.length + out.invalid.length;
-      const r = await falsifyOne(ac, files, lastChanged, budget);
+      // R40: a survivor whose use case Kane evolved since is re-checked first, with its own planted bug
+      const r = await falsifyOne(ac, files, lastChanged, budget, pendingRecheck(events, ac.id));
       if (r === "tamper") return result("tamper");
       if (r === "budget") {
         budgetOut = true;
@@ -754,8 +900,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       }
     }
 
-    // a re-design re-seals the spec as it is: never over an edit Kane has not re-planned
-    if (out.survived.length > 0 && !aborted && !drifted) {
+    // an evolve re-seals the tests: never over a spec edit Kane has not re-planned
+    if (survivors.length > 0 && !aborted && !drifted) {
       const bad = await sealBroken();
       if (bad !== undefined) {
         await recordTamper(bad);
@@ -764,19 +910,62 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       drifted = specDrift.length > 0;
       if (drifted) driftFiles = specDrift;
     }
-    if (drifted) out.vacuous.push(...out.survived);
-    // survivors: one re-design per use case and pass; a use case already re-designed for a survivor stays vacuous
-    if (out.survived.length > 0 && !aborted && !drifted) {
-      const again = redesignedAfterSurvival(events);
-      const ucOf = new Map(out.survived.map((id) => [id, state.acs[id]!.useCase]));
-      const ucs = [...new Set(ucOf.values())].filter((uc) => !again.has(uc)).sort();
-      for (const [id, uc] of ucOf) if (again.has(uc)) out.vacuous.push(id);
-      if (ucs.length > 0) {
-        await redesign(
-          ucs,
-          [...ucOf].filter(([, uc]) => ucs.includes(uc)).map(([id]) => id),
-        );
-        if (out.redesigned.length === 0) for (const [id, uc] of ucOf) if (ucs.includes(uc)) out.vacuous.push(id);
+    if (drifted) out.vacuous.push(...survivors.map((s) => s.ac.id));
+    // R40: each use case with a survivor goes back to Kane, which evolves its tests
+    if (survivors.length > 0 && !aborted && !drifted) {
+      const byUc = new Map<string, Survivor[]>();
+      for (const s of survivors) byUc.set(s.ac.useCase, [...(byUc.get(s.ac.useCase) ?? []), s]);
+      const before = await copySealed(p);
+      const logged: EventBody[] = [];
+      const evolved: string[] = [];
+      let sealed = false;
+      try {
+        for (const uc of [...byUc.keys()].sort()) {
+          const evs = await evolveUseCase(uc, byUc.get(uc)!);
+          if (evs) {
+            logged.push(...evs);
+            evolved.push(uc);
+          }
+        }
+        if (evolved.length > 0) {
+          // N-I2: the seal after it holds the spec as it was sealed; one that moved meanwhile is not sealed
+          const moved = await specMovedFrom(p, { bytes: new Map() }, manifest!);
+          if (moved.length > 0) {
+            await rollBack(before);
+            const c = await classifySpecChange(p, events, manifest!, moved, true);
+            if ("tamper" in c) {
+              await recordTamper(c.tamper);
+              return result("tamper");
+            }
+            if (c.event) await emit(c.event);
+            const spent = logged.reduce((n, e) => n + (e.t === "falsify.evolved" ? e.credits : 0), 0);
+            const ids = survivors.filter((s) => evolved.includes(s.ac.useCase)).map((s) => s.ac.id);
+            await emit({
+              t: "redesign.dropped",
+              useCases: evolved,
+              detail: `the spec changed while Kane evolved the tests (${moved.join(", ")}): nothing was sealed`,
+              credits: spent,
+              acs: ids,
+              reason: "the spec changed while Kane evolved its tests, so nothing was sealed: run `holdback drift`, then `holdback run`",
+            });
+            out.vacuous.push(...ids);
+            out.specChange = { files: moved, duringAgentTurn: true };
+            drifted = true;
+            driftFiles = moved;
+          } else {
+            for (const e of logged) await emit(e);
+            // Kane authored the change: the new tests are sealed, the spec as it was (N-I2)
+            await reseal(p, append, gitOpts, { keep: specKept(p, manifest!), by: "kane" }); // also anchors the recordings
+            sealed = true;
+            kaneWindow = false;
+            manifest = lastSeal(events);
+            out.redesigned.push(...evolved);
+          }
+        }
+      } catch (e) {
+        // a stop mid-evolve (a forged ledger, the credit cap) leaves no unsealed test of Kane's behind
+        if (!sealed) await restoreSealed(p, before, { appFiles: false }).catch(() => {});
+        throw e;
       }
     }
 

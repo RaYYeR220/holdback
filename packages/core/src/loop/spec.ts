@@ -312,7 +312,7 @@ export async function reseal(p: Project, log: Log, git?: GitOptions, opts: Resea
   // an unreadable ledger throws here: nothing is sealed and the marker stays
   if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
   const manifest = { ...(await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) })), ...opts.keep };
-  await log({ at: at(), t: "seal", manifest });
+  await log({ at: at(), t: "seal", manifest, ...(opts.by ? { by: opts.by } : {}) });
   // a spec that differs from what this seal holds for it (a kept old hash, or bytes that moved while
   // it sealed) was never accepted by it: its change stays unverified past this seal, until a drift
   // the human approves in the terminal re-plans it (N-I1)
@@ -336,7 +336,14 @@ export type ResealOptions = {
    * drift's diff: a stage that seals the spec the human reviewed (N-I2) passes them with `keep`.
    */
   copies?: Record<string, Buffer>;
+  /** `kane`: Kane authored the change this seal accepts (its evolve of a use case's tests, R40). */
+  by?: "kane";
 };
+
+/** What a stage that changes no spec seals for it: each spec entry kept as `manifest` holds it (N-I2). */
+export function specKept(p: Project, manifest: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(p.config.spec.map((f) => appSealKey(f)).map((k) => [k, manifest[k] ?? "absent"]));
+}
 
 /**
  * Append-only: creates the heading once, then only adds lines. With a `pin` that holds the file, the

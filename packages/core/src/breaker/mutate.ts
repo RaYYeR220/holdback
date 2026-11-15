@@ -173,6 +173,19 @@ export async function pickFiles(appDir: string, ac: AcState, lastChanged: string
   return (relevant.length > 0 ? relevant : ranked).slice(0, MAX_FILES).map((f) => ({ path: f.path, content: f.content }));
 }
 
+/** The files a unified diff edits, app-relative (`a/`/`b/` prefixes dropped, `/dev/null` left out), in order. */
+export function patchedFiles(patch: string): string[] {
+  const lines = patch.split("\n");
+  const paths: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]!.startsWith("--- ") || !lines[i + 1]?.startsWith("+++ ")) continue;
+    for (const h of [lines[i]!, lines[i + 1]!]) paths.push(h.slice(4).split("\t")[0]!.trim());
+    i++;
+  }
+  const prefixed = paths.length > 0 && paths.every((p, i) => p.startsWith(i % 2 === 0 ? "a/" : "b/"));
+  return [...new Set(paths.filter((p) => p !== "/dev/null").map((p) => (prefixed ? p.slice(2) : p)))];
+}
+
 /**
  * Checks a breaker patch before `git apply` sees it: a unified diff that only edits the files the
  * breaker was shown, changing 1..30 lines. Returns the `-p` strip level, or why it is refused.

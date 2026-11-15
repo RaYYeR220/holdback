@@ -87,6 +87,15 @@ export class KaneMeter {
     if (this.open) this.open.perRun += eventCredits(e);
   }
 
+  /**
+   * Per-run credits of a call in the open batch whose ledger event is logged only after the batch
+   * closes (Kane's evolve, logged once the whole pass checks out): tallied here, so the balance drop
+   * and that event never count the same credits twice.
+   */
+  count(credits: number): void {
+    if (this.open) this.open.perRun += credits;
+  }
+
   async batch<T>(source: string, body: () => Promise<T>): Promise<T> {
     if (this.open) return body();
     await this.assertBudget();
