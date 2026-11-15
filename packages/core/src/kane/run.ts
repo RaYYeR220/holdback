@@ -1,6 +1,6 @@
-import spawn from "cross-spawn";
-import treeKill from "tree-kill";
+import { spawn } from "node:child_process";
 import { trackChild } from "../children.js";
+import { assertPlainArgs, killTree, resolveProgram, type Program } from "../programs.js";
 import { parseLine, type KaneEvent } from "./ndjson.js";
 
 export interface RunKaneOptions {
@@ -22,19 +22,23 @@ export interface RunKaneResult {
   timedOut: boolean;
 }
 
+/** Where kane-cli is: `HOLDBACK_KANE_BIN`, else `kane-cli` on PATH (on Windows, the JS entry behind npm's shim). */
+export function kaneProgram(): Program {
+  return resolveProgram("kane-cli", { override: process.env.HOLDBACK_KANE_BIN, overrideVar: "HOLDBACK_KANE_BIN", pkg: { name: "@testmuai/kane-cli", bin: "kane-cli" } });
+}
+
 /**
- * Run kane-cli (or the binary named by HOLDBACK_KANE_BIN) and collect its
- * NDJSON event stream. cross-spawn is used because on Windows kane-cli is an
- * npm `.cmd` shim that plain spawn cannot execute without a shell.
- *
- * If the binary ends in `.mjs` / `.js` it is treated as a Node script and run
- * as `process.execPath <script> ...args` (used by the test fake).
+ * Run kane-cli (or the program named by HOLDBACK_KANE_BIN) and collect its NDJSON event stream.
+ * Never through a shell (C-1): on Windows kane-cli is an npm `.cmd` shim whose `%*` cmd.exe would
+ * parse again, so `&`, `|`, `>` or `%VAR%` in a `--because` would run as commands. Its JS entry runs
+ * under this Node instead (`kaneProgram`); a `.js`/`.cjs`/`.mjs` override does too (the test fake).
+ * An argument with a NUL or a line break is refused before anything runs.
  */
-export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneResult> {
-  const bin = process.env.HOLDBACK_KANE_BIN ?? "kane-cli";
-  const isScript = /\.(mjs|js)$/i.test(bin);
-  const cmd = isScript ? process.execPath : bin;
-  const cmdArgs = isScript ? [bin, ...args] : args;
+export async function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneResult> {
+  assertPlainArgs("kane-cli", args);
+  const program = kaneProgram();
+  const cmd = program.cmd;
+  const cmdArgs = [...program.prefix, ...args];
 
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -50,6 +54,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
       env: { ...process.env, ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      shell: false,
     });
 
     const untrack = trackChild(child.pid);
@@ -79,7 +84,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
 
     const timer = setTimeout(() => {
       timedOut = true;
-      if (child.pid !== undefined) treeKill(child.pid, "SIGKILL");
+      if (child.pid !== undefined) killTree(child.pid);
       else child.kill("SIGKILL");
       // If the kill did not land or a grandchild keeps stdio open, "close" may
       // never fire: give up waiting and resolve with what we have.

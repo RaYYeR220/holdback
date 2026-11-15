@@ -200,7 +200,8 @@ export async function resumeSession(
   const args = tokenize(paused.resume);
   if (args[0] === "kane-cli") args.shift();
   if (args.length === 0) throw new Error("resumeSession: empty resume command");
-  for (const [id, value] of Object.entries(answers)) args.push("--answer", `${id}=${value}`);
+  // a human's answer goes on one line, as it does into the Clarifications: a line break never reaches a command line
+  for (const [id, value] of Object.entries(answers)) args.push("--answer", `${id}=${String(value).replace(/\s+/g, " ").trim()}`);
   const r = await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS });
   if (args[0] === "design") return parseDesign(r);
   if (args[0] === "maintain") return parseReconcile(r);

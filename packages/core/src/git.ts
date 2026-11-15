@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import spawn from "cross-spawn";
+import { spawn } from "node:child_process";
+import { resolveProgram } from "./programs.js";
 
 export type GitResult = { code: number; stdout: string; stderr: string };
 
@@ -33,15 +34,21 @@ export async function holdbackGitOptions(home: string): Promise<GitOptions> {
  */
 const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false", "-c", "protocol.allow=never"];
 
-/** Run `git <args>` in `cwd` (with the safety overrides above, and lazy fetching off). */
-export function git(cwd: string, args: string[], opts: GitOptions = {}): Promise<GitResult> {
+/**
+ * Run `git <args>` in `cwd` (with the safety overrides above, and lazy fetching off). git is found on
+ * PATH and run with no shell, never taken from `cwd`: on Windows a lookup that starts in the current
+ * folder would run a `git.bat` the agent left in the app repo (C-1).
+ */
+export async function git(cwd: string, args: string[], opts: GitOptions = {}): Promise<GitResult> {
   const hooks = opts.hooksDir ? ["-c", `core.hooksPath=${opts.hooksDir}`] : [];
+  const program = resolveProgram("git");
   return new Promise((resolve, reject) => {
-    const child = spawn("git", [...SAFE_CONFIG, ...hooks, ...args], {
+    const child = spawn(program.cmd, [...program.prefix, ...SAFE_CONFIG, ...hooks, ...args], {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      shell: false,
     });
     let stdout = "";
     let stderr = "";

@@ -24,10 +24,6 @@
     "typecheck": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
-    "cross-spawn": "^7.0.6",
     "tree-kill": "^1.2.2"
-  },
-  "devDependencies": {
-    "@types/cross-spawn": "^6.0.6"
   }
 }

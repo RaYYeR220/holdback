@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createConnection, createServer } from "node:net";
-import treeKill from "tree-kill";
 import { trackChild } from "./children.js";
+import { killTree } from "./programs.js";
 
 export interface StartAppOptions {
   cwd: string;
@@ -99,8 +99,9 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
   };
   const logs = () => (partial ? [...lines, partial] : lines).join("\n");
 
-  // node's own spawn: the shell resolves the command. cross-spawn would report any shell command
-  // that exits with 1 on Windows as "spawn <cmd> ENOENT", hiding the app's own crash
+  // The one command Holdback runs through a shell: `start.cmd` from the sealed holdback.config.json,
+  // a string the human wrote (`npm start`), never text from the agent, Kane or the breaker; it runs
+  // the app's own code, which the agent writes anyway. Node's own spawn: the shell resolves it
   const child = spawn(opts.cmd, [], {
     cwd: opts.cwd,
     shell: true,
@@ -128,16 +129,16 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
     untrack();
   });
 
-  const killTree = (): Promise<void> =>
+  const stopTree = (): Promise<void> =>
     new Promise((resolve) => {
       if (child.pid === undefined) return resolve();
-      treeKill(child.pid, "SIGKILL", () => resolve());
+      killTree(child.pid, () => resolve());
     });
 
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     stopped ??= (async () => {
-      await killTree();
+      await stopTree();
       untrack();
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline && (await portAccepts(opts.port))) await sleep(100);

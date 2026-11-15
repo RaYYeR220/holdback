@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { systemTool } from "./programs.js";
 
 /**
  * The processes Holdback starts and waits on (the app under test, kane-cli, the coding agent), by
@@ -21,12 +22,12 @@ export function trackedChildren(): number[] {
 
 /**
  * Kills every tracked process and its own children, synchronously, before a hard exit:
- * `taskkill /T /F` on Windows, SIGKILL elsewhere (where a terminal's Ctrl-C reaches the whole group).
+ * `taskkill /T /F` on Windows (by its full path: never a `taskkill` from the current folder), SIGKILL elsewhere (where a terminal's Ctrl-C reaches the whole group).
  */
 export function killTrackedChildrenSync(): void {
   for (const pid of live) {
     try {
-      if (process.platform === "win32") spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true, timeout: 10_000 });
+      if (process.platform === "win32") spawnSync(systemTool("taskkill.exe"), ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true, timeout: 10_000, shell: false });
       else process.kill(pid, "SIGKILL");
     } catch {
       /* gone already */

@@ -1,7 +1,7 @@
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import spawn from "cross-spawn";
-import treeKill from "tree-kill";
 import { trackChild } from "../children.js";
+import { assertPlainArgs, killTree, resolveProgram } from "../programs.js";
 
 export interface ClaudeTurnOptions {
   cwd: string;
@@ -67,12 +67,16 @@ export function withoutHoldbackEnv(env: NodeJS.ProcessEnv = {}): NodeJS.ProcessE
 
 /**
  * Run one headless Claude Code turn and parse its final `result` line.
- * The binary is HOLDBACK_CLAUDE_BIN or `claude`; a `.mjs`/`.js` binary is run
- * through node (test fake).
+ * The program is HOLDBACK_CLAUDE_BIN or `claude` on PATH, never run through a shell and never taken
+ * from the app folder the turn runs in (C-1): on Windows an npm `.cmd` shim's JS entry runs under
+ * this Node, as a `.js`/`.cjs`/`.mjs` override does (the test fake).
  */
-export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult> {
-  const bin = process.env.HOLDBACK_CLAUDE_BIN ?? "claude";
-  const isScript = /\.(mjs|js)$/i.test(bin);
+export async function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult> {
+  const program = resolveProgram("claude", {
+    override: process.env.HOLDBACK_CLAUDE_BIN,
+    overrideVar: "HOLDBACK_CLAUDE_BIN",
+    pkg: { name: "@anthropic-ai/claude-code", bin: "claude" },
+  });
   const args = [
     // No prompt argument: `claude -p` reads the prompt from stdin. Multi-line argv is
     // mangled when `claude` resolves to an npm .cmd shim on Windows.
@@ -96,8 +100,9 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     String(opts.maxTurns),
     ...(opts.model ? ["--model", opts.model] : []),
   ];
-  const cmd = isScript ? process.execPath : bin;
-  const cmdArgs = isScript ? [bin, ...args] : args;
+  assertPlainArgs("claude", args);
+  const cmd = program.cmd;
+  const cmdArgs = [...program.prefix, ...args];
 
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -113,6 +118,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
       env: { ...process.env, ...withoutHoldbackEnv(opts.env), [HEADLESS_ENV]: "1" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      shell: false,
     });
     const untrack = trackChild(child.pid);
     child.on("exit", untrack);
@@ -147,9 +153,9 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
       stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_BYTES);
     });
 
-    const killTree = () => {
+    const stopTree = () => {
       if (settled || graceTimer) return;
-      if (child.pid !== undefined) treeKill(child.pid, "SIGKILL");
+      if (child.pid !== undefined) killTree(child.pid);
       else child.kill("SIGKILL");
       graceTimer = setTimeout(() => {
         child.stdout?.destroy();
@@ -159,9 +165,9 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     };
     const timer = setTimeout(() => {
       timedOut = true;
-      killTree();
+      stopTree();
     }, opts.timeoutMs);
-    const onAbort = () => killTree();
+    const onAbort = () => stopTree();
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     if (opts.signal?.aborted) onAbort();
 
