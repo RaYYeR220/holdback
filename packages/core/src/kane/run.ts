@@ -7,11 +7,15 @@ export interface RunKaneOptions {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
   onEvent?: (e: KaneEvent) => void;
+  /** After a timeout kill, resolve anyway once this many ms pass without `close`. Default 2000. */
+  killGraceMs?: number;
 }
 
 export interface RunKaneResult {
   exitCode: number;
   events: KaneEvent[];
+  /** Full raw stdout text, including non-JSON lines (e.g. `Available credits: ...`). */
+  stdout: string;
   stderr: string;
   durationMs: number;
   timedOut: boolean;
@@ -36,6 +40,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
     const events: KaneEvent[] = [];
     let stderr = "";
     let buf = "";
+    let stdout = "";
     let timedOut = false;
     let settled = false;
 
@@ -54,6 +59,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
       buf += chunk;
       let i: number;
       while ((i = buf.indexOf("\n")) >= 0) {
@@ -70,21 +76,31 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
       timedOut = true;
       if (child.pid !== undefined) treeKill(child.pid, "SIGKILL");
       else child.kill("SIGKILL");
+      // If the kill did not land or a grandchild keeps stdio open, "close" may
+      // never fire: give up waiting and resolve with what we have.
+      graceTimer = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(124);
+      }, opts.killGraceMs ?? 2000);
     }, opts.timeoutMs);
+    let graceTimer: NodeJS.Timeout | undefined;
 
     const finish = (exitCode: number) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       if (buf.length > 0) handleLine(buf);
       buf = "";
-      resolve({ exitCode, events, stderr, durationMs: Date.now() - started, timedOut });
+      resolve({ exitCode, events, stdout, stderr, durationMs: Date.now() - started, timedOut });
     };
 
     child.on("error", (err) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       reject(err);
     });
     // "close" fires after stdio streams end, so no trailing output is lost.
