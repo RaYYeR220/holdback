@@ -21,6 +21,7 @@ import {
   runTests,
   serve,
   snapshot as coreSnapshot,
+  killTrackedChildrenSync,
   escapeControls,
   specDiff,
   type Snapshot as CoreSnapshot,
@@ -91,14 +92,20 @@ export function scrubAgentEnv(base: BuildDeps): BuildDeps {
   return { ...base, claude: (o) => base.claude({ ...o, env: { ...o.env, VENICE_API_KEY: "" } }) };
 }
 
-/** One Ctrl-C asks the run to stop after its current step; a second one quits at once. */
+/**
+ * One Ctrl-C asks the run to stop after its current step; a second one quits at once, after killing
+ * every process Holdback started (the app, kane-cli, the coding agent), which on Windows would
+ * otherwise live on: the app holding its port, Kane billing, the agent editing (I7).
+ */
 export function installSignals(
   proc: { on(ev: string, fn: () => void): unknown; off(ev: string, fn: () => void): unknown; exit(code: number): unknown },
   err: (line: string) => void,
+  killChildren: () => void = killTrackedChildrenSync,
 ): Signals {
   const ctl = new AbortController();
   const hit = () => {
     if (ctl.signal.aborted) {
+      killChildren();
       proc.exit(EXIT.aborted);
       return;
     }

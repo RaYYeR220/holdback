@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import spawn from "cross-spawn";
 import treeKill from "tree-kill";
+import { trackChild } from "../children.js";
 
 export interface ClaudeTurnOptions {
   cwd: string;
@@ -102,6 +103,8 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
+    const untrack = trackChild(child.pid);
+    child.on("exit", untrack);
     child.stdin?.on("error", () => {
       /* child exited before reading the prompt */
     });
@@ -152,6 +155,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     if (opts.signal?.aborted) onAbort();
 
     const finish = (code: number) => {
+      untrack();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -177,6 +181,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     };
 
     child.on("error", (err) => {
+      untrack();
       if (settled) return;
       settled = true;
       clearTimeout(timer);

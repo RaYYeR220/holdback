@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import treeKill from "tree-kill";
+import { trackChild } from "./children.js";
 
 export interface StartAppOptions {
   cwd: string;
@@ -31,7 +32,9 @@ export class AppStartError extends Error {
  */
 export class PortInUse extends Error {
   constructor(public readonly port: number) {
-    super(`port ${port} is already in use by another program: stop it, or set start.port in holdback.config.json to a free port`);
+    super(
+      `port ${port} is already in use by another program (perhaps an app an interrupted Holdback run left behind): stop it, or set start.port in holdback.config.json to a free port`,
+    );
     this.name = "PortInUse";
   }
 }
@@ -113,13 +116,16 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
   let exited = false;
   let exitCode: number | null = null;
   let spawnError: Error | undefined;
+  const untrack = trackChild(child.pid);
   child.on("exit", (code) => {
     exitCode = code;
     exited = true;
+    untrack();
   });
   child.on("error", (e) => {
     spawnError = e;
     exited = true;
+    untrack();
   });
 
   const killTree = (): Promise<void> =>
@@ -132,6 +138,7 @@ export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
   const stop = (): Promise<void> => {
     stopped ??= (async () => {
       await killTree();
+      untrack();
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline && (await portAccepts(opts.port))) await sleep(100);
       child.stdout?.destroy();

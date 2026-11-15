@@ -55,6 +55,7 @@ export { serve, DashboardHumanIO, DEFAULT_PORT, PromptRejected, type ServeOption
 export { loadProject, kaneCapCredits, type Project, type HoldbackConfig } from "./project.js";
 export { seal, checkSeal, appSealKey, isAppKeyOf, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
 export { startApp, freePort, AppStartError, PortInUse, type StartAppOptions, type RunningApp } from "./app.js";
+export { trackChild, trackedChildren, killTrackedChildrenSync } from "./children.js";
 export {
   guardDecision,
   guardPayload,

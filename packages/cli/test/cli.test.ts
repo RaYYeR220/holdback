@@ -901,6 +901,16 @@ describe("installSignals", () => {
     expect(proc.listenerCount("SIGTERM")).toBe(0);
   });
 
+  it("on the second Ctrl-C kills every child Holdback started (app, kane-cli, claude) before it quits (I7)", () => {
+    const order: string[] = [];
+    const proc = Object.assign(new EventEmitter(), { exit(c: number) { order.push(`exit ${c}`); } });
+    installSignals(proc, () => {}, () => void order.push("kill children"));
+    proc.emit("SIGINT");
+    expect(order).toEqual([]);
+    proc.emit("SIGINT");
+    expect(order).toEqual(["kill children", "exit 130"]);
+  });
+
   it("treats SIGTERM like the first Ctrl-C", () => {
     const proc = Object.assign(new EventEmitter(), { exit() {} });
     const sig = installSignals(proc, () => {});

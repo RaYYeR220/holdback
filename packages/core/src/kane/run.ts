@@ -1,5 +1,6 @@
 import spawn from "cross-spawn";
 import treeKill from "tree-kill";
+import { trackChild } from "../children.js";
 import { parseLine, type KaneEvent } from "./ndjson.js";
 
 export interface RunKaneOptions {
@@ -51,6 +52,9 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
       windowsHide: true,
     });
 
+    const untrack = trackChild(child.pid);
+    child.on("exit", untrack);
+
     const handleLine = (line: string) => {
       const ev = parseLine(line);
       if (!ev) return;
@@ -88,6 +92,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
     let graceTimer: NodeJS.Timeout | undefined;
 
     const finish = (exitCode: number) => {
+      untrack();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -98,6 +103,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
     };
 
     child.on("error", (err) => {
+      untrack();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
