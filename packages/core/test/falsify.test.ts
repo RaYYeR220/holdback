@@ -199,6 +199,8 @@ type EvolveKit = {
   retire: (...ids: string[]) => void;
   /** A live test in Kane's graph that points at an existing file. */
   alias: (id: string, file: string, verifies: string[]) => void;
+  /** A criterion in Kane's graph put under use case `uc`, or a new one. */
+  placeAc: (ac: AcNode) => void;
 };
 
 type Plan = {
@@ -260,8 +262,10 @@ function fakes(plan: Plan) {
     },
     retire: (...ids) => void (live = live.filter((t) => !ids.includes(t.id))),
     alias: (id, file, verifies) => void (live = [...live, { id, title: `live ${id}`, file, verifies }]),
+    placeAc: (ac) => void (graphAcs = [...graphAcs.filter((a) => a.id !== ac.id), ac]),
   };
-  const graph = (): Graph => ({ useCases: [], acs: [AC1, AC3, AC9], tests: live, gaps: [] });
+  let graphAcs: AcNode[] = [AC1, AC3, AC9];
+  const graph = (): Graph => ({ useCases: [], acs: graphAcs, tests: live, gaps: [] });
   const deps: FalsifyDeps = {
     apiKey: "test-key",
     port: async () => 5178,
@@ -813,6 +817,114 @@ describe("runFalsify", { timeout: 60_000 }, () => {
         },
         [".testmuai/tests/t4_test.md"],
       );
+    });
+
+    it("a graph that lists one test id twice is a tamper", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3");
+            kit.alias("t-4", testFile("t-4"), ["ac-1"]);
+          }),
+        },
+        [".testmuai/tests/t4_test.md"],
+      );
+    });
+
+    it("a graph in which two tests share one file is a tamper", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3");
+            kit.alias("t-6", testFile("t-4"), ["ac-3"]);
+          }),
+        },
+        [".testmuai/tests/t4_test.md"],
+      );
+    });
+
+    it.runIf(process.platform === "win32" || process.platform === "darwin")("paths compare as the file system does: a minted test written to another use case's test under another case is caught", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"], T9().replace("t9_test.md", "T9_TEST.md"));
+            kit.retire("t-1", "t-3");
+          }),
+        },
+        [".testmuai/tests/t9_test.md"],
+        otherUseCase(),
+      );
+    });
+
+    it("a minted test outside the tests folder is a tamper", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"], join(p.verifierDir, ".testmuai", "variables", "t4_test.md"));
+            kit.retire("t-1", "t-3");
+          }),
+        },
+        [".testmuai/variables/t4_test.md"],
+      );
+    });
+
+    it("a minted test outside the verifier is a tamper", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"], join(p.verifierDir, "..", "t4_test.md"));
+            kit.retire("t-1", "t-3");
+          }),
+        },
+        ["../t4_test.md"],
+      );
+    });
+
+    it("a minted test that is a link, not a file, is a tamper", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3");
+            rmSync(testFile("t-4"));
+            const target = mkdtempSync(join(root, "linked-"));
+            symlinkSync(target, testFile("t-4"), "junction");
+          }),
+        },
+        [".testmuai/tests/t4_test.md"],
+      );
+    });
+
+    it("a minted test may verify only criteria the ledger has under this use case: Kane's graph cannot move another use case's criterion in", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.placeAc({ ...AC9, useCase: "uc-1" });
+            kit.mint("t-4", ["ac-1", "ac-3", "ac-9"]);
+            kit.retire("t-1", "t-3");
+          }),
+        },
+        [".testmuai/tests/t4_test.md"],
+        otherUseCase(),
+      );
+    });
+
+    it("a minted test may verify a criterion Kane newly adds under this use case", async () => {
+      await setup();
+      const AC12: AcNode = { ...AC1, id: "ac-12", text: "A household of 9 uses the $9,467 limit." };
+      const { deps, io } = fakes({
+        mutantRun: survives3,
+        ...evolveWith((kit) => {
+          kit.placeAc(AC12);
+          kit.mint("t-4", ["ac-1", "ac-3", "ac-12"]);
+          kit.retire("t-1", "t-3");
+        }),
+      });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ redesigned: ["uc-1"], reason: "done" });
+      expect(reduce(await readEvents(p.ledgerFile)).acs["ac-12"]).toMatchObject({ useCase: "uc-1", tests: ["t-4"] });
     });
   });
 

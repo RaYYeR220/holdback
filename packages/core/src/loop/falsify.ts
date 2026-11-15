@@ -730,16 +730,32 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     prior: TestNode[] = [],
   ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
     evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
-    const rel = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
+    /** A verifier path as Holdback compares it: relative to the verifier, `/`-separated, case-folded where the file system folds case. */
+    const key = (f: string) => {
+      const r = path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
+      return process.platform === "win32" || process.platform === "darwin" ? r.toLowerCase() : r;
+    };
+    /** dev+ino of a verifier file, or undefined when it does not exist. */
+    const identity = (f: string) =>
+      stat(path.resolve(p.verifierDir, f), { bigint: true }).then(
+        (s) => `${s.dev}:${s.ino}`,
+        () => undefined,
+      );
+    /** True when `f` is one of `others`: the same path, or the same file where both exist. */
+    const sameAsAny = async (f: string, others: string[]): Promise<boolean> => {
+      const id = await identity(f);
+      for (const o of others) if (key(o) === key(f) || (id !== undefined && (await identity(o)) === id)) return true;
+      return false;
+    };
     // every sealed test as the ledger last designed it (file, verified criteria), and this use case's
     // criteria and tests: what Kane may retire
     const sealedTests = new Map<string, { file: string; verifies: string[] }>();
-    for (const e of events) if (e.t === "design") for (const t of e.tests) if (t.file) sealedTests.set(t.id, { file: rel(t.file), verifies: t.verifies });
+    for (const e of events) if (e.t === "design") for (const t of e.tests) if (t.file) sealedTests.set(t.id, { file: t.file, verifies: t.verifies });
     const state = reduce(events);
     const ucAcs = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).map((a) => a.id));
     const ucTests = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).flatMap((a) => a.tests));
     for (const t of prior) {
-      sealedTests.set(t.id, { file: rel(t.file), verifies: t.verifies });
+      sealedTests.set(t.id, { file: t.file, verifies: t.verifies });
       ucTests.add(t.id);
     }
     return meter.batch("evolve", async () => {
@@ -755,7 +771,14 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         if (r.status === "error") throw new EvolveFailed(`Kane's evolve of ${uc} failed: ${r.message}`);
         const g = await deps.kane.readGraph(cwd);
         const minted = r.minted.map((m) => m.test);
-        const fileOf = new Map(g.tests.filter((t) => t.file).map((t) => [t.id, rel(t.file)]));
+        // one entry per test id and per file, or the graph says two things at once: a tamper
+        const keys = g.tests.filter((t) => t.file).map((t) => key(t.file));
+        const twiceIds = g.tests.filter((t, i) => g.tests.findIndex((x) => x.id === t.id) !== i).map((t) => t.id);
+        const twice = [
+          ...new Set([...keys.filter((k, i) => keys.indexOf(k) !== i), ...g.tests.filter((t) => twiceIds.includes(t.id)).map((t) => (t.file ? key(t.file) : t.id))]),
+        ];
+        if (twice.length > 0) throw new EvolveStray(twice);
+        const fileOf = new Map(g.tests.filter((t) => t.file).map((t) => [t.id, t.file]));
         const missing = minted.filter((t) => !fileOf.has(t));
         if (missing.length > 0) throw new EvolveFailed(`Kane minted ${missing.join(", ")} but no test file of it is in the verifier`);
         // the seal hashes whatever is on disk: Kane may write the tests it minted and change or remove
@@ -763,24 +786,41 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         // (a variable, another use case's test, an unknown file) is never sealed: a tamper
         const retired = r.superseded.map((s) => s.test).filter((t) => t !== "");
         const allowed = new Set<string>();
-        // a minted test: a new file, verifying criteria of this use case only
-        const graphUcAcs = new Set(g.acs.filter((a) => a.useCase === uc).map((a) => a.id));
+        const bad: string[] = [];
+        // criteria this use case may be verified by: the ledger's own, and ones Kane newly adds under it
+        // (never one the ledger has under another use case)
+        const mayVerify = new Set([...ucAcs, ...g.acs.filter((a) => a.useCase === uc && !(a.id in state.acs)).map((a) => a.id)]);
+        const sealedKeys = [...copy.verifier.keys()].map(key);
+        const sealedFiles = [...sealedTests.values()].map((s) => s.file);
+        // a minted test: a new regular file under the tests folder, verifying this use case's criteria only
         for (const id of minted) {
           const t = g.tests.find((x) => x.id === id)!;
-          const f = fileOf.get(id)!;
-          if (!copy.verifier.has(f) && t.verifies.length > 0 && t.verifies.every((v) => graphUcAcs.has(v))) allowed.add(f);
+          const k = key(t.file);
+          const st = await lstat(path.resolve(p.verifierDir, t.file)).catch(() => undefined);
+          const ok =
+            k.startsWith(".testmuai/tests/") &&
+            !k.split("/").includes("..") &&
+            st !== undefined &&
+            st.isFile() &&
+            !st.isSymbolicLink() &&
+            !sealedKeys.includes(k) &&
+            !(await sameAsAny(t.file, sealedFiles)) &&
+            t.verifies.length > 0 &&
+            t.verifies.every((v) => mayVerify.has(v));
+          if (ok) allowed.add(k);
+          else bad.push(k);
         }
         // a retired test: one of this use case's, verifying its criteria only, no longer live, its file
         // gone or referenced by no live test, and shared with no other sealed test
         for (const id of retired) {
           const was = sealedTests.get(id);
-          if (!was || !ucTests.has(id) || !was.verifies.every((v) => ucAcs.has(v))) continue;
+          if (!was || !ucTests.has(id) || !was.verifies.every((v) => mayVerify.has(v))) continue;
           if (g.tests.some((t) => t.id === id && t.verifies.length > 0)) continue;
-          if (g.tests.some((t) => t.id !== id && t.file && rel(t.file) === was.file)) continue;
-          if ([...sealedTests].some(([other, o]) => other !== id && o.file === was.file)) continue;
-          allowed.add(was.file);
+          if (await sameAsAny(was.file, g.tests.filter((t) => t.id !== id && t.file).map((t) => t.file))) continue;
+          if (await sameAsAny(was.file, [...sealedTests].filter(([other]) => other !== id).map(([, o]) => o.file))) continue;
+          allowed.add(key(was.file));
         }
-        const stray = (await verifierDiffersFrom(p, copy)).filter((f) => !allowed.has(f));
+        const stray = [...new Set([...bad, ...(await verifierDiffersFrom(p, copy)).map(key).filter((k) => !allowed.has(k))])];
         if (stray.length > 0) throw new EvolveStray(stray);
         // a criterion never leaves the gate silently: the use case keeps every one it had
         const now = new Set(g.acs.filter((a) => a.useCase === uc).map((a) => a.id));
