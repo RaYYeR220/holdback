@@ -662,8 +662,62 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     return { r, calls };
   }
 
-  it("rolls Kane's evolve back when it changed a test file it did not mint", async () => {
-    await rolledBack({ onEvolve: () => appendFileSync(T1, "\nAlso accept a blank result.\n") }, /changed test files it did not mint: \.testmuai\/tests\/t1_test\.md/);
+  it("lets Kane's evolve change or remove the tests of the use case it retired: only its minted tests are sealed as live", async () => {
+    await setup();
+    const { deps, io } = fakes({
+      mutantRun: survives3,
+      onEvolve: () => {
+        appendFileSync(T1, "\nsuperseded\n");
+        rmSync(T3);
+      },
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ redesigned: ["uc-1"], reason: "done" });
+    const sealEv = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
+    expect(sealEv.by).toBe("kane");
+    expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
+  });
+
+  /** Kane's evolve touches a sealed verifier entry outside its own use case's tests: a tamper, never sealed. */
+  async function strayed(touch: () => void, paths: string[], before?: () => Promise<void>) {
+    await setup(before ? { before } : {});
+    const sealsBefore = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
+    const { deps, io } = fakes({ mutantRun: survives3, onEvolve: touch });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "falsify.evolve.stray")).toMatchObject({ uc: "uc-1", paths, credits: 11.39 });
+    expect(all.filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+    expect(all.some((e) => e.t === "falsify.evolved")).toBe(false);
+    const state = reduce(all);
+    expect(state.tampered).toBe(true);
+    expect(state.acs["ac-3"]!.status).toBe("vacuous");
+    expect(await tamperMarker(p)).toContain(paths[0]!);
+    // rolled back: nothing of Kane's evolve is left unsealed on disk
+    expect(existsSync(testFile("t-4"))).toBe(false);
+    const sealEv = all.findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
+    expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
+  }
+
+  it("a variables file Kane's evolve changed is a tamper: nothing sealed", async () => {
+    await strayed(() => writeFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), JSON.stringify({ start_url: { value: "http://evil.example/" } })), [".testmuai/variables/assurance.json"]);
+  });
+
+  it("another use case's test Kane's evolve removed is a tamper: nothing sealed", async () => {
+    const T9 = () => join(p.verifierDir, ".testmuai", "tests", "t9_test.md");
+    await strayed(
+      () => rmSync(T9()),
+      [".testmuai/tests/t9_test.md"],
+      async () => {
+        writeFileSync(T9(), "---\nassurance:\n  id: t-9\n---\n# t-9\n");
+        await log({ at, t: "design", useCase: "uc-2", acs: [AC9], tests: [{ id: "t-9", title: "nine", file: T9(), verifies: ["ac-9"] }], gaps: [], credits: 0 });
+        await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+      },
+    );
+  });
+
+  it("an extra test file Kane's evolve wrote but did not mint is a tamper: nothing sealed", async () => {
+    await strayed(() => writeFileSync(join(p.verifierDir, ".testmuai", "tests", "extra_test.md"), "---\nassurance:\n  id: t-77\n---\n# extra\n"), [".testmuai/tests/extra_test.md"]);
   });
 
   it("rolls Kane's evolve back when it reports a minted test the verifier has no file of", async () => {

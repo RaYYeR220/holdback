@@ -36,6 +36,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
     switch (e.t) {
       // fail closed: a tamper blocks the gate until a fresh seal (spec stage or a human re-seal)
       case "tamper":
+      case "falsify.evolve.stray":
         state.tampered = true;
         break;
       case "seal":

@@ -59,6 +59,12 @@ export type LedgerEvent = { at: string } & (
    */
   | { t: "falsify.evolved"; uc: string; because: string; minted: string[]; retired: string[]; credits: number; mutants: string[]; followUp?: boolean }
   /**
+   * Kane's evolve of `uc` added, changed or removed sealed verifier entries (`paths`) other than the
+   * tests it minted and the tests of `uc` it retired. A tamper: rolled back, never sealed, and the gate
+   * stays shut until a human re-seals.
+   */
+  | { t: "falsify.evolve.stray"; uc: string; paths: string[]; credits: number; detail: string }
+  /**
    * A drift re-plan or falsify evolve that was rolled back (nothing sealed); its Kane credits still
    * count. `acs` and `reason`: the vacuous criteria it leaves so, and why in plain words.
    */

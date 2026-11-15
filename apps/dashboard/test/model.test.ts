@@ -167,6 +167,20 @@ describe("timeline", () => {
     ]);
     expect(segs.at(-1)!.credits).toBeCloseTo(11.39 + 7.33 + 5.69, 9);
   });
+
+  it("shows an evolve that touched sealed files outside its use case as a tamper, and the next seal as a re-seal", () => {
+    const detail = "Kane's evolve of uc-1 changed sealed verifier files it did not mint or retire: .testmuai/variables/assurance.json";
+    const events = [
+      ev({ t: "turn.start", n: 1, owed: [] }),
+      ev({ t: "falsify.evolve.stray", uc: "uc-1", paths: [".testmuai/variables/assurance.json"], credits: 11.39, detail }),
+      ev({ t: "seal", manifest: { a: "1" } }),
+    ];
+    const items = timeline(events).flatMap((s) => s.items);
+    expect(items.filter((i) => i.kind === "tamper" || i.kind === "seal")).toMatchObject([
+      { kind: "tamper", detail },
+      { kind: "seal", reseal: true },
+    ]);
+  });
 });
 
 describe("meters and labels", () => {

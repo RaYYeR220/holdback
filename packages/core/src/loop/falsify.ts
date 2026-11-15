@@ -142,6 +142,14 @@ type Survivor = { ac: AcState; id: string; patch: string; rationale: string; sli
 
 /** Kane's evolve cannot be used; the verifier is rolled back. */
 class EvolveFailed extends Error {}
+/** Kane's evolve touched sealed verifier entries outside its own use case's tests: a tamper. */
+class EvolveStray extends Error {
+  constructor(readonly paths: string[]) {
+    super(paths.join(", "));
+  }
+}
+/** A tamper found in an evolve, already on record: the pass stops with reason `tamper`. */
+class EvolveTampered extends Error {}
 
 /** One line, control and format characters escaped: text a model wrote, on its way to a command line. */
 const oneLine = (t: string): string => escapeControls(t.replace(/\s+/g, " ").trim());
@@ -652,6 +660,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     if (spent >= MAX_EVOLVES) return giveUp(`Kane already evolved ${uc} ${MAX_EVOLVES} times in this run`, 0);
     const because = becauseText(list);
     const first = await evolveOnce(uc, because, list);
+    if ("stray" in first) return strayTamper(uc, first.stray, first.credits);
     if ("failed" in first) return giveUp(first.failed, first.credits);
     const out_: EventBody[] = [{ t: "falsify.evolved", uc, because, minted: first.minted, retired: first.retired, credits: first.credits, mutants }];
     let g = first.graph;
@@ -665,6 +674,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       else {
         const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
         const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list);
+        if ("stray" in again) return strayTamper(uc, again.stray, again.credits);
         if ("failed" in again) {
           // the first evolve stands; the follow-up's spend is still on record
           await emit({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${again.failed}`, credits: again.credits });
@@ -705,16 +715,21 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
 
   /**
    * One `maintain evolve` of `uc`: a metered Kane batch, counted against the run's bound. Kane's new
-   * set is checked before anything is logged: it minted a test with a file, wrote no test file but
-   * those, and still holds every criterion of the use case. Otherwise the verifier is put back as it
-   * was before this call and the reason is returned.
+   * set is checked before anything is logged: it minted a test with a file, changed no sealed verifier
+   * entry but its minted tests and the tests of this use case it retired, and still holds every
+   * criterion of the use case. Otherwise the verifier is put back as it was before this call and the
+   * reason is returned; any other sealed entry it touched (`stray`) is a tamper, never sealed.
    */
   const evolveOnce = async (
     uc: string,
     because: string,
     list: Survivor[],
-  ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number }> => {
+  ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
     evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
+    // this use case's tests as sealed, by id: the ones Kane may retire
+    const sealedFileOf = testFileMap(events, p.verifierDir);
+    const ucTests = new Set(Object.values(reduce(events).acs).filter((a) => a.useCase === uc).flatMap((a) => a.tests));
+    const rel = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
     return meter.batch("evolve", async () => {
       const copy = await copySealed(p);
       kaneWindow = true; // Kane writes into the verifier while it evolves
@@ -731,22 +746,42 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         const fileOf = new Map(g.tests.filter((t) => t.file).map((t) => [t.id, path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)).split(path.sep).join("/")]));
         const missing = minted.filter((t) => !fileOf.has(t));
         if (missing.length > 0) throw new EvolveFailed(`Kane minted ${missing.join(", ")} but no test file of it is in the verifier`);
-        // the seal hashes whatever is on disk: Kane may write the tests it minted, and nothing else
-        const mintedFiles = new Set(minted.map((t) => fileOf.get(t)!));
-        const stray = (await changedTests(p, copy)).filter((f) => !mintedFiles.has(f));
-        if (stray.length > 0) throw new EvolveFailed(`Kane changed test files it did not mint: ${stray.join(", ")}`);
+        // the seal hashes whatever is on disk: Kane may write the tests it minted and change or remove
+        // the tests of this use case it retired; any other sealed entry it added, changed or removed
+        // (a variable, another use case's test, an unknown file) is never sealed: a tamper
+        const retired = r.superseded.map((s) => s.test).filter((t) => t !== "");
+        const allowed = new Set([...minted.map((t) => fileOf.get(t)!), ...retired.filter((t) => ucTests.has(t) && sealedFileOf.has(t)).map((t) => rel(sealedFileOf.get(t)!))]);
+        const stray = (await verifierDiffersFrom(p, copy)).filter((f) => !allowed.has(f));
+        if (stray.length > 0) throw new EvolveStray(stray);
         // a criterion never leaves the gate silently: the use case keeps every one it had
         const now = new Set(g.acs.filter((a) => a.useCase === uc).map((a) => a.id));
         const had = Object.values(reduce(events).acs).filter((a) => a.useCase === uc).map((a) => a.id);
         const gone = [...new Set([...had, ...list.map((s) => s.ac.id)])].filter((id) => !now.has(id));
         if (gone.length > 0) throw new EvolveFailed(`Kane's evolve of ${uc} no longer holds ${gone.join(", ")}`);
-        return { minted, retired: r.superseded.map((s) => s.test).filter((t) => t !== ""), credits, graph: g };
+        return { minted, retired, credits, graph: g };
       } catch (e) {
         if (e instanceof LedgerTampered || e instanceof KaneCapReached) throw e;
         await rollBack(copy);
+        if (e instanceof EvolveStray) return { stray: e.paths, credits };
         return { failed: e instanceof EvolveFailed ? e.message : `Kane failed during the evolve of ${uc}: ${errText(e)}`, credits };
       }
     });
+  };
+
+  /**
+   * Kane's evolve of `uc` touched sealed verifier entries it had no business changing: rolled back,
+   * on record as a tamper (`falsify.evolve.stray`, the marker first), and the pass stops.
+   */
+  const strayTamper = async (uc: string, paths: string[], credits: number): Promise<never> => {
+    const detail = `Kane's evolve of ${uc} changed sealed verifier files it did not mint or retire: ${paths.join(", ")}`;
+    let logged = detail;
+    try {
+      await markTampered(p, detail);
+    } catch (e) {
+      logged = `${detail} (tamper marker not written: ${errText(e)})`;
+    }
+    await emit({ t: "falsify.evolve.stray", uc, paths, credits, detail: logged });
+    throw new EvolveTampered(logged);
   };
 
   /** The verifier put back as `copy` holds it, never the app side (a newer spec edit stays: N-I2), and its recordings re-anchored. */
@@ -1013,6 +1048,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     return await finalize(await run());
   } catch (e) {
     if (e instanceof KaneCapReached) return await finalize(result("kane-budget", e.message));
+    if (e instanceof EvolveTampered) return await finalize(result("tamper", e.message));
     return await finalize(result("error", errText(e)), e);
   } finally {
     await stopApp().catch(() => {});

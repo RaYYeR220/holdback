@@ -464,6 +464,7 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         });
         break;
       case "tamper":
+      case "falsify.evolve.stray":
         tampered = true;
         seg.items.push({ kind: "tamper", at: e.at, detail: e.detail });
         break;

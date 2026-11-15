@@ -23,6 +23,7 @@ export function eventCredits(e: EventBody | LedgerEvent): number {
     case "drift":
       return typeof e.credits === "number" ? e.credits : 0;
     case "falsify.evolved":
+    case "falsify.evolve.stray":
       return e.credits;
     default:
       return 0;
