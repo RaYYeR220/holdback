@@ -120,6 +120,9 @@ describe("bisectRegression", { timeout: 60_000 }, () => {
     expect(seen.noHeal.every((v) => v === true)).toBe(true);
     expect(new Set(seen.cwds).size).toBe(seen.cwds.length); // a worktree per probe
     expect(seen.envs.every((e) => typeof e.DATA_DIR === "string" && e.VENICE_API_KEY === "")).toBe(true);
+    // a fresh data dir under the home per probe, never one inside the checked-out commit (it may hold a committed database)
+    expect(new Set(seen.envs.map((e) => e.DATA_DIR)).size).toBe(seen.envs.length);
+    expect(seen.envs.every((e) => e.DATA_DIR!.startsWith(join(p.home, "data")))).toBe(true);
 
     const events = await readEvents(p.ledgerFile);
     expect(events.filter((e) => e.t === "regression")).toEqual([

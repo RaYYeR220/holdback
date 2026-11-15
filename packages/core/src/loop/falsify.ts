@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, readlink, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
+import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, type Mutant } from "../breaker/mutate.js";
 import { Budget, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
@@ -333,8 +334,19 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     baseline = { ...snap, gitConfig: baseline!.gitConfig };
     kaneWindow = false;
   };
-  /** The breaker's key never reaches an app under test. */
-  const appEnv = (extra: Record<string, string> = {}) => ({ ...p.config.start.env, ...extra, VENICE_API_KEY: "" });
+  /**
+   * Starts an app under test (a mutant's worktree, or the real build) on a new, empty data dir under
+   * the home, never one inside the worktree, where a committed database would seed it.
+   */
+  const launch = async (cwd: string, port: number, label: string): Promise<RunningApp> => {
+    running = await deps.app({ cwd, cmd: p.config.start.cmd, port, readyPath: p.config.start.readyPath, env: appEnv(p, await freshDataDir(p, label)) });
+    return running;
+  };
+  /** `runSettled`'s re-run: the same app stopped and started again, on a fresh data dir. */
+  const relaunch = (cwd: string, port: number, label: string) => async (): Promise<string> => {
+    await stopApp();
+    return `${(await launch(cwd, port, `${label}-rerun`)).url}/`;
+  };
 
   const dropWorktree = (dir: string) => dropWorktreeSafely(p, dir, gitOpts);
 
@@ -433,30 +445,24 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       }
 
       // 2. the mutant app on a spare port, with its own data dir
-      const dataDir = path.join(dir, "data");
-      await mkdir(dataDir, { recursive: true });
+      const port = await (deps.port ?? freePort)();
+      let app: RunningApp;
       try {
-        running = await deps.app({
-          cwd: dir,
-          cmd: p.config.start.cmd,
-          port: await (deps.port ?? freePort)(),
-          readyPath: p.config.start.readyPath,
-          env: appEnv({ DATA_DIR: dataDir }),
-        });
+        app = await launch(dir, port, id);
       } catch (e) {
         await finish("invalid", `mutant did not start: ${startFailureText(e).slice(-1000)}`);
         return "done";
       }
 
       // 3. Kane replays the AC's sealed tests against it, healing off (a run that failed for a reason
-      //    other than the app once more, while the mutant is still up)
-      const app = running;
+      //    other than the app once more, against the mutant started again)
       return await meter.batch("falsify", async () => {
         kaneWindow = true;
         attacked = true;
         let results: TestRunResult[];
         try {
-          results = await runSettled(deps.tests, cwd, files, { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel });
+          const opts = { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
+          results = await runSettled(deps.tests, cwd, files, opts, relaunch(dir, port, id));
         } finally {
           await stopApp();
         }
@@ -588,18 +594,20 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       await recordTamper(`sealed files changed: ${bad.join(", ")}`);
       return "tamper";
     }
+    const port = p.config.start.port;
+    let app: RunningApp;
     try {
-      running = await deps.app({ cwd: p.appDir, cmd: p.config.start.cmd, port: p.config.start.port, readyPath: p.config.start.readyPath, env: appEnv() });
+      app = await launch(p.appDir, port, "replay");
     } catch (e) {
       out.replayError = `the app did not start: ${startFailureText(e).slice(-1000)}`;
       return "done";
     }
-    const app = running;
     return meter.batch("falsify", async () => {
       kaneWindow = true;
       let results: TestRunResult[];
       try {
-        results = await runSettled(deps.tests, cwd, files, { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel });
+        const opts = { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
+        results = await runSettled(deps.tests, cwd, files, opts, relaunch(p.appDir, port, "replay"));
       } finally {
         await stopApp();
       }

@@ -317,7 +317,11 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     // each mutant ran from a worktree of HEAD with the patch applied, its own data dir and the app's deps
     const mutantApps = calls.apps.filter((a) => a.cwd !== appDir);
     expect(mutantApps.map((a) => a.cwd)).toEqual([mutDir("m-ac-1-1"), mutDir("m-ac-3-1")]);
-    expect(mutantApps[1]).toMatchObject({ cmd: "npm start", port: 5178, readyPath: "/", env: { DATA_DIR: join(mutDir("m-ac-3-1"), "data"), VENICE_API_KEY: "" } });
+    expect(mutantApps[1]).toMatchObject({ cmd: "npm start", port: 5178, readyPath: "/", env: { DATA_DIR: expect.any(String), VENICE_API_KEY: "" } });
+    // a data dir of its own under the home, never one inside the worktree (a committed database would seed it)
+    const dataDirs = calls.apps.map((a) => a.env!.DATA_DIR!);
+    expect(new Set(dataDirs).size).toBe(calls.apps.length);
+    for (const d of dataDirs) expect(d.startsWith(join(p.home, "data"))).toBe(true);
     expect(calls.mutantSrc[0]!.src).toContain("if (snap && income < 0)");
     expect(calls.mutantSrc[1]!.src).toContain("LIMITS[size] + 1");
     expect(calls.mutantSrc.every((m) => m.deps)).toBe(true);

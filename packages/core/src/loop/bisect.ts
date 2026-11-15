@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { freePort, startApp } from "../app.js";
+import { appEnv, freshDataDir } from "../datadir.js";
 import { holdbackGitOptions, worktreeAdd } from "../git.js";
 import { notAnAppFailure, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
@@ -140,15 +141,15 @@ export async function bisectRegression(
       await mkdir(path.dirname(dir), { recursive: true });
       await worktreeAdd(p.appDir, dir, commit, gitOpts);
       await linkAppNodeModules(p, dir);
-      const dataDir = path.join(dir, "data");
-      await mkdir(dataDir, { recursive: true });
+      // a fresh data dir under the home: one inside the checked-out commit may hold a committed database
+      const dataDir = await freshDataDir(p, path.basename(dir));
       try {
         app = await deps.app({
           cwd: dir,
           cmd: p.config.start.cmd,
           port: await (deps.port ?? freePort)(),
           readyPath: p.config.start.readyPath,
-          env: { ...p.config.start.env, DATA_DIR: dataDir, VENICE_API_KEY: "" }, // the breaker's key never reaches an app under test
+          env: appEnv(p, dataDir),
         });
       } catch {
         return "error"; // the commit does not boot: proves nothing about the AC

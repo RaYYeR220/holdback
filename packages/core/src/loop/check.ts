@@ -267,7 +267,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
       turn = openTurn(s.events)!;
     }
 
-    const appStartError = await s.startApp(await (deps.port ?? freePort)());
+    const appStartError = await s.startApp(await (deps.port ?? freePort)(), `check-turn-${turn.n}`);
     let ran: string[] = [];
     if (appStartError === undefined) {
       const v = await s.verify(turn.n, owedFiles, fileOf, false);

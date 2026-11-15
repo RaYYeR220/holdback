@@ -223,7 +223,11 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.tests[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 420, parallel: 3 });
     expect(calls.starts).toBe(2);
     expect(calls.stops).toBe(2);
-    expect(calls.appEnv).toEqual([{ VENICE_API_KEY: "" }, { VENICE_API_KEY: "" }]); // the breaker's key never reaches the app
+    // the breaker's key never reaches the app; every start gets its own data dir
+    expect(calls.appEnv).toEqual([
+      { DATA_DIR: expect.any(String), VENICE_API_KEY: "" },
+      { DATA_DIR: expect.any(String), VENICE_API_KEY: "" },
+    ]);
 
     // ledger
     const ev = await loopEvents();
@@ -258,6 +262,51 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(Object.values(state.acs).map((a) => a.status)).toEqual(["passing", "passing"]);
   });
 
+  it("starts the app on a new, empty DATA_DIR under the home every time: rows a Kane run wrote never reach the next batch", async () => {
+    // a stateful app: start.env's own DATA_DIR (inside the agent's repo) loses to Holdback's
+    await setup({ config: { start: { env: { DATA_DIR: "./data", HOLDBACK_TODAY: "2026-11-19" } } } });
+    const dirs: { dir: string; emptyAtStart: boolean }[] = [];
+    const { deps, calls } = fakes({ kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    const app = deps.app;
+    deps.app = async (o) => {
+      const dir = o.env!.DATA_DIR!;
+      dirs.push({ dir, emptyAtStart: existsSync(dir) && readdirSync(dir).length === 0 });
+      writeFileSync(join(dir, "pantry.db"), "a booking"); // what a Kane run leaves behind
+      return app(o);
+    };
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("gate-open");
+    expect(dirs).toHaveLength(2);
+    expect(new Set(dirs.map((d) => d.dir)).size).toBe(2);
+    for (const d of dirs) {
+      expect(d.emptyAtStart).toBe(true);
+      expect(d.dir.startsWith(join(p.home, "data"))).toBe(true);
+    }
+    expect(calls.appEnv.every((e) => e?.HOLDBACK_TODAY === "2026-11-19" && e?.VENICE_API_KEY === "")).toBe(true);
+    expect(existsSync(join(appDir, "data"))).toBe(false);
+  });
+
+  it("a re-run whose app does not come back leaves the test inconclusive and runs nothing more against the dead app", async () => {
+    await setup({ config: { loop: { maxTurns: 3 } } });
+    const envFail = (file: string): TestRunResult => ({ ...fail(file), verdict: { bugTitle: "Browser target closed", family: "environment_issue" } });
+    const { deps, calls } = fakes({ kane: (turn, files) => files.map((f) => (idOf(f) === "t-3" ? (turn === 3 ? envFail(f) : fail(f)) : pass(f))) });
+    const app = deps.app;
+    deps.app = async (o) => {
+      if (calls.starts === 3) throw new AppStartError("app exited before becoming ready", "EADDRINUSE"); // the 4th start: the re-run's
+      return app(o);
+    };
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("max-turns");
+    // turn 3 (a replay turn): the owed t-3 proved nothing, the app did not come back, so no replay batch ran
+    expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
+      [1, [T1, T3]],
+      [2, [T3]],
+      [3, [T3]],
+    ]);
+    const t3 = (await loopEvents()).findLast((e) => e.t === "run" && e.turn === 3);
+    expect(t3).toMatchObject({ result: { inconclusive: expect.stringContaining("the app did not start again") } });
+  });
+
   it("re-runs a test Kane blames on its own browser once, never briefs the agent with it, and leaves its criterion owed (R34)", async () => {
     await setup();
     // the live t-3: Kane's browser closed mid-authoring (environment_issue), twice in turn 1
@@ -273,11 +322,13 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(r).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
     expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
       [1, [T1, T3]],
-      [1, [T3]], // the same test once more, the app still up
+      [1, [T3]], // the same test once more, against the app started again on an empty data dir
       [2, [T3]],
       [2, [T1]],
     ]);
-    expect(calls.starts).toBe(2);
+    expect(calls.starts).toBe(3);
+    expect(calls.stops).toBe(3);
+    expect(new Set(calls.appEnv.map((e) => e?.DATA_DIR)).size).toBe(3);
 
     // turn 2's brief: ac-3 still owed, nothing of Kane's own failure
     const second = calls.claude[1]!.prompt;
@@ -316,7 +367,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       [2, [T1]],
       [2, [T1]],
     ]);
-    expect(calls.starts).toBe(2);
+    expect(calls.starts).toBe(3); // the re-run meets the app started again on a fresh data dir
     expect(reduce(await readEvents(p.ledgerFile)).acs["ac-1"]!.status).toBe("passing");
   });
 

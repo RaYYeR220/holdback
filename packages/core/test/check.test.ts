@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,6 +145,27 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     // the repo's own index and history are untouched
     expect(git(appDir, "status", "--porcelain")).toContain("?? app.js");
     expect(() => git(appDir, "rev-parse", "--verify", "-q", "HEAD")).toThrow();
+  });
+
+  it("starts the app on a fresh DATA_DIR under the home: what Kane's runs write never moves the work tree, so the verdict stands", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    const dirs: string[] = [];
+    const app = deps.app;
+    deps.app = async (o) => {
+      // an app keeps its rows in DATA_DIR, or in ./data when none is given
+      const dir = o.env?.DATA_DIR ?? join(appDir, "data");
+      dirs.push(dir);
+      mkdirSync(dir, { recursive: true });
+      expect(readdirSync(dir)).toEqual([]);
+      writeFileSync(join(dir, "pantry.db"), "a booking");
+      return app(o);
+    };
+    await checkOnce(p, deps, log, { reason: "edit" });
+    expect(dirs[0]!.startsWith(join(p.home, "data"))).toBe(true);
+    const again = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(again.status).toBe("unchanged");
+    expect(calls.tests).toHaveLength(1);
   });
 
   it("re-runs after any work-tree change (an untracked file too), replays the passing criteria once nothing is owed, and opens the gate", async () => {

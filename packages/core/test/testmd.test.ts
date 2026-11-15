@@ -337,6 +337,39 @@ describe("notAnAppFailure / runSettled (R34: Kane's verdict family gates everyth
     expect(calls).toHaveLength(1);
   });
 
+  it("restarts the app (a fresh data dir) before the re-run, and re-runs against the URL it comes back on", async () => {
+    const env = base({ testFile: "a", testId: "t-1", verdict: verdict("environment_issue") });
+    const ok = base({ testFile: "b", testId: "t-2", status: "passed", criteriaFailed: [] });
+    const { tests, calls } = scripted([[env, ok], [ok]]);
+    const order: string[] = [];
+    const restart = async () => {
+      order.push(`restart after ${calls.length} batch(es)`);
+      return "http://127.0.0.1:4242/";
+    };
+    await runSettled(tests, "/v", ["a", "b"], { startUrl: "http://x/", parallel: 2 }, restart);
+    expect(order).toEqual(["restart after 1 batch(es)"]);
+    expect(calls[1]).toEqual({ files: ["a"], opts: { startUrl: "http://127.0.0.1:4242/", parallel: 2 } });
+  });
+
+  it("never restarts when nothing needs a re-run", async () => {
+    const { tests } = scripted([[base({ status: "passed", criteriaFailed: [] })]]);
+    let restarts = 0;
+    await runSettled(tests, "/v", ["x"], {}, async () => (restarts++, "http://y/"));
+    expect(restarts).toBe(0);
+  });
+
+  it("marks the runs inconclusive, without a re-run, when the app does not come back for it", async () => {
+    const env = base({ testFile: "a", testId: "t-1", verdict: verdict("environment_issue"), credits: 2 });
+    const { tests, calls } = scripted([[env]]);
+    const [r] = await runSettled(tests, "/v", ["a"], {}, async () => {
+      throw new Error("app exited with code 1 before becoming ready");
+    });
+    expect(calls).toHaveLength(1);
+    expect(r).toMatchObject({ testId: "t-1", credits: 2, inconclusive: expect.stringContaining("environment_issue: something broke") });
+    expect(r!.inconclusive).toContain("app exited with code 1 before becoming ready");
+    expect(r!.retried).toBeUndefined();
+  });
+
   it("a re-run that returns the wrong number of results is an error, like a short batch", async () => {
     const { tests } = scripted([[base({ status: "error", reason: "timeout" })], []]);
     await expect(runSettled(tests, "/v", ["x"], {})).rejects.toThrow("Kane returned 0 results for 1 tests");

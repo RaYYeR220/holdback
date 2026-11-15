@@ -5,6 +5,7 @@ import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
 import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, PortInUse, startApp, type RunningApp } from "../app.js";
+import { appEnv, freshDataDir } from "../datadir.js";
 import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { balance } from "../kane/assurance.js";
 import { notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
@@ -149,6 +150,8 @@ export class VerifySession {
   /** True from the start of a Kane batch until the recordings are snapshotted again. */
   kaneWindow = false;
   app: RunningApp | undefined;
+  /** The port and data-dir label the app was last started with (a re-run starts it the same way). */
+  private started: { port: number; label: string } | undefined;
   /** Every git call of Holdback's runs with no repo hook, fsmonitor or signing program. */
   readonly gitOpts: GitOptions;
   /** Each Kane batch is metered by Kane's balance (`credits` events). */
@@ -309,18 +312,21 @@ export class VerifySession {
   }
 
   /**
-   * Starts the app for a Kane batch on `port`. Returns why it did not start (log tail and reason), or
-   * undefined. Throws `PortInUse`: another program on the port is for the human, not the agent, to fix.
+   * Starts the app for a Kane batch on `port`, on a new, empty data dir (`freshDataDir`, named after
+   * `label`): rows an earlier batch wrote never reach this one. Returns why it did not start (log tail
+   * and reason), or undefined. Throws `PortInUse`: another program on the port is for the human, not
+   * the agent, to fix.
    */
-  async startApp(port: number): Promise<string | undefined> {
+  async startApp(port: number, label: string): Promise<string | undefined> {
     const { p } = this;
+    this.started = { port, label };
     try {
       this.app = await this.deps.app({
         cwd: p.appDir,
         cmd: p.config.start.cmd,
         port,
         readyPath: p.config.start.readyPath,
-        env: { ...p.config.start.env, VENICE_API_KEY: "" }, // the breaker's key never reaches the app
+        env: appEnv(p, await freshDataDir(p, label)),
       });
       return undefined;
     } catch (e) {
@@ -328,6 +334,16 @@ export class VerifySession {
       return startFailureText(e);
     }
   }
+
+  /** `runSettled`'s re-run: the app stopped and started again on its port, on a fresh data dir. Throws when it does not come back. */
+  private readonly restartApp = async (): Promise<string> => {
+    const { port, label } = this.started!;
+    await this.stopApp();
+    const why = await this.startApp(port, `${label}-rerun`);
+    // the reason is the last line of the start failure (the log tail comes first)
+    if (why !== undefined || !this.app) throw new Error(why?.trim().split(/\r?\n/).at(-1) ?? "the app did not start");
+    return `${this.app.url}/`;
+  };
 
   /**
    * One Kane batch of `files` with the app up, logged as `run{kind:"build", turn}` (a criterion that
@@ -337,7 +353,8 @@ export class VerifySession {
    * sealed file changed meanwhile.
    */
   private async runLogged(turn: number, files: string[], fileOf: Map<string, string>, done: Verified): Promise<boolean> {
-    if (files.length === 0) return false;
+    // no app (it did not come back for an earlier re-run): nothing to run against
+    if (files.length === 0 || !this.app) return false;
     this.assertSealed(files);
     for (const f of files) done.ran.add(f);
     const { p } = this;
@@ -345,7 +362,7 @@ export class VerifySession {
     const runOpts = { startUrl: `${this.app!.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
     return this.meter.batch(this.source, async () => {
       this.kaneWindow = true;
-      const results = await runSettled(this.deps.tests, p.verifierDir, files, runOpts);
+      const results = await runSettled(this.deps.tests, p.verifierDir, files, runOpts, this.restartApp);
       // results produced against a changed test or variable never reach the ledger
       if (await this.tampered(false)) return true;
       const was = reduce(this.events);
@@ -520,7 +537,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         if (rechecked) return { ...done(false, "inconclusive"), inconclusive: g.inconclusive };
         rechecked = true;
         const fileOf = testFileMap(s.events, p.verifierDir);
-        startError = await s.startApp(p.config.start.port);
+        startError = await s.startApp(p.config.start.port, `recheck-${state.turn}`);
         if (s.app) {
           const v = await s.recheck(state.turn, [...new Set(g.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []))], fileOf);
           if (v.tampered || (await blame(v.regressed))) return done(false, "tamper");
@@ -565,7 +582,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       // 2. commit the turn, restart the app
       const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, s.gitOpts);
       const filesChanged = commit && before ? await changedFiles(p.appDir, before, commit, s.gitOpts) : [];
-      startError = await s.startApp(p.config.start.port);
+      startError = await s.startApp(p.config.start.port, `turn-${n}`);
       await s.emit({
         t: "turn.end",
         n,

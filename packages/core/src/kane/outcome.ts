@@ -33,23 +33,49 @@ export function inconclusiveNote(r: TestRunResult): string {
 
 type Batch = (cwd: string, files: string[], opts?: RunTestOptions & { parallel?: number }) => Promise<TestRunResult[]>;
 
+/**
+ * Starts the app under test again before a re-run (stopped, then up on a new, empty data dir, so the
+ * re-run never meets the rows the first attempt left half-written). Resolves to its start URL;
+ * throws when it does not come back.
+ */
+export type Restart = () => Promise<string>;
+
 const round = (n: number) => Math.round(n * 1e4) / 1e4;
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * One Kane batch whose verdicts can be trusted: every run that failed for a reason other than the
- * app (`notAnAppFailure`) is run once more, with the same options, while the app is still up. The
- * re-run's result stands, with both attempts' credits and time; one that fails that way again is
- * marked `inconclusive`. Throws when a batch returns the wrong number of results.
+ * app (`notAnAppFailure`) is run once more, with the same options, against the app as `restart`
+ * brings it back (without one, while the app is still up). The re-run's result stands, with both
+ * attempts' credits and time; one that fails that way again is marked `inconclusive`, and so is
+ * every run due a re-run when the app does not come back for it. Throws when a batch returns the
+ * wrong number of results.
  */
-export async function runSettled(tests: Batch, cwd: string, files: string[], opts: RunTestOptions & { parallel?: number } = {}): Promise<TestRunResult[]> {
+export async function runSettled(
+  tests: Batch,
+  cwd: string,
+  files: string[],
+  opts: RunTestOptions & { parallel?: number } = {},
+  restart?: Restart,
+): Promise<TestRunResult[]> {
   const first = await tests(cwd, files, opts);
   if (first.length !== files.length) throw new Error(`Kane returned ${first.length} results for ${files.length} tests`);
   const again = first.flatMap((r, i) => (notAnAppFailure(r) === undefined ? [] : [i]));
   if (again.length === 0) return first;
+  let retryOpts = opts;
+  if (restart) {
+    try {
+      retryOpts = { ...opts, startUrl: await restart() };
+    } catch (e) {
+      const out = [...first];
+      for (const i of again) out[i] = { ...first[i]!, inconclusive: `${notAnAppFailure(first[i]!)}; not re-run: the app did not start again (${errText(e)})` };
+      return out;
+    }
+  }
   const second = await tests(
     cwd,
     again.map((i) => files[i]!),
-    opts,
+    retryOpts,
   );
   if (second.length !== again.length) throw new Error(`Kane returned ${second.length} results for ${again.length} tests`);
   const out = [...first];
