@@ -4,6 +4,8 @@ export { runKane, type RunKaneOptions, type RunKaneResult } from "./kane/run.js"
 export {
   ingest,
   extractResume,
+  resumeSession,
+  tokenize,
   review,
   designTests,
   readGraph,

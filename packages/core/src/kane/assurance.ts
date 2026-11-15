@@ -15,7 +15,14 @@ export type PendingQuestion = {
   allowFreeText: boolean;
 };
 
-export type Paused = { status: "paused"; sid: string; resume: string; questions: PendingQuestion[] };
+export type Paused = {
+  status: "paused";
+  /** Which Kane verb paused: "extract", "design" or "reconcile". */
+  verb: string;
+  sid: string;
+  resume: string;
+  questions: PendingQuestion[];
+};
 
 export type IngestResult =
   | { status: "complete"; minted: string[]; credits: number }
@@ -25,6 +32,9 @@ export type IngestResult =
 export type DesignResult =
   | {
       status: "complete" | "refused" | "error";
+      /** Set when status is "error" (or "refused" with a reason). */
+      message?: string;
+      code?: string;
       tests: string[];
       acs: string[];
       gaps: string[];
@@ -92,6 +102,7 @@ function pausedFrom(events: KaneEvent[]): Paused | null {
   if (done && done.status !== "paused") return null;
   return {
     status: "paused",
+    verb: str(p.verb),
     sid: str(p.sid),
     resume: str(p.resume),
     questions: arr(p.pending_questions)
@@ -147,10 +158,43 @@ export async function ingest(cwd: string, sources: string[]): Promise<IngestResu
 }
 
 export async function extractResume(cwd: string, sid: string, answers: Record<string, string>): Promise<IngestResult> {
-  const args = ["context", "extract", "--resume", sid, "--mode", "agent"];
+  const paused: Paused = {
+    status: "paused",
+    verb: "extract",
+    sid,
+    resume: `kane-cli context extract --resume ${sid} --mode agent`,
+    questions: [],
+  };
+  return (await resumeSession(cwd, paused, answers)) as IngestResult;
+}
+
+/** Split a command line into argv, honouring single and double quotes. */
+export function tokenize(cmd: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  return out;
+}
+
+/**
+ * Continue a paused extract / design / reconcile session using the exact
+ * command Kane printed in `session_paused.resume`, plus one `--answer` each.
+ */
+export async function resumeSession(
+  cwd: string,
+  paused: Paused,
+  answers: Record<string, string>,
+): Promise<IngestResult | DesignResult | ReconcileResult> {
+  const args = tokenize(paused.resume);
+  if (args[0] === "kane-cli") args.shift();
+  if (args.length === 0) throw new Error("resumeSession: empty resume command");
   for (const [id, value] of Object.entries(answers)) args.push("--answer", `${id}=${value}`);
   const r = await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS });
-  return ingestOutcome(r);
+  if (args[0] === "design") return parseDesign(r);
+  if (args[0] === "maintain") return parseReconcile(r);
+  if (args[0] === "context" && args[1] === "extract") return ingestOutcome(r);
+  throw new Error(`resumeSession: unsupported resume command: ${paused.resume}`);
 }
 
 export async function review(cwd: string, refs: string[]): Promise<void> {
@@ -172,7 +216,10 @@ export async function designTests(
   const args = ["design", "tests", "--use-case", useCase, "--mode", "agent"];
   if (opts.max !== undefined) args.push("--max", String(opts.max));
   if (opts.force) args.push("--force");
-  const r = await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS });
+  return parseDesign(await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS }));
+}
+
+function parseDesign(r: RunKaneResult): DesignResult {
   const paused = pausedFrom(r.events);
   if (paused) return paused;
 
@@ -186,8 +233,10 @@ export async function designTests(
     .filter(isObj)
     .map((v) => ({ name: str(v.name), description: str(v.description), secret: v.secret === true }));
 
+  const failure = status === "complete" ? null : errorFrom(r);
   return {
     status,
+    ...(failure ? { message: failure.message, ...(failure.code ? { code: failure.code } : {}) } : {}),
     tests: mintedIds(r.events, "t-"),
     acs: mintedIds(r.events, "ac-"),
     gaps: mintedIds(r.events, "gap-"),
@@ -209,7 +258,10 @@ export async function reconcile(
   mode: "plan" | "apply",
 ): Promise<ReconcileResult> {
   const args = ["maintain", "reconcile", "--from", file, "--source-id", sourceId, mode === "plan" ? "--plan" : "--apply", "--mode", "agent"];
-  const r = await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS });
+  return parseReconcile(await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS }));
+}
+
+function parseReconcile(r: RunKaneResult): ReconcileResult {
   const paused = pausedFrom(r.events);
   if (paused) return paused;
   const status = doneStatus(r);

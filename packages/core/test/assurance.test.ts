@@ -11,6 +11,7 @@ import {
   ingest,
   readGraph,
   reconcile,
+  resumeSession,
   review,
 } from "../src/kane/assurance.js";
 
@@ -223,5 +224,53 @@ describe("readGraph", () => {
     expect(g.acs.every((a) => a.cites.length === 0)).toBe(true);
     expect(g.tests.every((t) => t.file === "")).toBe(true);
     expect(g.tests.find((t) => t.id === "t-3")!.verifies).toContain("ac-3");
+  });
+});
+
+describe("design error details and resumeSession", () => {
+  it("designTests error carries message and code", async () => {
+    useFixture(
+      textFixture(
+        '{"type":"error","v":1,"verb":"design","code":"E_NOCREDIT","message":"out of credits"}\n' +
+          '{"type":"done","v":1,"verb":"design","status":"error","exit_code":1}\n',
+      ),
+    );
+    process.env.FAKE_KANE_EXIT = "1";
+    const r = await designTests(cwd, "uc-1", {});
+    expect(r).toMatchObject({ status: "error", message: "out of credits", code: "E_NOCREDIT", tests: [] });
+  });
+
+  const pausedStream = (verb: string, resume: string) =>
+    `{"type":"session_paused","v":1,"verb":"${verb}","sid":"s-1","resume":"${resume}","pending_questions":[{"id":"q1","text":"t","risk":"low","rationale":"r","options":[{"label":"a"}],"recommended_index":0}]}\n` +
+    `{"type":"done","v":1,"verb":"${verb}","status":"paused","exit_code":3}\n`;
+
+  it("design pause resumes with the verb's own command", async () => {
+    useFixture(textFixture(pausedStream("design", "kane-cli design tests --resume s-1 --mode agent")));
+    const p = await designTests(cwd, "uc-1", {});
+    if (p.status !== "paused") throw new Error("expected pause");
+    expect(p.verb).toBe("design");
+    useFixture(fx("03-design.ndjson"));
+    const r = await resumeSession(cwd, p, { q1: "1" });
+    expect(r.status).toBe("complete");
+    expect(argvs()[1]).toEqual(["design", "tests", "--resume", "s-1", "--mode", "agent", "--answer", "q1=1"]);
+  });
+
+  it("reconcile pause resumes and parses the plan", async () => {
+    useFixture(textFixture(pausedStream("reconcile", "kane-cli maintain reconcile --resume s-1 --mode agent")));
+    const p = await reconcile(cwd, "a.md", "prd", "plan");
+    if (p.status !== "paused") throw new Error("expected pause");
+    useFixture(fx("07-reconcile-plan.ndjson"));
+    const r = await resumeSession(cwd, p, { q1: "free text" });
+    expect(r).toMatchObject({ status: "complete", rows: [{ kind: "MODIFY", ref: "uc-1" }] });
+    expect(argvs()[1]).toEqual(["maintain", "reconcile", "--resume", "s-1", "--mode", "agent", "--answer", "q1=free text"]);
+  });
+
+  it("tokenizes quoted resume args", async () => {
+    useFixture(textFixture(pausedStream("extract", "kane-cli context extract --resume s-1 --message 'a b' --mode agent")));
+    const p = await ingest(cwd, ["a.md"]);
+    if (p.status !== "paused") throw new Error("expected pause");
+    useFixture(fx("02-extract.ndjson"));
+    await resumeSession(cwd, p, {});
+    expect(argvs()[1]).toEqual(["context", "extract", "--resume", "s-1", "--message", "a b", "--mode", "agent"]);
   });
 });
