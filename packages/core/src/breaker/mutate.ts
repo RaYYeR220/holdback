@@ -4,7 +4,14 @@ import type { AcState } from "../ledger/types.js";
 import { Budget, estimateUsd, MAX_TOKENS, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type ChatMessage } from "./venice.js";
 
 export type SourceFile = { path: string; content: string };
-export type Mutant = { patch: string; usd: number; rationale: string };
+/**
+ * The breaker's own account of its planted bug, in a user's terms: what goes wrong, the inputs that
+ * show it, what the spec expects and what the app shows instead. If the bug gets past every test,
+ * Kane, the verifier, is told this to design a test that catches it (R40); the builder never is.
+ */
+export type Slip = { behaviour: string; inputs: string; expected: string; observed: string };
+/** `slip` is left out when the breaker did not describe its bug in full. */
+export type Mutant = { patch: string; usd: number; rationale: string; slip?: Slip };
 
 /** The most lines (added + removed) a mutant may change. */
 export const MAX_PATCH_LINES = 30;
@@ -18,8 +25,15 @@ const DOC = /\.(md|markdown|txt|rst|log)$/i;
 
 export const PATCH_SCHEMA = {
   type: "object",
-  properties: { patch: { type: "string" }, rationale: { type: "string" } },
-  required: ["patch", "rationale"],
+  properties: {
+    patch: { type: "string" },
+    rationale: { type: "string" },
+    behaviour: { type: "string" },
+    inputs: { type: "string" },
+    expected: { type: "string" },
+    observed: { type: "string" },
+  },
+  required: ["patch", "rationale", "behaviour", "inputs", "expected", "observed"],
   additionalProperties: false,
 };
 
@@ -200,7 +214,8 @@ const SYSTEM = [
   "Rules:",
   `- Change only the files shown, at most ${MAX_PATCH_LINES} changed lines in total. Do not create, delete or rename files.`,
   "- The violation must be visible in the browser (a wrong decision, text or number), not a crash or a page that fails to load.",
-  '- Reply with JSON {"patch": string, "rationale": string}. `patch` is a unified diff that `git apply` accepts: `--- a/<path>` and `+++ b/<path>` headers with each path exactly as shown, then `@@` hunks whose context lines are copied exactly from the file. `rationale` is one sentence on how the change violates the AC.',
+  '- Reply with JSON {"patch": string, "rationale": string, "behaviour": string, "inputs": string, "expected": string, "observed": string}. `patch` is a unified diff that `git apply` accepts: `--- a/<path>` and `+++ b/<path>` headers with each path exactly as shown, then `@@` hunks whose context lines are copied exactly from the file. `rationale` is one sentence on how the change violates the AC.',
+  "- Then describe the bug as a user meets it in the browser, without code: `behaviour` is what a user would see go wrong, in one sentence; `inputs` the concrete values they enter or pick that show it; `expected` what the page should show for those inputs, per the AC; `observed` what the changed app shows instead.",
 ].join("\n");
 
 function messagesFor(ac: AcState, files: SourceFile[], retry?: { patch: string; error: string }): ChatMessage[] {
@@ -256,5 +271,8 @@ export async function proposeMutant(ac: AcState, files: SourceFile[], opts: Prop
   const j = reply.json;
   if (!isObj(j) || typeof j.patch !== "string" || j.patch.trim() === "") throw new BreakerError("the breaker's reply has no patch", usd);
   const patch = j.patch.replace(/\r\n/g, "\n").replace(/\n*$/, "\n");
-  return { patch, usd, rationale: typeof j.rationale === "string" ? j.rationale.trim() : "" };
+  const text = (k: keyof Slip) => (typeof j[k] === "string" ? (j[k] as string).trim() : "");
+  const slip: Slip = { behaviour: text("behaviour"), inputs: text("inputs"), expected: text("expected"), observed: text("observed") };
+  const rationale = typeof j.rationale === "string" ? j.rationale.trim() : "";
+  return Object.values(slip).every((v) => v !== "") ? { patch, usd, rationale, slip } : { patch, usd, rationale };
 }

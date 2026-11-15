@@ -200,8 +200,15 @@ describe("checkPatch", () => {
   });
 });
 
+const SLIP = {
+  behaviour: "A one-person household earning one dollar above the limit is told it is eligible.",
+  inputs: "household size 1, monthly income $2,462, SNAP unchecked",
+  expected: "Not eligible. with the limit $2,461",
+  observed: "Eligible. with the limit $2,461",
+};
+
 describe("proposeMutant", () => {
-  const files = [{ path: "src/eligibility.js", content: "export const LIMIT = 2461;\n" }];
+  const files =[{ path: "src/eligibility.js", content: "export const LIMIT = 2461;\n" }];
   const patch = "--- a/src/eligibility.js\n+++ b/src/eligibility.js\n@@ -1 +1 @@\n-export const LIMIT = 2461;\n+export const LIMIT = 2462;\n";
 
   it("asks for the smallest patch that violates exactly this AC, charges the budget and returns the patch", async () => {
@@ -213,11 +220,12 @@ describe("proposeMutant", () => {
       budget,
       chat: async (o) => {
         calls.push(o);
-        return { json: { patch: patch.replace(/\n/g, "\r\n").trimEnd(), rationale: "Moves the limit up by one dollar." }, usage: { prompt_tokens: 1000, completion_tokens: 200 } };
+        return { json: { patch: patch.replace(/\n/g, "\r\n").trimEnd(), rationale: "Moves the limit up by one dollar.", ...SLIP }, usage: { prompt_tokens: 1000, completion_tokens: 200 } };
       },
     });
     const usd = (1000 * 0.138 + 200 * 0.275) / 1e6;
-    expect(r).toEqual({ patch, usd, rationale: "Moves the limit up by one dollar." });
+    // the breaker says in a user's terms what slips through: Kane (never the builder) is told it if the bug survives (R40)
+    expect(r).toEqual({ patch, usd, rationale: "Moves the limit up by one dollar.", slip: SLIP });
     expect(budget.spent).toBeCloseTo(0.5 + usd, 15);
     expect(calls).toHaveLength(1);
     const c = calls[0]!;
@@ -225,8 +233,15 @@ describe("proposeMutant", () => {
     expect(c.apiKey).toBe("k");
     expect(c.schema).toEqual({
       type: "object",
-      properties: { patch: { type: "string" }, rationale: { type: "string" } },
-      required: ["patch", "rationale"],
+      properties: {
+        patch: { type: "string" },
+        rationale: { type: "string" },
+        behaviour: { type: "string" },
+        inputs: { type: "string" },
+        expected: { type: "string" },
+        observed: { type: "string" },
+      },
+      required: ["patch", "rationale", "behaviour", "inputs", "expected", "observed"],
       additionalProperties: false,
     });
     const all = c.messages.map((m) => m.content).join("\n");
@@ -236,6 +251,18 @@ describe("proposeMutant", () => {
     expect(all).toContain(`AC ac-3: ${AC3.text}`);
     expect(all).toContain(AC3.cites[0]!.quote);
     expect(all).toContain('<file path="src/eligibility.js">\nexport const LIMIT = 2461;\n</file>');
+    expect(all).toContain("what a user would see go wrong");
+  });
+
+  it("returns no description when the breaker left any part of it out or blank: the patch still stands", async () => {
+    const r = await proposeMutant(AC3, files, {
+      model: "deepseek-v4-flash",
+      apiKey: "k",
+      budget: new Budget(2, 0),
+      chat: async () => ({ json: { patch, rationale: "r", ...SLIP, behaviour: " " }, usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+    });
+    expect(r.slip).toBeUndefined();
+    expect(r.patch).toBe(patch);
   });
 
   it("puts the previous patch and its error into a retry", async () => {
