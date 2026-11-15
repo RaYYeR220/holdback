@@ -1,12 +1,14 @@
 import { holdbackGitOptions, loadProject, type Project } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, humanView, ledgerLog, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
 
 /**
  * The human re-seal: accepts what is on disk now as the sealed state, which lifts a tamper. A spec
  * edit is never re-sealed here: alone it is drift (refused: `holdback drift`), and next to a tamper
  * the spec keeps its old hash, so Kane still re-plans it.
  */
-export async function resealCmd(ctx: Ctx, o: { yes?: boolean }): Promise<number> {
+export async function resealCmd(caller: Ctx, o: { yes?: boolean }): Promise<number> {
+  // the marker carries hook tool names and the entries are file names others wrote (N-m7)
+  const ctx = humanView(caller);
   if (refuseInsideClaudeCode(ctx, "holdback reseal")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
   return withCheckLock(ctx, p, () => reseal(ctx, p, o));

@@ -1195,6 +1195,18 @@ describe("reseal", () => {
     expect(calls).toEqual(["reseal", "reseal"]);
   });
 
+  it("prints the tamper marker and the differing entries with control and format characters escaped (N-m7)", async () => {
+    await fixture();
+    writeFileSync(join(p.home, "TAMPERED"), "hook tool_name Bash\u001b[2J‮x\n");
+    writeFileSync(join(p.verifierDir, ".testmuai", "tests", "evil​_test.md"), "# planted\n");
+    const r = await cli(["reseal"], { reseal: notCalled("reseal") as never, confirm: async () => false });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("\\x1b[2J");
+    expect(r.out.toLowerCase()).toContain("\\u202e");
+    expect(r.out.toLowerCase()).toContain("evil\\u200b_test.md");
+    expect(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\p{Cf}/u.test(r.out + r.err)).toBe(false);
+  });
+
   it("refuses when nothing is sealed yet", async () => {
     await fixture({ seal: false });
     const r = await cli(["reseal", "--yes"], { reseal: notCalled("reseal") as never });
