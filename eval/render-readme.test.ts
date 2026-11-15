@@ -57,3 +57,30 @@ describe("render-readme", () => {
     expect(() => renderReadme(readme, summary)).toThrow(/markers/);
   });
 });
+
+describe("render-readme footnotes", () => {
+  it("notes the spec split, an app failure, assurance calls, exhausted retries and unmeasured figures", () => {
+    const base = { examPassed: 0, examTotal: 22, inconclusive: 0, claimedDone: false, turns: 5, kaneCredits: 1, agentUsd: 1, breakerUsd: 0, wallMin: 2, stopReason: "done" };
+    writeFileSync(
+      summary,
+      JSON.stringify({
+        A: { ...base, stopReason: "transient-exhausted", appFailure: "app did not boot: exited" },
+        B: { ...base, assuranceCallsUsed: 2 },
+        C: { ...base, specCredits: 40, specMinutes: 5, kaneUnmeasured: 1, turnsWithoutCost: 2, turns: null, agentUsd: null },
+      }),
+    );
+    const out = renderReadme(readme, summary);
+    expect(out).toContain("- A: the app could not be installed or started, so it scores 0 of 22 (app did not boot: exited).");
+    expect(out).toContain("- A: the build stopped after repeated API errors");
+    expect(out).toContain("- B: the agent ran 2 Kane assurance commands");
+    expect(out).toContain("- C: build credits and wall minutes count from its first build turn; its spec stage is not in them (40.0 credits, 5.0 minutes).");
+    expect(out).toContain("- C: 1 Kane batch had no balance reading");
+    expect(out).toContain("- C: 2 loop turns did not report agent cost");
+    expect(renderReadme(readme, summary)).toBe(out);
+  });
+
+  it("adds no notes when there is nothing to note", () => {
+    writeFileSync(summary, JSON.stringify(SUMMARY));
+    expect(renderReadme(readme, summary)).not.toContain("\n- ");
+  });
+});

@@ -15,6 +15,8 @@ export interface ClaudeTurnOptions {
   killGraceMs?: number;
   /** Aborting kills the agent's process tree; the turn then resolves with whatever it had printed. */
   signal?: AbortSignal;
+  /** Every stream-json line the agent prints, as it arrives (a transcript for the caller). */
+  onLine?: (line: string) => void;
 }
 
 export interface ClaudeTurnResult {
@@ -108,6 +110,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     const handleLine = (line: string) => {
       const t = line.trim();
       if (!t.startsWith("{")) return;
+      opts.onLine?.(t);
       try {
         const o = JSON.parse(t) as Record<string, unknown>;
         if (o.type === "result") result = o;

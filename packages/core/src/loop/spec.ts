@@ -137,6 +137,8 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   emit: (e: EventBody) => Promise<void>,
   first: R,
   kane: ResumeCalls = { extractResume, resumeSession },
+  /** "spec": the spec stage proper. Later stages (drift, a falsify re-design) append no Clarifications when `loop.appendClarifications` is "spec-only". */
+  stage: "spec" | "later" = "later",
 ): Promise<Exclude<R, Paused>> {
   const cwd = p.verifierDir;
   let r: R = first;
@@ -145,10 +147,13 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
     // the call that paused is billed: its credits count once, here (a resumed call's in `spec.answered`)
     await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions, credits: paused.credits });
     const answers = await io.answer(paused.questions);
-    await appendClarifications(
-      p.appDir,
-      paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
-    );
+    // an answer is always on the ledger (`spec.answered`); whether it also goes into PRD.md is the config's call
+    if (stage === "spec" || p.config.loop.appendClarifications !== "spec-only") {
+      await appendClarifications(
+        p.appDir,
+        paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
+      );
+    }
     r = (paused.verb === "extract" ? await kane.extractResume(cwd, paused.sid, answers) : await kane.resumeSession(cwd, paused, answers)) as R;
     const credits = "credits" in r ? r.credits : 0;
     await emit({ t: "spec.answered", sid: paused.sid, answers, credits });
@@ -202,7 +207,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   };
   const cwd = p.verifierDir;
 
-  const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first);
+  const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first, undefined, "spec");
 
   checkSpecPaths(p);
   const clarifiedBefore = await clarifiedFile(p);

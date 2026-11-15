@@ -234,6 +234,39 @@ describe("runDrift", () => {
     expect(git("status", "--porcelain", "--", "PRD.md")).toBe("");
   }, 60_000); // a dozen git spawns: slow on Windows under a parallel suite
 
+  it('loop.appendClarifications "spec-only": a drift answer stays on the ledger and PRD.md is left as the human wrote it', async () => {
+    p.config.loop.appendClarifications = 'spec-only';
+    const base = fakeKane([]);
+    let asked = false;
+    const kane: DriftKane = {
+      ...base,
+      reconcile: async (cwd, file, sourceId, mode) => {
+        if (mode === 'plan' && !asked) {
+          asked = true;
+          return {
+            status: 'paused',
+            verb: 'reconcile',
+            sid: 's9',
+            resume: 'kane-cli maintain reconcile --resume s9 --mode agent',
+            questions: [{ id: 'q1', text: 'Does rule 2 replace rule 1?', risk: 'low', rationale: '', options: [{ label: 'No' }], recommendedIndex: 0, allowFreeText: false }],
+            credits: 1,
+          };
+        }
+        return base.reconcile(cwd, file, sourceId, mode);
+      },
+      resumeSession: async () => ({ status: 'complete', rows: [MODIFY], summary: {}, credits: 4 }),
+    };
+    editPrd();
+    const io: HumanIO = { answer: async () => ({ q1: 'No' }), approve: async (items) => all(items) };
+    const r = await runDrift(p, io, log, { kane });
+    expect(r).toEqual({ changed: true, applied: true });
+    const prd = readFileSync(join(p.appDir, 'PRD.md'), 'utf8');
+    expect(prd).not.toContain('Clarifications');
+    expect(prd).not.toContain('Does rule 2 replace rule 1?');
+    const answered = (await readEvents(p.ledgerFile)).find((e) => e.t === 'spec.answered');
+    expect(answered).toMatchObject({ answers: { q1: 'No' } });
+  });
+
   it("plan not approved: nothing applied or sealed, verifier restored, app edit kept", async () => {
     editPrd();
     const calls: Calls = [];

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerPrd } from "./prd.ts";
 import { examTodayAllowed } from "./reference.ts";
-import { ensureToday, examIdOf, scoreApp } from "./score.ts";
+import { ensureToday, examIdOf, parseMinCredits, scoreApp } from "./score.ts";
 import { FAKE_KANE, GIT, MODEL, PRD, STACK, makeAppRepo, writeRun } from "./test/helpers.ts";
 import { commitAll } from "@holdback/core";
 
@@ -159,6 +159,7 @@ describe("scoreApp", () => {
       agentUsd: 3.2,
       breakerUsd: 0,
       wallMin: 12.5,
+      stopReason: "done",
     });
     expect(readJson("b.json").kaneCredits).toBe(10.5);
   });
@@ -241,5 +242,33 @@ describe("scoreApp", () => {
     );
     expect(s.examPassed).toBe(0);
     expect(s.appFailure).toMatch(/install failed/);
+  });
+});
+
+describe("parseMinCredits", () => {
+  it("takes a finite number of 0 or more and nothing else", () => {
+    expect(parseMinCredits(undefined)).toBeUndefined();
+    expect(parseMinCredits("500")).toBe(500);
+    expect(parseMinCredits("0")).toBe(0);
+    for (const bad of ["abc", "", " ", "Infinity", "NaN", "-5"]) expect(() => parseMinCredits(bad)).toThrow(/--min-credits/);
+  });
+});
+
+describe("summary notes", () => {
+  it("carries the run's stop reason and an app failure into summary.json", async () => {
+    writeRun(results, "A", appDir, head, { stopReason: "transient-exhausted", claimedDone: false });
+    process.env.FAKE_APP_BOOT = "fail";
+    await scoreApp(appDir, "A", opts({ start: { timeoutMs: 5000 } }));
+    expect(readJson("summary.json").A).toMatchObject({ stopReason: "transient-exhausted", claimedDone: false, appFailure: expect.stringMatching(/did not boot/) });
+  });
+
+  it("carries C's spec-stage split, B's assurance count and C's unmeasured batches", async () => {
+    writeRun(results, "B", appDir, head, { assuranceCallsUsed: 2 });
+    writeRun(results, "C", appDir, head, { specCredits: 40, specMinutes: 5, kaneUnmeasured: 1, turnsWithoutCost: 2 });
+    await scoreApp(appDir, "B", opts());
+    await scoreApp(appDir, "C", opts());
+    const s = readJson("summary.json");
+    expect(s.B.assuranceCallsUsed).toBe(2);
+    expect(s.C).toMatchObject({ specCredits: 40, specMinutes: 5, kaneUnmeasured: 1, turnsWithoutCost: 2 });
   });
 });

@@ -62,7 +62,7 @@ describe("loadProject", () => {
       agent: { kind: "claude", maxTurnsPerCall: 60 },
       kane: { parallel: 3, timeoutS: 420, designMax: 5 },
       breaker: { model: "deepseek-v4-flash", capUsd: 2 },
-      loop: { maxTurns: 15 },
+      loop: { maxTurns: 15, appendClarifications: "always" },
     });
   });
 

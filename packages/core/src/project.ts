@@ -11,8 +11,12 @@ export type HoldbackConfig = {
   agent: { kind: "claude"; model?: string; maxTurnsPerCall: number };
   kane: { parallel: number; timeoutS: number; designMax: number };
   breaker: { model: string; capUsd: number };
-  /** denyWeb: remove WebFetch/WebSearch from the agent (eval arms run without web access). */
-  loop: { maxTurns: number; denyWeb?: boolean };
+  /**
+   * denyWeb: remove WebFetch/WebSearch from the agent (eval arms run without web access).
+   * appendClarifications: "spec-only" appends answers to PRD.md only in the spec stage; the answers of drift and
+   * falsify re-designs stay on the ledger (the eval keeps the PRD it registered).
+   */
+  loop: { maxTurns: number; denyWeb?: boolean; appendClarifications?: "always" | "spec-only" };
 };
 
 const DEFAULTS: HoldbackConfig = {
@@ -22,7 +26,7 @@ const DEFAULTS: HoldbackConfig = {
   agent: { kind: "claude", maxTurnsPerCall: 60 },
   kane: { parallel: 3, timeoutS: 420, designMax: 5 },
   breaker: { model: "deepseek-v4-flash", capUsd: 2 },
-  loop: { maxTurns: 15 },
+  loop: { maxTurns: 15, appendClarifications: "always" },
 };
 
 function isObj(v: unknown): v is Record<string, unknown> {

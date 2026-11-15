@@ -26,6 +26,13 @@ const base = () => ({
 });
 
 describe("runClaudeTurn", () => {
+  it("hands every stream-json line to onLine", async () => {
+    process.env.HOLDBACK_CLAUDE_BIN = fake;
+    const lines: string[] = [];
+    await runClaudeTurn({ ...base(), onLine: (l) => lines.push(l) });
+    expect(lines.map((l) => JSON.parse(l).type)).toEqual(["system", "assistant", "result"]);
+  });
+
   it("parses the result line and passes the documented flags", async () => {
     process.env.HOLDBACK_CLAUDE_BIN = fake;
     const argsFile = join(mkdtempSync(join(tmpdir(), "hb-")), "args.json");

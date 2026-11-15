@@ -20,7 +20,7 @@ beforeEach(async () => {
   tmp = mkdtempSync(path.join(tmpdir(), "holdback-arm-test-"));
   results = path.join(tmp, "results");
   out = path.join(tmp, "arm");
-  await registerPrd(PRD, STACK, MODEL, results);
+  await registerPrd(PRD, STACK, MODEL, results, { now: () => new Date("2026-11-15T09:00:00.000Z") });
 });
 afterEach(() => {
   process.env = { ...saved };
@@ -80,7 +80,7 @@ describe("runArm", () => {
     process.env.FAKE_CLAUDE_STDIN_FILE = path.join(tmp, "stdin.txt");
     const run = await runArm("A", base());
     expect(run).toMatchObject({ arm: "A", calls: 1, retries: 0, turns: 7, agentUsd: 0.12, claimedDone: true, stopReason: "done", kaneCredits: 0, model: MODEL });
-    expect(run.caps).toEqual({ maxCalls: 3, maxTurnsPerCall: 60, timeoutMs: 90 * 60_000, maxRetries: 3 });
+    expect(run.caps).toEqual({ maxCalls: 3, maxTurnsPerCall: 60, timeoutMs: 90 * 60_000, maxRetries: 6 });
     expect(readRun("a")).toMatchObject({ arm: "A", appDir: out, turns: 7, head: run.head });
     expect(readRun("a").prdSha256).toMatch(/^[0-9a-f]{64}$/);
 
@@ -135,7 +135,62 @@ describe("runArm", () => {
 
   it("gives up after the retry cap and does not claim done", async () => {
     const run = await runArm("A", { ...base(), maxRetries: 2, claude: async () => result({ exitCode: 1, isError: true, resultText: "rate limit exceeded (429)" }) });
-    expect(run).toMatchObject({ calls: 1, retries: 2, claimedDone: false });
+    expect(run).toMatchObject({ calls: 1, retries: 2, claimedDone: false, stopReason: "transient-exhausted" });
+  });
+
+  it("backs off 30 s x n by default, up to 6 tries", async () => {
+    const delays: number[] = [];
+    const run = await runArm("A", {
+      outDir: out,
+      prdPath: PRD,
+      stackPath: STACK,
+      model: MODEL,
+      resultsDir: results,
+      sleep: async (ms) => void delays.push(ms),
+      claude: async () => result({ exitCode: 1, isError: true, resultText: "API Error: 529 overloaded" }),
+    });
+    expect(delays).toEqual([30_000, 60_000, 90_000, 120_000, 150_000, 180_000]);
+    expect(run).toMatchObject({ retries: 6, stopReason: "transient-exhausted", claimedDone: false });
+  });
+
+  it("leaves an attempt marker before the first agent call: a crash mid-build blocks a second build unless a human gives a reason", async () => {
+    await expect(
+      runArm("A", {
+        ...base(),
+        claude: async () => {
+          throw new Error("machine went to sleep");
+        },
+      }),
+    ).rejects.toThrow(/went to sleep/);
+    const marker = path.join(results, "a-run.attempt.json");
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ arm: "A", appDir: out });
+    expect(existsSync(path.join(results, "a-run.json"))).toBe(false);
+    let ran = false;
+    const second = { ...base(), outDir: path.join(tmp, "arm2"), claude: async () => ((ran = true), result({})) };
+    await expect(runArm("A", second)).rejects.toThrow(/already began.*redoReason/);
+    expect(ran).toBe(false);
+    writeFileSync(marker, JSON.stringify({ ...JSON.parse(readFileSync(marker, "utf8")), redoReason: "the laptop slept; nothing was built" }));
+    const run = await runArm("A", second);
+    expect(run.claimedDone).toBe(true);
+    expect(JSON.parse(readFileSync(marker, "utf8")).previousAttempt.redoReason).toMatch(/laptop slept/);
+  });
+
+  it("counts the Kane assurance commands B ran despite the deny rules, behind any prefix", async () => {
+    const tool = (command: string) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command } }] } });
+    const run = await runArm("B", {
+      ...base(),
+      balance: async () => 10,
+      claude: async (o) => {
+        o.onLine?.(tool("KANE_CLI_USER_AGENT=claude-code kane-cli context ingest PRD.md --mode agent"));
+        o.onLine?.(tool("npx @testmuai/kane-cli design tests --max 8"));
+        o.onLine?.(tool("kane-cli run \"Go to http://localhost:3100 and verify x\" --agent --headless"));
+        o.onLine?.(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "kane-cli maintain reconcile" }] } }));
+        return result({});
+      },
+    });
+    expect(run.assuranceCallsUsed).toBe(2);
+    expect(readRun("b").assuranceCallsUsed).toBe(2);
+    expect(readFileSync(`${out}.transcript.ndjson`, "utf8")).toContain("kane-cli design");
   });
 
   it("does not claim done when the cap is hit or the agent timed out", async () => {
@@ -184,6 +239,8 @@ describe("recordArmC", () => {
   let app: string;
   let home: string;
   const ev = (at: string, e: object) => ({ at, ...e }) as never;
+  const config = (over: { model?: string; mode?: string } = {}) =>
+    JSON.stringify({ agent: { kind: "claude", model: over.model ?? MODEL, maxTurnsPerCall: 60 }, loop: { maxTurns: 15, appendClarifications: over.mode ?? "spec-only" } });
 
   beforeEach(async () => {
     home = path.join(tmp, "hb-home");
@@ -192,7 +249,7 @@ describe("recordArmC", () => {
     await makeAppRepo(app);
     writeFileSync(path.join(app, "PRD.md"), readFileSync(PRD));
     writeFileSync(path.join(app, "STACK.md"), readFileSync(STACK));
-    writeFileSync(path.join(app, "holdback.config.json"), JSON.stringify({ agent: { kind: "claude", model: MODEL, maxTurnsPerCall: 60 } }));
+    writeFileSync(path.join(app, "holdback.config.json"), config());
     const { commitAll } = await import("@holdback/core");
     await commitAll(app, "spec", GIT);
   });
@@ -201,14 +258,18 @@ describe("recordArmC", () => {
     const p = await loadProject(app);
     for (const e of events) await appendEvent(p.ledgerFile, e as never);
   }
+  const start = (n: number, at: string) => ev(at, { t: "turn.start", n, owed: [] });
   const turn = (n: number, at: string, usd: number, turns: number) =>
     ev(at, { t: "turn.end", n, commit: "abc", filesChanged: [], durationMs: 1000, appUp: true, agentExit: 0, agentUsd: usd, agentTurns: turns });
+  const bare = (n: number, at: string) => ev(at, { t: "turn.end", n, commit: "a", filesChanged: [], durationMs: 5, appUp: true, agentExit: 0 });
 
-  it("derives every figure from the Holdback ledger and binds PRD, STACK and model", async () => {
+  it("derives every figure from the Holdback ledger; build figures start at the first build turn, the spec stage is apart", async () => {
     await ledger([
       ev("2026-11-15T10:00:00.000Z", { t: "credits", source: "spec", delta: 40, perRunSum: 38 }),
+      start(1, "2026-11-15T10:05:00.000Z"),
       turn(1, "2026-11-15T10:10:00.000Z", 1.25, 20),
       ev("2026-11-15T10:20:00.000Z", { t: "credits", source: "build", delta: 12.5, perRunSum: 10 }),
+      start(2, "2026-11-15T10:25:00.000Z"),
       turn(2, "2026-11-15T10:30:00.000Z", 0.75, 15),
       ev("2026-11-15T10:45:00.000Z", { t: "mutant", id: "m1", ac: "ac-1", patch: "", model: "x", usd: 0.4, verdict: "killed" }),
     ]);
@@ -220,8 +281,12 @@ describe("recordArmC", () => {
       turns: 35,
       agentUsd: 2,
       breakerUsd: 0.4,
-      kaneCredits: 52.5,
-      wallMin: 45,
+      kaneCredits: 12.5,
+      specCredits: 40,
+      specMinutes: 5,
+      wallMin: 40,
+      kaneUnmeasured: 0,
+      turnsWithoutCost: 0,
       claimedDone: true,
       dirty: false,
     });
@@ -229,10 +294,19 @@ describe("recordArmC", () => {
     expect(readRun("c").appDir).toBe(path.resolve(app));
   });
 
-  it("records null, not zero, for what the ledger does not hold", async () => {
-    await ledger([ev("2026-11-15T10:00:00.000Z", { t: "turn.end", n: 1, commit: "a", filesChanged: [], durationMs: 5, appUp: true, agentExit: 0 })]);
+  it("records null when any loop turn lacks the agent's cost, and says how many", async () => {
+    await ledger([start(1, "2026-11-15T10:00:00.000Z"), turn(1, "2026-11-15T10:10:00.000Z", 1, 5), start(2, "2026-11-15T10:11:00.000Z"), bare(2, "2026-11-15T10:20:00.000Z")]);
     const run = await recordArmC(app, { resultsDir: results });
-    expect(run).toMatchObject({ turns: null, agentUsd: null, wallMin: null });
+    expect(run).toMatchObject({ turns: null, agentUsd: null, turnsWithoutCost: 1, wallMin: 20 });
+  });
+
+  it("records the batches that had no balance reading", async () => {
+    await ledger([
+      start(1, "2026-11-15T10:00:00.000Z"),
+      turn(1, "2026-11-15T10:10:00.000Z", 1, 5),
+      ev("2026-11-15T10:11:00.000Z", { t: "credits", source: "build", delta: null, perRunSum: 3, error: "no reading" }),
+    ]);
+    expect(await recordArmC(app, { resultsDir: results })).toMatchObject({ kaneUnmeasured: 1, kaneCredits: 3 });
   });
 
   it("does not claim done while a criterion is owed", async () => {
@@ -245,17 +319,20 @@ describe("recordArmC", () => {
         gaps: [],
         credits: 1,
       }),
+      start(1, "2026-11-15T10:05:00.000Z"),
       turn(1, "2026-11-15T10:10:00.000Z", 1, 5),
     ]);
     expect((await recordArmC(app, { resultsDir: results })).claimedDone).toBe(false);
   });
 
-  it("refuses an empty ledger, a wrong model, a changed PRD or STACK, and a second record", async () => {
+  it("refuses an empty ledger, a ledger without a build turn, a wrong model, a changed PRD or STACK, and a second record", async () => {
     await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/no Holdback ledger/);
-    await ledger([turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
-    writeFileSync(path.join(app, "holdback.config.json"), JSON.stringify({ agent: { kind: "claude", model: "other", maxTurnsPerCall: 60 } }));
+    await ledger([ev("2026-11-15T10:00:00.000Z", { t: "credits", source: "spec", delta: 1, perRunSum: 1 })]);
+    await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/no build turn/);
+    await ledger([start(1, "2026-11-15T10:05:00.000Z"), turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
+    writeFileSync(path.join(app, "holdback.config.json"), config({ model: "other" }));
     await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/model/);
-    writeFileSync(path.join(app, "holdback.config.json"), JSON.stringify({ agent: { kind: "claude", model: MODEL, maxTurnsPerCall: 60 } }));
+    writeFileSync(path.join(app, "holdback.config.json"), config());
     writeFileSync(path.join(app, "STACK.md"), "changed\n");
     await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/STACK\.md/);
     writeFileSync(path.join(app, "STACK.md"), readFileSync(STACK));
@@ -266,16 +343,30 @@ describe("recordArmC", () => {
     await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/already recorded/);
   });
 
+  it("refuses unless the config says loop.appendClarifications is spec-only (R35)", async () => {
+    await ledger([start(1, "2026-11-15T10:05:00.000Z"), turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
+    writeFileSync(path.join(app, "holdback.config.json"), config({ mode: "always" }));
+    await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/appendClarifications must be "spec-only"/);
+    writeFileSync(path.join(app, "holdback.config.json"), JSON.stringify({ agent: { kind: "claude", model: MODEL, maxTurnsPerCall: 60 } }));
+    await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/appendClarifications must be "spec-only"/);
+  });
+
+  it("refuses when the PRD was registered after C's first build turn", async () => {
+    const late = path.join(tmp, "late-results");
+    await registerPrd(PRD, STACK, MODEL, late, { now: () => new Date("2026-11-15T11:00:00.000Z") });
+    await ledger([start(1, "2026-11-15T10:05:00.000Z"), turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
+    await expect(recordArmC(app, { resultsDir: late })).rejects.toThrow(/registered .* after arm C's first build turn/);
+  });
+
   it("refuses a model that is not set in the config", async () => {
-    writeFileSync(path.join(app, "holdback.config.json"), "{}");
-    await ledger([turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
+    writeFileSync(path.join(app, "holdback.config.json"), JSON.stringify({ loop: { appendClarifications: "spec-only" } }));
+    await ledger([start(1, "2026-11-15T10:05:00.000Z"), turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
     await expect(recordArmC(app, { resultsDir: results })).rejects.toThrow(/agent\.model is not set/);
   });
 
   it("marks uncommitted changes", async () => {
-    await ledger([turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
+    await ledger([start(1, "2026-11-15T10:05:00.000Z"), turn(1, "2026-11-15T10:10:00.000Z", 1, 5)]);
     writeFileSync(path.join(app, "stray.txt"), "x");
     expect((await recordArmC(app, { resultsDir: results })).dirty).toBe(true);
   });
 });
-

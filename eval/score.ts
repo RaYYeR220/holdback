@@ -65,6 +65,14 @@ export type SummaryEntry = {
   agentUsd: number | null;
   breakerUsd: number | null;
   wallMin: number | null;
+  stopReason: string;
+  /** The app would not install or boot: 0 of 22, and why. */
+  appFailure?: string;
+  assuranceCallsUsed?: number;
+  specCredits?: number;
+  specMinutes?: number;
+  kaneUnmeasured?: number;
+  turnsWithoutCost?: number;
 };
 export type Summary = Partial<Record<ArmId, SummaryEntry>>;
 
@@ -88,6 +96,14 @@ export type ScoreOptions = {
   tests?: typeof runTests;
   app?: (o: StartAppOptions) => ReturnType<typeof startApp>;
 };
+
+/** `--min-credits`: a finite number of 0 or more, else the command fails. */
+export function parseMinCredits(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = raw.trim() === "" ? NaN : Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`--min-credits must be a finite number of 0 or more, got "${raw}"`);
+  return n;
+}
 
 export const defaultEvalHome = () => process.env.HOLDBACK_EVAL_HOME || path.join(os.homedir(), ".holdback-eval");
 const round4 = (n: number) => Math.round(n * 1e4) / 1e4;
@@ -305,6 +321,13 @@ export async function scoreApp(appDir: string, armId: ArmId, opts: ScoreOptions 
     agentUsd: run.agentUsd,
     breakerUsd: run.breakerUsd,
     wallMin: run.wallMin,
+    stopReason: run.stopReason,
+    ...(score.appFailure !== undefined ? { appFailure: score.appFailure } : {}),
+    ...(run.assuranceCallsUsed !== undefined ? { assuranceCallsUsed: run.assuranceCallsUsed } : {}),
+    ...(run.specCredits !== undefined ? { specCredits: run.specCredits } : {}),
+    ...(run.specMinutes !== undefined ? { specMinutes: run.specMinutes } : {}),
+    ...(run.kaneUnmeasured !== undefined ? { kaneUnmeasured: run.kaneUnmeasured } : {}),
+    ...(run.turnsWithoutCost !== undefined ? { turnsWithoutCost: run.turnsWithoutCost } : {}),
   };
   await writeFile(summaryFile, JSON.stringify(summary, null, 2) + "\n", "utf8");
   return score;

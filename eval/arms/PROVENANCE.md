@@ -17,3 +17,5 @@ Left out on purpose: the "Test cases from requirements" section and rule 2 (assu
 Carriage returns were stripped from the copied lines; nothing else changed.
 
 Arm A's prompt has no instruction about git; arms may commit inside their own arm repo, and the runner commits anything left over at the end.
+
+AGENTS-full.md mirrors kane-cli 0.9.0 (its own header says so), while the CLI installed for the run is 0.10.4. The copied blocks are Kane's own text for coding agents as published, not re-checked line by line against 0.10.4.

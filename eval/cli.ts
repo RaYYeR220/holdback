@@ -2,7 +2,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { registerPrd, DEFAULT_RESULTS_DIR } from "./prd.ts";
 import { recordArmC, runArm } from "./run-arm.ts";
-import { defaultEvalHome, scoreApp } from "./score.ts";
+import { defaultEvalHome, parseMinCredits, scoreApp } from "./score.ts";
 
 const USAGE = `usage (run the arms one after another, never at the same time):
   register-prd --prd <PRD.md> --stack <STACK.md> --model <id>      right after the spec stage, before C's build
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   } else if (cmd === "arm" && armArg === "C" && dir) {
     console.log(JSON.stringify(await recordArmC(abs(dir)), null, 2));
   } else if (cmd === "score" && (armArg === "A" || armArg === "B" || armArg === "C") && dir) {
-    const s = await scoreApp(abs(dir), armArg, { minCredits: values["min-credits"] === undefined ? undefined : Number(values["min-credits"]) });
+    const s = await scoreApp(abs(dir), armArg, { minCredits: parseMinCredits(values["min-credits"]) });
     console.log(`${armArg}: ${s.examPassed}/${s.examTotal} passed (${s.inconclusive} inconclusive)${s.appFailure ? `, ${s.appFailure}` : ""}, exam day ${s.today}`);
   } else {
     throw new Error(USAGE);

@@ -46,6 +46,14 @@ export type ArmRun = {
   stackSha256: string;
   caps?: ArmCaps;
   recordedAt: string;
+  /** B: Kane assurance commands (context, design, maintain, cover) the agent ran despite the deny rules. */
+  assuranceCallsUsed?: number;
+  /** C: Kane credits and minutes of the spec stage, kept out of the build figures (those start at C's first build turn). */
+  specCredits?: number;
+  specMinutes?: number;
+  /** C: metered Kane batches with no balance reading, and loop turns that carry no agent cost (agentUsd and turns are then null). */
+  kaneUnmeasured?: number;
+  turnsWithoutCost?: number;
 };
 
 export type RunArmOptions = {
@@ -108,6 +116,27 @@ async function writeRun(resultsDir: string, run: ArmRun): Promise<void> {
   await writeFile(runFile(resultsDir, run.arm), JSON.stringify(run, null, 2) + "\n", "utf8");
 }
 
+/** A Kane assurance command anywhere in a shell command, behind any prefix (env vars, npx, a path). */
+const ASSURANCE = /\bkane-cli\s+(?:context|design|maintain|cover)\b/g;
+
+/** How many Bash tool calls in a stream-json transcript run a Kane assurance command. */
+export function countAssuranceCalls(transcript: string[]): number {
+  let n = 0;
+  for (const line of transcript) {
+    let o: { type?: string; message?: { content?: unknown } };
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.type !== "assistant" || !Array.isArray(o.message?.content)) continue;
+    for (const part of o.message.content as { type?: string; input?: unknown }[]) {
+      if (part?.type === "tool_use") n += JSON.stringify(part.input ?? "").match(ASSURANCE)?.length ?? 0;
+    }
+  }
+  return n;
+}
+
 const isDone = (r: ClaudeTurnResult) => r.exitCode === 0 && r.isError !== true && !r.timedOut;
 const isTransient = (r: ClaudeTurnResult) => !isDone(r) && !r.timedOut && r.subtype !== "error_max_turns" && TRANSIENT.test(`${r.resultText}\n${r.stderrTail}`);
 
@@ -128,8 +157,26 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
   const stackSha256 = sha256(await readFile(opts.stackPath));
   await verifyInputs(resultsDir, { prdSha256, stackSha256, model: opts.model }, `arm ${arm}`);
 
+  // the attempt is on record before the first agent call: a crash mid-build leaves the marker, and the arm is not built again
+  // unless a human clears it by hand, writing the reason into the file as `redoReason`
+  const marker = path.join(resultsDir, `${arm.toLowerCase()}-run.attempt.json`);
+  let previous: unknown;
+  try {
+    previous = JSON.parse(await readFile(marker, "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  const redo = (previous as { redoReason?: unknown } | undefined)?.redoReason;
+  if (previous !== undefined && !(typeof redo === "string" && redo.trim() !== "")) {
+    throw new Error(`${marker} exists: a build of arm ${arm} already began. Re-building needs a reason written into that file as "redoReason"`);
+  }
   const prompt = await readFile(path.join(EVAL_DIR, "arms", ARM_FILES[arm]), "utf8");
   await mkdir(outDir, { recursive: true });
+  await writeFile(
+    marker,
+    JSON.stringify({ arm, appDir: outDir, startedAt: (opts.now?.() ?? new Date()).toISOString(), ...(previous !== undefined ? { previousAttempt: previous } : {}) }, null, 2) + "\n",
+    "utf8",
+  );
   await copyFile(opts.prdPath, path.join(outDir, "PRD.md"));
   await copyFile(opts.stackPath, path.join(outDir, "STACK.md"));
   await writeFile(path.join(outDir, "PROMPT.md"), prompt, "utf8");
@@ -167,8 +214,10 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
     maxCalls: Math.max(1, opts.maxCalls ?? 3),
     maxTurnsPerCall: opts.maxTurnsPerCall ?? 60,
     timeoutMs: opts.timeoutMs ?? 90 * 60_000,
-    maxRetries: Math.max(0, opts.maxRetries ?? 3),
+    maxRetries: Math.max(0, opts.maxRetries ?? 6),
   };
+  const transcriptFile = `${outDir}.transcript.ndjson`;
+  const transcript: string[] = [];
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const claude = opts.claude ?? runClaudeTurn;
   const read = arm === "B" ? (opts.balance ?? balance) : undefined;
@@ -192,6 +241,7 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
         model: opts.model,
         timeoutMs: caps.timeoutMs,
         env: opts.env,
+        onLine: (l) => transcript.push(l),
       });
       turns += last.numTurns ?? 0;
       usd += last.costUsd ?? 0;
@@ -210,7 +260,9 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
     if (last.timedOut || last.subtype !== "error_max_turns") break;
   }
   const claimedDone = last !== undefined && isDone(last);
-  const stopReason = claimedDone ? "done" : last?.timedOut ? "timeout" : (last?.subtype ?? "error");
+  const exhausted = last !== undefined && isTransient(last);
+  const stopReason = claimedDone ? "done" : last?.timedOut ? "timeout" : exhausted ? "transient-exhausted" : (last?.subtype ?? "error");
+  await writeFile(transcriptFile, transcript.join("\n") + "\n", "utf8");
   const after = read ? await read().catch(() => undefined) : undefined;
   const kaneCredits = arm === "A" ? 0 : typeof before === "number" && typeof after === "number" && before >= after ? round2(before - after) : null;
 
@@ -236,6 +288,7 @@ export async function runArm(arm: "A" | "B", opts: RunArmOptions): Promise<ArmRu
     stackSha256,
     caps,
     recordedAt: (opts.now?.() ?? new Date()).toISOString(),
+    ...(arm === "B" ? { assuranceCallsUsed: countAssuranceCalls(transcript) } : {}),
   };
   await writeRun(resultsDir, run);
   return run;
@@ -254,20 +307,36 @@ export async function recordArmC(appDir: string, opts: { resultsDir?: string; no
   const project = await loadProject(abs);
   const model = project.config.agent.model;
   if (!model) throw new PrdChanged(`${abs}: agent.model is not set in holdback.config.json; arm C must name the same model as the registration`);
+  // R35: no mid-build PRD appends in the eval run, so C's PRD stays the registered one
+  if (project.config.loop.appendClarifications !== "spec-only") {
+    throw new PrdChanged(`${abs}: loop.appendClarifications must be "spec-only" in holdback.config.json for the eval run`);
+  }
   const prdSha256 = sha256(await readFile(path.join(abs, "PRD.md")));
   const stackSha256 = sha256(await readFile(path.join(abs, "STACK.md")));
-  await verifyInputs(resultsDir, { prdSha256, stackSha256, model }, "arm C");
+  const registration = await verifyInputs(resultsDir, { prdSha256, stackSha256, model }, "arm C");
 
   const events = await readEvents(project.ledgerFile);
   if (events.length === 0) throw new Error(`no Holdback ledger for ${abs} (${project.ledgerFile}): run Holdback on it first (HOLDBACK_HOME must be the one it ran with)`);
+  // the build starts at C's first turn: the spec stage before it is reported apart, and registration must precede the build
+  const firstTurn = events.findIndex((e) => e.t === "turn.start");
+  if (firstTurn < 0) throw new Error(`${abs}: the ledger has no build turn (turn.start) yet`);
+  const buildStart = Date.parse(events[firstTurn]!.at);
+  if (Date.parse(registration.registeredAt) > buildStart) {
+    throw new PrdChanged(
+      `the PRD was registered (${registration.registeredAt}) after arm C's first build turn (${events[firstTurn]!.at}): register-prd runs right after the spec stage, before the build`,
+    );
+  }
   const state = reduce(events);
+  const spec = reduce(events.slice(0, firstTurn));
   const ends = events.flatMap((e) => (e.t === "turn.end" ? [e] : []));
-  const sum = (f: (e: (typeof ends)[number]) => number | undefined): number | null => {
-    const v = ends.map(f).filter((n): n is number => typeof n === "number");
-    return v.length === 0 ? null : v.reduce((a, b) => a + b, 0);
+  // like for like with A and B: a figure is a total only when every loop turn reports it, else null
+  const total = (f: (e: (typeof ends)[number]) => number | undefined): number | null => {
+    const v = ends.map(f);
+    return v.length === 0 || v.some((n) => n === undefined) ? null : (v as number[]).reduce((x, y) => x + y, 0);
   };
+  const turnsWithoutCost = ends.filter((e) => e.agentUsd === undefined || e.agentTurns === undefined).length;
   const at = events.map((e) => Date.parse(e.at)).filter(Number.isFinite);
-  const usd = sum((e) => e.agentUsd);
+  const usd = total((e) => e.agentUsd);
   const head = (await git(abs, ["rev-parse", "--short", "HEAD"])).stdout.trim() || null;
   const dirty = (await git(abs, ["status", "--porcelain"])).stdout.trim().length > 0;
   const run: ArmRun = {
@@ -276,13 +345,17 @@ export async function recordArmC(appDir: string, opts: { resultsDir?: string; no
     model,
     calls: ends.length,
     retries: 0,
-    turns: sum((e) => e.agentTurns),
+    turns: total((e) => e.agentTurns),
     agentUsd: usd === null ? null : round2(usd),
     breakerUsd: round2(state.breakerUsd),
-    wallMin: at.length > 1 ? round2((Math.max(...at) - Math.min(...at)) / 60_000) : null,
+    wallMin: at.length > 1 ? round2((Math.max(...at) - buildStart) / 60_000) : null,
     claimedDone: gate(state).allowStop,
     stopReason: "holdback",
-    kaneCredits: round2(state.kaneCredits),
+    kaneCredits: round2(state.kaneCredits - spec.kaneCredits),
+    specCredits: round2(spec.kaneCredits),
+    specMinutes: round2((buildStart - Math.min(...at)) / 60_000),
+    kaneUnmeasured: state.kaneUnmeasured - spec.kaneUnmeasured,
+    turnsWithoutCost,
     head,
     dirty,
     prdSha256,
