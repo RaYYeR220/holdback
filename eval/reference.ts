@@ -260,8 +260,12 @@ export function markPickedUp(visits: Visit[], today: string, phone: string): Vis
 // Exam run condition: the app under test runs with HOLDBACK_TODAY set to a
 // visit day (so the first listed visit time is today and today's volunteer
 // list can be filled) on or after the 7th of its month (so the 28-day window
-// always reaches a visit day in the next calendar month).
+// always reaches a visit day in the next calendar month), and with HOLDBACK_NOW
+// set to EXAM_NOW.
 // ---------------------------------------------------------------------------
+
+/** HOLDBACK_NOW for every scored run: before the first visit time, so no app hides any of today's times. */
+export const EXAM_NOW = "08:00";
 
 export function examTodayAllowed(date: string): boolean {
   const d = parseDate(date);
@@ -273,4 +277,39 @@ export function nextExamToday(from: string): string {
   let d = from;
   while (!examTodayAllowed(d)) d = addDays(d, 1);
   return d;
+}
+
+// ---------------------------------------------------------------------------
+// The PRD rules the exam depends on. Later PRD changes are append-only (new
+// rules after the last numbered rule, a Clarifications section), so the lines
+// below must stay byte-identical; PREREGISTERED.md records their sha256.
+// ---------------------------------------------------------------------------
+
+export const EXAM_PRD_RULES_TEXT = "1–3, 5–12, 14–29, 32–33, 36, 38, 40–51, 53–60";
+
+export const EXAM_PRD_RULES: readonly number[] = EXAM_PRD_RULES_TEXT.split(", ").flatMap((part) => {
+  const [from, to] = part.split("–").map(Number);
+  if (to === undefined) return [from!];
+  return Array.from({ length: to - from! + 1 }, (_, i) => from! + i);
+});
+
+/** Messages-table rows whose message an exam case asserts. */
+export const EXAM_PRD_MESSAGES = ["This household already has a visit booked in that month."] as const;
+
+/** The exam-relevant PRD lines: the listed rules, the income limits table and the asserted Messages rows. */
+export function examPrdLines(prd: string): string {
+  const lines = prd.split(/\r?\n/);
+  const rules = lines.filter((l) => {
+    const m = /^(\d+)\. /.exec(l);
+    return m !== null && EXAM_PRD_RULES.includes(Number(m[1]));
+  });
+  const start = lines.indexOf("| Household size | Annual | Monthly | Weekly |");
+  const end = lines.findIndex((l) => l.startsWith("| Each additional member |"));
+  if (start < 0 || end < start) throw new Error("PRD: income limits table not found");
+  const messages = EXAM_PRD_MESSAGES.map((msg) => {
+    const rows = lines.filter((l) => l.startsWith("| ") && l.endsWith(` | ${msg} |`));
+    if (rows.length !== 1) throw new Error(`PRD: Messages row not found once: ${msg}`);
+    return rows[0]!;
+  });
+  return [...rules, ...lines.slice(start, end + 1), ...messages].join("\n") + "\n";
 }

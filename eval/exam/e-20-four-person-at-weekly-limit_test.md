@@ -11,4 +11,4 @@ At {{start_url}}, open the "Food pantry eligibility check" page.
 
 ## Step 2
 
-On the "Food pantry eligibility check" page, set "Household size" to 4, "Household income ($)" to 1175 and "How often is this income received?" to "Weekly", leave "SNAP", "TANF", "SSI" and "Medicaid" unticked, set "ZIP code" to 19139, and choose "Check eligibility"; then assert the result below the button says "Eligible." and "Limit applied: $1,175 per week for a household of 4."
+On the "Food pantry eligibility check" page, set "Household size" to 4, "Household income ($)" to 1175 and "How often is this income received?" to "Weekly", leave "SNAP", "TANF", "SSI" and "Medicaid" unticked, set "ZIP code" to 19139, and choose "Check eligibility"; then assert the result below the button says "Eligible." and "Limit applied: $1,175 per week for a household of 4." and does not say "Not eligible."

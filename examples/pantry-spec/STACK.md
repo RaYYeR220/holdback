@@ -8,4 +8,5 @@ How the pantry app is built and run. What it does is in PRD.md.
 - Data: `node:sqlite`, the SQLite module built into Node. One database file inside the folder named by the `DATA_DIR` environment variable, default `./data`. On start the app creates the folder and its tables if they are missing; it needs no seed data.
 - Start: `npm start` starts the server on the port in the `PORT` environment variable, default 3100.
 - Time zone: the server's local time zone is the pantry's local time for every date and time in the app.
-- Today: if the `HOLDBACK_TODAY` environment variable is set to a date (YYYY-MM-DD), the app uses that date as today for the volunteer list and for the visit times offered on the Book a visit page. The time of day is not changed.
+- Today: if the `HOLDBACK_TODAY` environment variable is set to a date (YYYY-MM-DD), the app uses that date as today for the volunteer list and for the visit times offered on the Book a visit page.
+- Now: if the `HOLDBACK_NOW` environment variable is set to a time of day (HH:MM, 24-hour, local time), the app uses it as the current time wherever the time of day matters. Together with `HOLDBACK_TODAY` it fixes "now" completely.

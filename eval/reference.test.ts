@@ -5,11 +5,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   ANNUAL,
+  EXAM_NOW,
+  EXAM_PRD_RULES,
+  EXAM_PRD_RULES_TEXT,
   INCREMENT,
   MONTHLY,
+  VISIT_TIMES,
   WEEKLY,
   bookVisit,
   decide,
+  examPrdLines,
   examTodayAllowed,
   formatMoney,
   limitFor,
@@ -66,7 +71,7 @@ describe("formatMoney", () => {
     expect(formatMoney(2_461_00)).toBe("$2,461");
     expect(formatMoney(124_098_00)).toBe("$124,098");
     expect(formatMoney(568_00)).toBe("$568");
-    expect(formatMoney(1_135_50)).toBe("$1,135.50");
+    expect(formatMoney(1_234_50)).toBe("$1,234.50");
     expect(formatMoney(5)).toBe("$0.05");
     expect(formatMoney(0)).toBe("$0");
     expect(formatMoney(1_000_000_00)).toBe("$1,000,000");
@@ -453,7 +458,7 @@ const BOOKING_CASES: Record<string, BookingCase> = {
     expect(b.lines[0]).toBe("Visit booked.");
     return b.visits;
   },
-  // e-16: six households fill the last listed visit time; the seventh sees it Full and cannot book it.
+  // e-16: six households fill the latest visit time; the seventh sees it Full and cannot book it.
   "e-16": (visits, today) => {
     const last = offeredSlots(today).at(-1)!;
     let v = visits;
@@ -466,8 +471,23 @@ const BOOKING_CASES: Record<string, BookingCase> = {
     expect(slotLabel(last, isFull(v, last))).toMatch(/ — Full$/);
     const seventh = book(v, today, "215-555-0167", last);
     expect(seventh.booked).toBe(false);
-    expect(seventh.lines).not.toContain("Visit booked.");
+    expect(seventh.lines.some((l) => l.startsWith("Your visit:"))).toBe(false);
     return seventh.visits;
+  },
+  // e-22: five households book the second-latest visit time; the sixth still gets it.
+  "e-22": (visits, today) => {
+    const secondLatest = offeredSlots(today).at(-2)!;
+    let v = visits;
+    for (let i = 1; i <= 5; i++) {
+      const r = book(v, today, `215-555-022${i}`, secondLatest);
+      expect(r.booked).toBe(true);
+      v = r.visits;
+    }
+    expect(isFull(v, secondLatest)).toBe(false);
+    const sixth = book(v, today, "215-555-0226", secondLatest);
+    expect(sixth.booked).toBe(true);
+    expect(sixth.lines[0]).toBe("Visit booked.");
+    return sixth.visits;
   },
   // e-17: the proxy's name is on today's volunteer list.
   "e-17": (visits, today) => {
@@ -519,6 +539,11 @@ describe("exam run condition (HOLDBACK_TODAY)", () => {
     const slots = offeredSlots("2026-12-01");
     expect(slots.some((s) => s.date.startsWith("2027-01"))).toBe(false);
   });
+
+  it("pins HOLDBACK_NOW before the first visit time, so no app hides any of today's times", () => {
+    expect(EXAM_NOW).toBe("08:00");
+    expect(EXAM_NOW < VISIT_TIMES[0]).toBe(true);
+  });
 });
 
 describe("booking exam cases", () => {
@@ -528,7 +553,7 @@ describe("booking exam cases", () => {
 
   it("covers enough allowed days and every order", () => {
     expect(allowedDays.length).toBe(249);
-    expect(orders).toHaveLength(120);
+    expect(orders).toHaveLength(720);
   });
 
   const runAll = (today: string, order: string[]) => {
@@ -548,10 +573,19 @@ describe("booking exam cases", () => {
     }
   });
 
-  it("give the expected outcome in every order (first allowed day of each month)", () => {
+  it("give the expected outcome in every order (28-, 30- and 31-day months, and a month-end day)", () => {
+    const days = ["2027-02-09", "2026-11-07", "2026-12-08", "2026-12-31"];
+    for (const today of days) expect(allowedDays).toContain(today);
+    for (const today of days) for (const order of orders) runAll(today, order);
+  });
+
+  it("give the expected outcome on the first allowed day of each month, in rotated orders", () => {
     const firstOfMonth = allowedDays.filter((d, i) => i === 0 || allowedDays[i - 1]!.slice(0, 7) !== d.slice(0, 7));
     expect(firstOfMonth).toHaveLength(24);
-    for (const today of firstOfMonth) for (const order of orders) runAll(today, order);
+    const ids = Object.keys(BOOKING_CASES);
+    for (const today of firstOfMonth) {
+      for (let k = 0; k < ids.length; k++) runAll(today, [...ids.slice(k), ...ids.slice(0, k)]);
+    }
   });
 });
 
@@ -677,49 +711,62 @@ describe("exam files", () => {
       const last = e.steps[1]!;
       expect(last).toContain(`On the "Food pantry eligibility check" page, ${fillPhrase(c.input)}; then assert `);
       for (const line of c.asserted) expect(last).toContain(`"${line}"`);
-      if (decide(c.input).result === "outside-area") {
-        expect(last).toContain('shows neither "Eligible." nor "Not eligible."');
+      const got = decide(c.input);
+      if (got.result === "outside-area") {
+        expect(last).toMatch(/ and shows neither "Eligible\." nor "Not eligible\."$/);
+      } else if (got.lines[0] === "Eligible.") {
+        // "Eligible." reads like part of "Not eligible.": every Eligible case also rules that out.
+        expect(last, c.id).toMatch(/ and does not say "Not eligible\."$/);
       }
     }
   });
 
-  const bookingStep = (phone: string, choice: string, proxy?: string) =>
+  const bookingStep = (phone: string, choice: string, proxy?: string, submit = 'and choose "Book visit"') =>
     `At {{start_url}}, on the "Food pantry eligibility check" page, ${fillPhrase(BOOKING_HOUSEHOLD)}; ` +
     `then choose "Book a visit", and on the "Book a visit" page enter ${phone} in "Phone number", ${choice}, ` +
     (proxy ? `enter ${proxy} in "Proxy name (optional)"` : `leave "Proxy name (optional)" empty`) +
-    `, and choose "Book visit"`;
-  const FIRST = 'choose the first option listed in "Visit time"';
-  const LAST = 'choose the last option listed in "Visit time"';
+    `, ${submit}`;
+  const pick = (which: string) => `choose the ${which} Tuesday, Thursday or Saturday visit time listed in "Visit time"`;
+  const EARLIEST = pick("earliest");
+  const LATEST = pick("latest");
+  const SECOND_LATEST = pick("second-latest");
 
-  it("e-14 books the first visit time, then is refused the second one in the same month", () => {
+  it("e-14 books the earliest visit time, then is refused the second-earliest one in the same month", () => {
     expect(fileFor("e-14").steps).toEqual([
-      `${bookingStep("215-555-0114", FIRST)}.`,
-      `${bookingStep("215-555-0114", 'choose the second option listed in "Visit time"')}; then assert the page says ` +
-        '"This household already has a visit booked in that month." and does not say "Visit booked."',
+      `${bookingStep("215-555-0114", EARLIEST)}.`,
+      `${bookingStep("215-555-0114", pick("second-earliest"))}; then assert the page says ` +
+        '"This household already has a visit booked in that month." and does not show "Your visit:"',
     ]);
   });
 
-  it("e-15 books the first visit time, then a visit time in the next calendar month", () => {
+  it("e-15 books the earliest visit time, then one in the next calendar month", () => {
     const nextMonth =
-      'in "Visit time" choose the earliest option whose date is in the calendar month after the month of the first option listed';
+      'in "Visit time" choose the earliest Tuesday, Thursday or Saturday visit time listed whose date is in the ' +
+      "calendar month after the month of the earliest one listed";
     expect(fileFor("e-15").steps).toEqual([
-      `${bookingStep("215-555-0115", FIRST)}.`,
+      `${bookingStep("215-555-0115", EARLIEST)}.`,
       `${bookingStep("215-555-0115", nextMonth)}; then assert the page says "Visit booked."`,
     ]);
   });
 
-  it("e-16 fills the last visit time with six households; the seventh finds it Full", () => {
-    const setup = [1, 2, 3, 4, 5, 6].map((i) => `${bookingStep(`215-555-016${i}`, LAST)}.`);
+  it("e-16 fills the latest visit time with six households; the seventh finds it Full", () => {
+    const setup = [1, 2, 3, 4, 5, 6].map((i) => `${bookingStep(`215-555-016${i}`, LATEST)}.`);
+    const seventh = bookingStep(
+      "215-555-0167",
+      'try to choose the latest Tuesday, Thursday or Saturday visit time listed in "Visit time"',
+      undefined,
+      'and only if that visit time could be chosen, choose "Book visit"',
+    );
     expect(fileFor("e-16").steps).toEqual([
       ...setup,
-      `${bookingStep("215-555-0167", 'try to choose the last option listed in "Visit time"')}; then assert the last ` +
-        'option listed in "Visit time" is marked "Full" and the page does not say "Visit booked."',
+      `${seventh}; then assert the latest visit time listed in "Visit time" is marked "Full" and the page does not ` +
+        'show "Your visit:"',
     ]);
   });
 
   it("e-17 names a proxy and finds it on the volunteer list", () => {
     expect(fileFor("e-17").steps).toEqual([
-      `${bookingStep("215-555-0117", FIRST, "Dana Whitfield")}.`,
+      `${bookingStep("215-555-0117", EARLIEST, "Dana Whitfield")}.`,
       'Choose the "Volunteer list" link at the top of the page; then assert that under "Expected today" the visit ' +
         'with phone number 215-555-0117 shows Dana Whitfield in the "Proxy" column.',
     ]);
@@ -727,12 +774,24 @@ describe("exam files", () => {
 
   it("e-18 marks a visit picked up and finds it under Picked up after a reload", () => {
     expect(fileFor("e-18").steps).toEqual([
-      `${bookingStep("215-555-0118", FIRST)}.`,
+      `${bookingStep("215-555-0118", EARLIEST)}.`,
       'Choose the "Volunteer list" link at the top of the page, and under "Expected today" choose "Mark picked up" ' +
         "on the visit with phone number 215-555-0118.",
       'Reload the page; then assert the visit with phone number 215-555-0118 is listed under "Picked up" and is ' +
         'no longer listed under "Expected today".',
     ]);
+  });
+
+  it("e-22 books five households into the second-latest visit time; the sixth still gets it", () => {
+    const setup = [1, 2, 3, 4, 5].map((i) => `${bookingStep(`215-555-022${i}`, SECOND_LATEST)}.`);
+    expect(fileFor("e-22").steps).toEqual([
+      ...setup,
+      `${bookingStep("215-555-0226", SECOND_LATEST)}; then assert the page says "Visit booked."`,
+    ]);
+  });
+
+  it("never pick a visit time by bare list position", () => {
+    for (const f of names()) expect(read(join(EXAM_DIR, f)), f).not.toMatch(/(first|second|last) option listed/);
   });
 
   it("use phone numbers no other exam case uses", () => {
@@ -812,21 +871,85 @@ describe("plain product voice", () => {
   it("STACK fixes runtime, server, storage, start command and today override", () => {
     const stack = read(join(SPEC_DIR, "STACK.md"));
     const required = ["Node.js 24", "Hono", "node:sqlite", "DATA_DIR", "./data", "npm start", "PORT", "3100"];
-    for (const s of [...required, "HOLDBACK_TODAY"]) expect(stack).toContain(s);
+    for (const s of [...required, "HOLDBACK_TODAY", "HOLDBACK_NOW", "HH:MM"]) expect(stack).toContain(s);
+  });
+});
+
+describe("PRD rules the exam depends on", () => {
+  const prd = () => read(join(SPEC_DIR, "PRD.md"));
+
+  it("are the listed rule numbers, each present exactly once", () => {
+    expect(EXAM_PRD_RULES.slice(0, 4)).toEqual([1, 2, 3, 5]);
+    expect(EXAM_PRD_RULES).not.toContain(4);
+    expect(EXAM_PRD_RULES).not.toContain(13);
+    expect(EXAM_PRD_RULES.at(-1)).toBe(60);
+    const lines = prd().split(/\r?\n/);
+    for (const n of EXAM_PRD_RULES) expect(lines.filter((l) => l.startsWith(`${n}. `)), `rule ${n}`).toHaveLength(1);
+  });
+
+  it("cover every PRD string the exam quotes", () => {
+    const used = examPrdLines(prd());
+    for (const f of readdirSync(EXAM_DIR).filter((x) => x.endsWith(".md"))) {
+      const e = parseExam(f);
+      const own = ELIGIBILITY_CASES.find((c) => c.id === f.slice(0, 4))?.lines ?? [];
+      for (const q of quoted(e.steps.join("\n"))) {
+        if (!own.includes(q)) expect(used, `${f}: "${q}"`).toContain(q);
+      }
+    }
+  });
+
+  it("include the income limits table and the one Messages row the exam asserts", () => {
+    const used = examPrdLines(prd());
+    expect(used).toContain("| Each additional member | +$10,508 | +$876 | +$203 |");
+    expect(used).toContain("| This household already has a visit booked in that month. |");
+    expect(used).not.toContain("Enter a 10-digit phone number.");
   });
 });
 
 describe("PREREGISTERED.md", () => {
+  const pre = () => read(join(HERE, "PREREGISTERED.md"));
+  const sha = (x: string | Buffer) => createHash("sha256").update(x).digest("hex");
+
   it("lists the sha256 of every exam file and nothing else", () => {
-    const text = read(join(HERE, "PREREGISTERED.md"));
+    const text = pre();
     const rows = [...text.matchAll(/^\| `exam\/([^`]+)` \| `([0-9a-f]{64})` \|$/gm)].map((m) => [m[1]!, m[2]!]);
     const files = readdirSync(EXAM_DIR)
       .filter((f) => f.endsWith(".md"))
       .sort();
     expect(rows.map((r) => r[0])).toEqual(files);
     for (const [file, hash] of rows) {
-      const actual = createHash("sha256").update(readFileSync(join(EXAM_DIR, file!))).digest("hex");
-      expect(actual, file).toBe(hash);
+      expect(sha(readFileSync(join(EXAM_DIR, file!))), file).toBe(hash);
+    }
+  });
+
+  it("records the PRD rules the exam depends on and their sha256, which later appends must not change", () => {
+    const text = pre();
+    expect(text).toContain(`PRD rules ${EXAM_PRD_RULES_TEXT}`);
+    const m = /^\| PRD lines the exam depends on \(`examPrdLines\(\)`\) \| `([0-9a-f]{64})` \|$/m.exec(text);
+    expect(m).not.toBeNull();
+    expect(sha(examPrdLines(read(join(SPEC_DIR, "PRD.md"))))).toBe(m![1]);
+  });
+
+  it("records PRD.md and STACK.md hashes at registration", () => {
+    const text = pre();
+    expect(text).toMatch(/^\| `examples\/pantry-spec\/PRD\.md` \| `[0-9a-f]{64}` \|$/m);
+    expect(text).toMatch(/^\| `examples\/pantry-spec\/STACK\.md` \| `[0-9a-f]{64}` \|$/m);
+  });
+
+  it("pins the run conditions and the expectation", () => {
+    const text = pre();
+    const n = readdirSync(EXAM_DIR).filter((f) => f.endsWith(".md")).length;
+    for (const s of [
+      "`HOLDBACK_TODAY` = `nextExamToday()`",
+      `\`HOLDBACK_NOW\` = \`${EXAM_NOW}\``,
+      "fresh, empty `DATA_DIR`",
+      "one attempt per case",
+      `out of ${n}`,
+      "without web access",
+      "Holdback (C) scores ≥ the agent alone (A) and ≥ the agent with self-written Kane checks (B) on this exam; " +
+        "A and B each stop claiming done with at least one exam case failing.",
+    ]) {
+      expect(text).toContain(s);
     }
   });
 });

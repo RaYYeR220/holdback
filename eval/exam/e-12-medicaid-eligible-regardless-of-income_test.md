@@ -11,4 +11,4 @@ At {{start_url}}, open the "Food pantry eligibility check" page.
 
 ## Step 2
 
-On the "Food pantry eligibility check" page, set "Household size" to 3, "Household income ($)" to 10000 and "How often is this income received?" to "Monthly", tick "Medicaid", leave "SNAP", "TANF" and "SSI" unticked, set "ZIP code" to 19139, and choose "Check eligibility"; then assert the result below the button says "Eligible." and "Reason: someone in the household receives SNAP, TANF, SSI or Medicaid."
+On the "Food pantry eligibility check" page, set "Household size" to 3, "Household income ($)" to 10000 and "How often is this income received?" to "Monthly", tick "Medicaid", leave "SNAP", "TANF" and "SSI" unticked, set "ZIP code" to 19139, and choose "Check eligibility"; then assert the result below the button says "Eligible." and "Reason: someone in the household receives SNAP, TANF, SSI or Medicaid." and does not say "Not eligible."

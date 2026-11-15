@@ -11,4 +11,4 @@ At {{start_url}}, open the "Food pantry eligibility check" page.
 
 ## Step 2
 
-On the "Food pantry eligibility check" page, set "Household size" to 9, "Household income ($)" to 9467 and "How often is this income received?" to "Monthly", leave "SNAP", "TANF", "SSI" and "Medicaid" unticked, set "ZIP code" to 19139, and choose "Check eligibility"; then assert the result below the button says "Eligible." and "Limit applied: $9,467 per month for a household of 9."
+On the "Food pantry eligibility check" page, set "Household size" to 9, "Household income ($)" to 9467 and "How often is this income received?" to "Monthly", leave "SNAP", "TANF", "SSI" and "Medicaid" unticked, set "ZIP code" to 19139, and choose "Check eligibility"; then assert the result below the button says "Eligible." and "Limit applied: $9,467 per month for a household of 9." and does not say "Not eligible."

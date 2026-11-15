@@ -66,7 +66,7 @@ Source: https://www.pa.gov/en/agencies/pda/food/food-assistance/the-emergency-fo
 
 ## Formats
 
-33. Money is shown with a dollar sign and thousands separators, such as $29,526; cents are shown only when an amount has cents, such as $1,135.50.
+33. Money is shown with a dollar sign and thousands separators, such as $29,526; cents are shown only when an amount has cents, such as $1,234.50.
 34. Dates are shown with the weekday, month, day and year, such as Tuesday, December 1, 2026.
 35. Times are shown on a 24-hour clock, such as 10:00 and 13:00.
 36. Phone numbers are shown as 215-555-0101.

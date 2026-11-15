@@ -1,0 +1,2 @@
+# PRD.md and STACK.md hashes are recorded in eval/PREREGISTERED.md; keep their bytes identical on every checkout.
+* text=auto eol=lf
