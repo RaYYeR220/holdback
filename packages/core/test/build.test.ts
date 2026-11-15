@@ -482,6 +482,31 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.tests.map((t) => t.files)).toEqual([[T3], [T3]]); // one re-check (re-run once inside it), then stop
   });
 
+  it("stops with reason budget before an agent turn once the measured Kane spend reaches kane.capCredits (I6)", async () => {
+    await setup({ config: { kane: { capCredits: 30 } } });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    let left = 1000;
+    deps.balance = async () => left;
+    const tests = deps.tests;
+    deps.tests = async (...a) => ((left -= 25), tests(...a)); // each batch costs 25 credits by the balance
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, reason: "budget" });
+    expect(r.error).toMatch(/Kane credit cap reached: [0-9.]+ of 30/);
+    // turn 1 (12 at design + 25) ... then no turn starts past the cap
+    expect(calls.claude).toHaveLength(1);
+    expect(reduce(await readEvents(p.ledgerFile)).kaneCredits).toBeGreaterThanOrEqual(30);
+  });
+
+  it("a human's cap for this run (--kane-cap) overrides kane.capCredits (I6)", async () => {
+    await setup({ config: { kane: { capCredits: 5 } } });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log, { kaneCap: 1000 });
+    expect(r.reason).toBe("gate-open");
+    expect(calls.claude).toHaveLength(1);
+    const stopped = await runBuildLoop(p, fakes({ kane: (_t, files) => files.map(pass) }).deps, log, { kaneCap: 0 });
+    expect(stopped.reason).toBe("gate-open"); // nothing owed: no batch to refuse
+  });
+
   it("logs Kane's balance drop around each batch, and a batch whose balance cannot be read with its per-run sum (R34)", async () => {
     await setup();
     let bal = 1000;

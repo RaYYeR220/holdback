@@ -303,12 +303,30 @@ export async function withCheckLock(ctx: Ctx, p: Project, run: () => Promise<num
   }
 }
 
-/** Prints why a command failed. A tamper (on record or just found) is reported as one and exits 2. */
+/**
+ * Parses `--kane-cap`: a number of credits, 0 or more (undefined when not given). The cap is on the
+ * project's whole measured Kane spend, like `kane.capCredits`, which it overrides for one command.
+ */
+export function parseKaneCap(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = /^\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) throw new Error(`--kane-cap must be a number of credits (0 or more), got ${raw}`);
+  return n;
+}
+
+/**
+ * Prints why a command failed. A tamper (on record or just found) is reported as one and exits 2;
+ * the Kane credit cap reached is a stop (exit 3), not an error.
+ */
 export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise<number> {
   const msg = e instanceof Error ? e.message : String(e);
   if (e instanceof LedgerTampered) {
     ctx.err(tamperMessage(msg));
     return EXIT.tamper;
+  }
+  if (e instanceof Error && e.name === "KaneCapReached") {
+    ctx.err(msg);
+    return EXIT.unfinished;
   }
   ctx.err(`error: ${msg}`);
   if (p) {

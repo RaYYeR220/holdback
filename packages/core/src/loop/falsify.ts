@@ -8,12 +8,12 @@ import { Budget, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, designTests, extractResume, listNodes, readGraph, resumeSession, review, type ListedNode } from "../kane/assurance.js";
 import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
-import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
+import { KaneCapReached, KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent } from "../ledger/types.js";
 import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type EventBody, type LedgerMark } from "../ledger/vouched.js";
-import type { Project } from "../project.js";
+import { kaneCapCredits, type Project } from "../project.js";
 import { checkSeal, tier1Entries, type SealEntry } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { byAcId } from "./brief.js";
@@ -56,8 +56,12 @@ export const defaultFalsifyDeps: FalsifyDeps = {
   balance,
 };
 
-/** `drift`: a spec file (and nothing else sealed) changed: the pass stopped attacking, for a human to re-plan the spec. */
-export type FalsifyStopReason = "done" | "budget" | "tamper" | "error" | "aborted" | "drift";
+/**
+ * `budget`: the breaker's USD cap (the pass went on as far as it could). `kane-budget`: the project's
+ * Kane credit cap was reached (I6): the pass stopped. `drift`: a spec file (and nothing else sealed)
+ * changed: the pass stopped attacking, for a human to re-plan the spec.
+ */
+export type FalsifyStopReason = "done" | "budget" | "kane-budget" | "tamper" | "error" | "aborted" | "drift";
 
 export type FalsifyResult = {
   /** ACs whose mutant Kane caught: now `proved`. */
@@ -268,6 +272,8 @@ export type FalsifyOptions = {
   signal?: AbortSignal;
   /** Warnings that do not stop the pass. Default: stderr. */
   warn?: Warn;
+  /** A human's Kane credit cap for this command (`--kane-cap`), over `kane.capCredits` (I6). */
+  kaneCap?: number;
 };
 
 /**
@@ -308,7 +314,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   };
   const emit = (body: EventBody) => append({ at: at(), ...body } as LedgerEvent);
   /** Each Kane batch (a mutant's replay, the closing replay, a re-design) is metered by Kane's balance. */
-  const meter = new KaneMeter(deps.balance, emit);
+  const capCredits = kaneCapCredits(p.config, opts.kaneCap);
+  const meter = new KaneMeter(deps.balance, emit, capCredits === undefined ? undefined : { credits: capCredits, spent: () => reduce(events).kaneCredits });
   const recordTamper = async (detail: string) => {
     let logged = detail;
     try {
@@ -806,6 +813,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   try {
     return await finalize(await run());
   } catch (e) {
+    if (e instanceof KaneCapReached) return await finalize(result("kane-budget", e.message));
     return await finalize(result("error", errText(e)), e);
   } finally {
     await stopApp().catch(() => {});

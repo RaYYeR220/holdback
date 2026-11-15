@@ -9,7 +9,8 @@ export type HoldbackConfig = {
   agentNotes?: string;
   start: { cmd: string; port: number; readyPath: string; env?: Record<string, string> };
   agent: { kind: "claude"; model?: string; maxTurnsPerCall: number };
-  kane: { parallel: number; timeoutS: number; designMax: number };
+  /** `capCredits`: the most Kane credits the project may spend, as measured on the ledger; null for no cap. */
+  kane: { parallel: number; timeoutS: number; designMax: number; capCredits?: number | null };
   breaker: { model: string; capUsd: number };
   /**
    * denyWeb: remove WebFetch/WebSearch from the agent (eval arms run without web access).
@@ -24,7 +25,7 @@ const DEFAULTS: HoldbackConfig = {
   specUrls: [],
   start: { cmd: "npm start", port: 3100, readyPath: "/" },
   agent: { kind: "claude", maxTurnsPerCall: 60 },
-  kane: { parallel: 3, timeoutS: 420, designMax: 5 },
+  kane: { parallel: 3, timeoutS: 420, designMax: 5, capCredits: null },
   breaker: { model: "deepseek-v4-flash", capUsd: 2 },
   loop: { maxTurns: 15, appendClarifications: "always" },
 };
@@ -82,3 +83,14 @@ export async function loadProject(appDir: string) {
 }
 
 export type Project = Awaited<ReturnType<typeof loadProject>>;
+
+/**
+ * The Kane credit cap in force: `override` (a human's `--kane-cap` for one command), else
+ * `kane.capCredits`; undefined for none. Throws on anything but a number of credits, 0 or more.
+ */
+export function kaneCapCredits(config: Pick<HoldbackConfig, "kane">, override?: number): number | undefined {
+  const v: unknown = override ?? config.kane.capCredits;
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new Error(`kane.capCredits must be a number of credits (0 or more) or null, got ${JSON.stringify(v)}`);
+  return v;
+}

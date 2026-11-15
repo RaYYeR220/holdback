@@ -27,6 +27,24 @@ export function eventCredits(e: EventBody | LedgerEvent): number {
   }
 }
 
+/**
+ * A cap on the project's Kane spend: the most `credits` it may have spent, as measured on the ledger
+ * (`LedgerState.kaneCredits`, what `spent` returns), for a batch to start. `kane.capCredits`, or a
+ * human's `--kane-cap` for one command.
+ */
+export type KaneCap = { credits: number; spent: () => number | Promise<number> };
+
+/** The Kane credit cap is reached: no Kane batch starts. */
+export class KaneCapReached extends Error {
+  constructor(
+    readonly spent: number,
+    readonly cap: number,
+  ) {
+    super(`Kane credit cap reached: ${round(spent)} of ${cap} credits spent on this project (kane.capCredits or --kane-cap); raise the cap to go on`);
+    this.name = "KaneCapReached";
+  }
+}
+
 async function read(balance: BalanceReader): Promise<number | { error: string }> {
   try {
     const n = await balance();
@@ -51,7 +69,16 @@ export class KaneMeter {
     private readonly balance: BalanceReader | undefined,
     /** Appends the `credits` event (not through `add`). */
     private readonly log: (e: CreditsEvent) => Promise<void>,
+    /** No batch starts once the measured spend reaches it (I6). */
+    private readonly cap?: KaneCap,
   ) {}
+
+  /** Throws `KaneCapReached` when the measured spend has reached the cap. */
+  async assertBudget(): Promise<void> {
+    if (!this.cap) return;
+    const spent = await this.cap.spent();
+    if (spent >= this.cap.credits) throw new KaneCapReached(spent, this.cap.credits);
+  }
 
   /** Every event the caller logs: tallied while a batch is open. */
   add(e: EventBody | LedgerEvent): void {
@@ -59,7 +86,9 @@ export class KaneMeter {
   }
 
   async batch<T>(source: string, body: () => Promise<T>): Promise<T> {
-    if (!this.balance || this.open) return body();
+    if (this.open) return body();
+    await this.assertBudget();
+    if (!this.balance) return body();
     this.open = { source, before: await read(this.balance), perRun: 0 };
     let done = false;
     try {

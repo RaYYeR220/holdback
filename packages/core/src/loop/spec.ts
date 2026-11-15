@@ -16,12 +16,12 @@ import {
   type Paused,
 } from "../kane/assurance.js";
 import { commitPaths, git, headSha, holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
-import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
+import { KaneMeter, type BalanceReader, type KaneCap } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
 import type { EventBody } from "../ledger/vouched.js";
-import type { Project } from "../project.js";
+import { kaneCapCredits, type Project } from "../project.js";
 import { attemptsText, specAttemptsSince } from "../agent/attempts.js";
 import { appSealKey, checkSeal, isAppKeyOf, seal } from "../seal.js";
 import { clearTamper, logRecordings, markTampered, tamperMarker } from "../tamper.js";
@@ -415,7 +415,15 @@ export type SpecDeps = {
   balance?: BalanceReader;
   /** Warnings that do not stop the stage. Default: stderr. */
   warn?: Warn;
+  /** A human's Kane credit cap for this command (`--kane-cap`), over `kane.capCredits` (I6). */
+  kaneCap?: number;
 };
+
+/** The Kane credit cap in force for a stage that logs straight to the ledger file, measured there. */
+export function ledgerCap(p: Project, override?: number): KaneCap | undefined {
+  const credits = kaneCapCredits(p.config, override);
+  return credits === undefined ? undefined : { credits, spent: async () => reduce(await readEvents(p.ledgerFile)).kaneCredits };
+}
 
 /** sha256 over the spec files' bytes (as they are in the app dir) and the spec links: what an extraction was made from. */
 async function specSourceHash(p: Project): Promise<string> {
@@ -439,7 +447,7 @@ export const ALREADY_SEALED =
  */
 export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: SpecDeps = {}): Promise<void> {
   const at = () => new Date().toISOString();
-  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
+  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }), ledgerCap(p, deps.kaneCap));
   const emit = async (e: EventBody) => {
     await log({ at: at(), ...e } as LedgerEvent);
     meter.add(e);

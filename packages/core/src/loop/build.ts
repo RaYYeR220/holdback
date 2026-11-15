@@ -9,13 +9,13 @@ import { appEnv, freshDataDir } from "../datadir.js";
 import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { balance } from "../kane/assurance.js";
 import { notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
-import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
+import { KaneCapReached, KaneMeter, type BalanceReader, type KaneCap } from "../ledger/credits.js";
 import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent, LedgerState } from "../ledger/types.js";
 import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type EventBody, type LedgerMark } from "../ledger/vouched.js";
-import type { Project } from "../project.js";
+import { kaneCapCredits, type Project } from "../project.js";
 import { checkRecordings, checkSeal } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { bisectRegression, BisectTampered, blameOf, lastGoodTurn } from "./bisect.js";
@@ -45,13 +45,16 @@ export type BuildOptions = {
   maxTurnsOverride?: number;
   /** Aborts the loop: it stops after the current step (never mid-batch) and returns reason `aborted`. */
   signal?: AbortSignal;
+  /** A human's Kane credit cap for this run (`--kane-cap`), over `kane.capCredits`. */
+  kaneCap?: number;
 };
 
 /**
  * `inconclusive`: only Kane runs that proved nothing keep the gate shut, and a re-check proved nothing again.
  * `drift`: a spec file (and nothing else sealed) changed since the seal: a human re-plans it with `holdback drift`.
+ * `budget`: the project's measured Kane spend reached its credit cap (`kane.capCredits`, `--kane-cap`).
  */
-export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift";
+export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift" | "budget";
 /**
  * `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on
  * record); `inconclusive` the tests that keep the gate shut, for an `inconclusive` stop.
@@ -187,10 +190,17 @@ export class VerifySession {
     readonly log: Log,
     /** What the batches are logged as in `credits` events: the headless build loop, or the hooks' single-shot check. */
     readonly source: "build" | "check" = "build",
+    /** A human's Kane credit cap for this run, over `kane.capCredits` (I6). */
+    kaneCap?: number,
   ) {
     this.gitOpts = { hooksDir: path.join(p.home, EMPTY_HOOKS_DIR) };
-    this.meter = new KaneMeter(deps.balance, (e) => this.emit(e));
+    const credits = kaneCapCredits(p.config, kaneCap);
+    this.cap = credits === undefined ? undefined : { credits, spent: () => reduce(this.events).kaneCredits };
+    this.meter = new KaneMeter(deps.balance, (e) => this.emit(e), this.cap);
   }
+
+  /** The Kane credit cap in force, measured on this session's ledger; undefined for none. */
+  readonly cap: KaneCap | undefined;
 
   at(): string {
     return new Date().toISOString();
@@ -522,7 +532,7 @@ export class VerifySession {
  */
 export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: BuildOptions = {}): Promise<BuildResult> {
   let turns = 0;
-  const s = new VerifySession(p, deps, log);
+  const s = new VerifySession(p, deps, log, "build", opts.kaneCap);
 
   const done = (allowStop: boolean, reason: BuildStopReason, error?: string): BuildResult =>
     error === undefined ? { allowStop, turns, reason } : { allowStop, turns, reason, error };
@@ -546,13 +556,13 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
           r.ac,
           good,
           r.turn,
-          { tests: deps.tests, app: deps.app, guard: () => s.tampered(false), ...(deps.balance ? { balance: deps.balance } : {}) },
+          { tests: deps.tests, app: deps.app, guard: () => s.tampered(false), ...(deps.balance ? { balance: deps.balance } : {}), ...(s.cap ? { kaneCap: s.cap } : {}) },
           (e) => s.emit(e as EventBody),
         );
         if (blamed === null) await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: "bisect inconclusive: no turn could be blamed" });
       } catch (e) {
         if (e instanceof BisectTampered) return true;
-        if (e instanceof LedgerTampered) throw e;
+        if (e instanceof LedgerTampered || e instanceof KaneCapReached) throw e;
         // best effort: the brief omits the blame line, but the failure is on record
         await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: `bisect failed: ${errText(e)}` });
       }
@@ -590,6 +600,8 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       const g = gate(state);
       if (g.allowStop) return done(true, "gate-open");
       if (opts.signal?.aborted) return done(false, "aborted");
+      // no turn (whose work Kane would then refuse to check) once the Kane credit cap is reached
+      await s.meter.assertBudget();
       // only Kane runs that proved nothing keep the gate shut: Kane, not the agent, has something to
       // redo. Re-run just those tests once, under the latest turn; proving nothing again ends the run
       if (g.owed.length === 0 && g.regressed.length === 0 && g.inconclusive.length > 0) {
@@ -681,6 +693,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
   try {
     return await finalize(await loop());
   } catch (e) {
+    if (e instanceof KaneCapReached) return await finalize(done(false, "budget", e.message));
     return await finalize(done(false, "error", errText(e)), e);
   } finally {
     await s.stopApp().catch(() => {});

@@ -1,5 +1,5 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { reviewSpecChange } from "./specchange.js";
 
 /**
@@ -7,7 +7,7 @@ import { reviewSpecChange } from "./specchange.js";
  * human always sees the diff from the sealed spec first; a change not known to be theirs must be
  * accepted in the terminal, whatever `--answers` says (R37, R38).
  */
-export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: boolean; port?: string } = {}): Promise<number> {
+export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: boolean; port?: string; kaneCap?: string } = {}): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback drift")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
   const io = await openHumanIO(ctx, p, o.answers, o);
@@ -19,7 +19,8 @@ export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: bool
         const stopped = await reviewSpecChange(ctx, p, { allowUnverified: true });
         if (stopped !== undefined) return stopped === EXIT.unfinished ? EXIT.error : stopped;
       }
-      r = await ctx.deps.runDrift(p, io, ledgerLog(p), { balance: ctx.deps.balance, warn: ctx.err });
+      const kaneCap = parseKaneCap(o.kaneCap);
+      r = await ctx.deps.runDrift(p, io, ledgerLog(p), { balance: ctx.deps.balance, warn: ctx.err, ...(kaneCap === undefined ? {} : { kaneCap }) });
       return EXIT.ok;
     });
     if (locked !== EXIT.ok) return locked;

@@ -4,7 +4,7 @@ import { freePort, startApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
 import { holdbackGitOptions, worktreeAdd } from "../git.js";
 import { notAnAppFailure, runTests, type TestRunResult } from "../kane/testmd.js";
-import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
+import { KaneMeter, type BalanceReader, type KaneCap } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
@@ -29,6 +29,8 @@ export type BisectDeps = {
   guard?: () => Promise<boolean>;
   /** Kane's balance, read before and after the search (a `credits` event); leave out to log none. */
   balance?: BalanceReader;
+  /** No search starts once the measured Kane spend reaches it (I6). */
+  kaneCap?: KaneCap;
 };
 
 /** Sealed files changed while a bisect ran; nothing it produced reached the ledger. */
@@ -127,7 +129,7 @@ export async function bisectRegression(
   if (cands.length === 0) return null;
 
   const at = () => new Date().toISOString();
-  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
+  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }), deps.kaneCap);
   const logged = async (e: LedgerEvent) => {
     await log(e);
     meter.add(e);

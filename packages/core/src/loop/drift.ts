@@ -24,7 +24,7 @@ import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js"
 import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed } from "./falsify.js";
 import type { HumanIO } from "./human.js";
-import { checkSpecPaths, clarifiedFile, commitSpec, drivePaused, latestSpecChange, reseal, type Warn } from "./spec.js";
+import { checkSpecPaths, clarifiedFile, commitSpec, drivePaused, latestSpecChange, ledgerCap, reseal, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 
@@ -47,6 +47,8 @@ export type DriftDeps = {
   balance?: BalanceReader;
   /** Warnings that do not stop the run. Default: stderr. */
   warn?: Warn;
+  /** A human's Kane credit cap for this command (`--kane-cap`), over `kane.capCredits` (I6). */
+  kaneCap?: number;
 };
 
 export type DriftResult =
@@ -78,7 +80,7 @@ const slash = (f: string): string => f.split(path.sep).join("/");
 export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDeps = {}): Promise<DriftResult> {
   const kane = deps.kane ?? defaultDriftKane;
   const at = () => new Date().toISOString();
-  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
+  const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }), ledgerCap(p, deps.kaneCap));
   const emit = async (e: EventBody) => {
     await log({ at: at(), ...e } as LedgerEvent);
     meter.add(e);

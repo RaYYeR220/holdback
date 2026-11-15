@@ -7,6 +7,7 @@ import {
   appendEvent,
   appSealFiles,
   CliHumanIO,
+  KaneCapReached,
   loadProject,
   logSpecAttempt,
   readEvents,
@@ -563,6 +564,35 @@ describe("run", () => {
     const r = await cli(["run"], stages().deps);
     expect(r.code).toBe(0);
     expect(r.out).toContain("1 rejected");
+  });
+
+  it("passes --kane-cap to the build loop, falsify and drift, and stops with exit 3 when the cap is reached (I6)", async () => {
+    await greenFixture();
+    const s = stages({ build: [{ allowStop: false, turns: 1, reason: "budget", error: "Kane credit cap reached: 31 of 30 credits spent on this project" }] });
+    const r = await cli(["run", "--kane-cap", "30"], s.deps);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("Kane credit cap reached");
+    expect(s.seen.build[0]!.opts).toMatchObject({ kaneCap: 30 });
+    const f = stages({ falsify: [{ ...falsifyOk, reason: "kane-budget", error: "Kane credit cap reached: 40 of 30" }] });
+    const fr = await cli(["run", "--kane-cap", "30"], f.deps);
+    expect(fr.code).toBe(3);
+    expect(f.seen.falsify[0]).toMatchObject({ kaneCap: 30 });
+    expect((await cli(["run", "--kane-cap", "lots"], stages().deps)).code).toBe(1);
+  });
+
+  it("a spec stage stopped by the Kane credit cap exits 3, not as an error (I6)", async () => {
+    writeFileSync(join(appDir, "PRD.md"), "# PRD\n");
+    const seen: unknown[] = [];
+    const r = await cli(["spec", "--kane-cap", "12.5"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async (_p, _io, _log, deps) => {
+        seen.push(deps?.kaneCap);
+        throw new KaneCapReached(13, 12.5);
+      },
+    });
+    expect(seen).toEqual([12.5]);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("Kane credit cap reached: 13 of 12.5");
   });
 
   it("skips falsify with --no-falsify and passes --max-turns on", async () => {

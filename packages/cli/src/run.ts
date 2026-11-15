@@ -1,5 +1,5 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
 import { reviewSpecChange } from "./specchange.js";
 
@@ -13,6 +13,8 @@ export type RunOptions = {
   dashboard?: boolean;
   /** Dashboard port. */
   port?: string;
+  /** `--kane-cap`: the project's Kane credit cap for this command, over `kane.capCredits`. */
+  kaneCap?: string;
 };
 
 /** A falsify pass can send use cases back to the build loop; this many rounds is far more than it ever needs. */
@@ -30,6 +32,8 @@ function buildStop(b: BuildResult): Stop {
     case "inconclusive":
       // Kane's to redo, not the agent's: more turns would not help
       return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []) };
+    case "budget":
+      return { code: EXIT.unfinished, why: b.error ?? "Kane credit cap reached" };
     case "drift":
       // seen right after the agent's turn: the agent may have written it (R37)
       return { code: EXIT.unfinished, why: b.specChange?.duringAgentTurn ? unverifiedDrift(b.specChange.files) : driftStop(b.error) };
@@ -50,6 +54,8 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
       return { code: EXIT.error, why: f.error ?? "falsify failed" };
     case "drift":
       return { code: EXIT.unfinished, why: driftStop(f.error) };
+    case "kane-budget":
+      return { code: EXIT.unfinished, why: f.error ?? "Kane credit cap reached" };
     default:
       return undefined;
   }
@@ -104,6 +110,8 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
   let turns = 0;
   let falsified: FalsifyResult | undefined;
   try {
+    const kaneCap = parseKaneCap(o.kaneCap);
+    const capped = kaneCap === undefined ? {} : { kaneCap };
     let maxTurnsOverride: number | undefined;
     if (o.maxTurns !== undefined) {
       maxTurnsOverride = Number(o.maxTurns);
@@ -130,7 +138,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       // for the human's yes in the terminal (R37, R38); a logged write at the spec is a tamper
       const stopped = await reviewSpecChange(ctx, p, { allowUnverified: on.allowUnverified === true });
       if (stopped !== undefined) return stopped;
-      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err });
+      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err, ...capped });
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
         ctx.err("Nothing was built. Fix or revert the spec edit, then run `holdback drift` or `holdback run` again.");
@@ -145,7 +153,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
         stop = { code: EXIT.error, why: "falsify kept re-opening criteria; stopped after several rounds" };
         break;
       }
-      const b = await ctx.deps.runBuildLoop(p, buildDeps, log, { signal, ...(maxTurnsOverride !== undefined ? { maxTurnsOverride } : {}) });
+      const b = await ctx.deps.runBuildLoop(p, buildDeps, log, { signal, ...capped, ...(maxTurnsOverride !== undefined ? { maxTurnsOverride } : {}) });
       turns += b.turns;
       if (b.reason !== "gate-open") {
         stop = buildStop(b);
@@ -154,7 +162,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       }
       if (o.falsify === false) break;
       ctx.out("Gate open: falsifying the passing criteria with planted bugs");
-      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err });
+      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err, ...capped });
       falsified = f;
       stop = falsifyStop(f);
       if (f.reason === "drift") on.drifted?.(false);

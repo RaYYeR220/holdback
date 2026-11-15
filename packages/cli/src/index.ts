@@ -64,6 +64,7 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
   program
     .command("spec")
     .description("Have Kane design acceptance criteria from the spec, then approve and seal them")
+    .option("--kane-cap <n>", "Kane credit cap on the project's measured spend, for this command (over kane.capCredits)")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
     .option("--dashboard", "ask in the browser dashboard (started here) instead of the terminal")
     .option("--port <n>", "with --dashboard: port to listen on (default 4317)")
@@ -72,6 +73,7 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
   program
     .command("run")
     .description("Build until Kane proves every criterion, then falsify the proven ones")
+    .option("--kane-cap <n>", "Kane credit cap on the project's measured spend, for this command (over kane.capCredits)")
     .option("--max-turns <n>", "highest turn number allowed (turns are numbered across runs)")
     .option("--no-falsify", "skip the planted-bug pass")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
@@ -82,6 +84,7 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
   program
     .command("drift")
     .description("Apply a spec edit made after the last seal")
+    .option("--kane-cap <n>", "Kane credit cap on the project's measured spend, for this command (over kane.capCredits)")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
     .option("--dashboard", "ask in the browser dashboard (started here) instead of the terminal")
     .option("--port <n>", "with --dashboard: port to listen on (default 4317)")
@@ -90,6 +93,7 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
   program
     .command("watch")
     .description("Watch the spec files; on every edit run drift, then the run loop")
+    .option("--kane-cap <n>", "Kane credit cap on the project's measured spend, for this command (over kane.capCredits)")
     .option("--max-turns <n>", "highest turn number allowed (turns are numbered across runs)")
     .option("--no-falsify", "skip the planted-bug pass")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
