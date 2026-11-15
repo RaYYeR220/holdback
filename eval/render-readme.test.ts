@@ -1,8 +1,21 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { END, START, renderReadme } from "../scripts/render-readme.mjs";
+import {
+  END,
+  START,
+  checkDemo,
+  emptyDemo,
+  fillMarkers,
+  readInputs,
+  renderDemo,
+  renderDemoStatus,
+  renderDocs,
+  renderExamStatus,
+  renderHeadline,
+  renderReadme,
+} from "../scripts/render-readme.mjs";
 
 let tmp: string;
 let readme: string;
@@ -82,5 +95,111 @@ describe("render-readme footnotes", () => {
   it("adds no notes when there is nothing to note", () => {
     writeFileSync(summary, JSON.stringify(SUMMARY));
     expect(renderReadme(readme, summary)).not.toContain("\n- ");
+  });
+});
+
+describe("render-readme parts", () => {
+  const DEMO = {
+    _readme: "x",
+    links: { landing: "https://example.test/", video: null, replay: "https://example.test/replay/" },
+    recorded: { ledger: "examples/recorded-run/ledger.jsonl" },
+    spec: { questions: 3, criteria: 14, tests: 5 },
+    build: { turns: 4, bugReports: 2, gateOpen: true },
+    falsify: { planted: 6, caught: 5, breakerUsd: 0.0123 },
+    drift: { reopened: 2 },
+    spend: { kaneCredits: 812.25, agentUsd: null, wallMin: 48 },
+  };
+  const DOC = [
+    "<!-- headline:start -->old<!-- headline:end -->",
+    "",
+    "| Exam | <!-- exam-status:start -->old<!-- exam-status:end --> |",
+    "| Demo | <!-- demo-status:start -->old<!-- demo-status:end --> |",
+    "",
+    "<!-- links:start -->old<!-- links:end -->",
+    "",
+    "<!-- demo:start -->",
+    "old",
+    "<!-- demo:end -->",
+    "",
+    "Again: <!-- links:start --><!-- links:end -->",
+    "",
+  ].join("\n");
+
+  it("renders every part as pending without inputs, inline parts staying inline", () => {
+    const out = fillMarkers(DOC, readInputs(path.join(tmp, "none.json"), path.join(tmp, "none-demo.json")));
+    expect(out).toContain("<!-- headline:start -->Exam pending: Holdback's build and Claude Code alone have not been scored yet");
+    expect(out).toContain("| Exam | <!-- exam-status:start -->NOT-CLAIMED (pending)<!-- exam-status:end --> |");
+    expect(out).toContain("| Demo | <!-- demo-status:start -->NOT-CLAIMED (pending)<!-- demo-status:end --> |");
+    expect(out).toContain("<!-- links:start -->Landing page: pending · Demo video: pending · Dashboard replay: pending<!-- links:end -->");
+    expect(out).toContain("Again: <!-- links:start -->Landing page: pending");
+    expect(out).toContain("<!-- demo:start -->\nDemo run pending: nothing from it is claimed yet.\n<!-- demo:end -->");
+    expect(out).not.toMatch(/>old<|\nold\n/);
+  });
+
+  it("fills the headline only once both compared arms are scored, B when it is", () => {
+    expect(renderHeadline({ C: SUMMARY.C })).toMatch(/^Exam pending/);
+    expect(renderHeadline(SUMMARY)).toBe("On a held-out 22-case exam, Holdback's build passed 21/22; Claude Code alone passed 17/22.");
+    expect(renderHeadline({ ...SUMMARY, B: { ...SUMMARY.A, examPassed: 18 } })).toBe(
+      "On a held-out 22-case exam, Holdback's build passed 21/22; Claude Code alone passed 17/22, and with its own Kane checks 18/22.",
+    );
+    expect(renderExamStatus(SUMMARY)).toBe("VERIFIED-LIVE");
+    expect(renderExamStatus({ A: SUMMARY.A })).toBe("NOT-CLAIMED (pending)");
+  });
+
+  it("fills links, the demo table and its tag from the demo record", () => {
+    const demo = path.join(tmp, "demo-run.json");
+    writeFileSync(demo, JSON.stringify(DEMO));
+    const out = fillMarkers(DOC, readInputs(summary, demo));
+    expect(out).toContain("[Landing page](https://example.test/) · Demo video: pending · [Dashboard replay](https://example.test/replay/)");
+    expect(out).toContain("| Demo | <!-- demo-status:start -->VERIFIED-LIVE<!-- demo-status:end --> |");
+    expect(out).toContain("| Recorded demo run ([ledger](examples/recorded-run/ledger.jsonl)) | |");
+    expect(out).toContain("| Planted bugs Kane caught | 5 of 6 |");
+    expect(out).toContain("| Gate at the end | open |");
+    expect(out).toContain("| Kane credits, by balance | 812.3 |");
+    expect(out).toContain("| Agent cost | not recorded |");
+    expect(out).toContain("| Breaker cost | $0.0123 |");
+  });
+
+  it("keeps the demo pending while its ledger is not in the repo, whatever else is filled", () => {
+    const d = checkDemo({ ...DEMO, recorded: { ledger: null } });
+    expect(renderDemo(d)).toBe("Demo run pending: nothing from it is claimed yet.");
+    expect(renderDemoStatus(d)).toBe("NOT-CLAIMED (pending)");
+  });
+
+  it("refuses demo figures of the wrong form and unknown keys", () => {
+    expect(() => checkDemo({ ...DEMO, spec: { ...DEMO.spec, criteria: "about 14" } })).toThrow(/spec\.criteria/);
+    expect(() => checkDemo({ ...DEMO, spec: { ...DEMO.spec, criteria: 14.5 } })).toThrow(/spec\.criteria/);
+    expect(() => checkDemo({ ...DEMO, falsify: { ...DEMO.falsify, breakerUsd: -1 } })).toThrow(/breakerUsd/);
+    expect(() => checkDemo({ ...DEMO, links: { ...DEMO.links, video: "http://example.test/" } })).toThrow(/links\.video/);
+    expect(() => checkDemo({ ...DEMO, recorded: { ledger: "../outside.jsonl" } })).toThrow(/recorded\.ledger/);
+    expect(() => checkDemo({ ...DEMO, recorded: { ledger: "C:/run/ledger.jsonl" } })).toThrow(/recorded\.ledger/);
+    expect(() => checkDemo({ ...DEMO, spec: { ...DEMO.spec, critera: 3 } })).toThrow(/unknown figure "spec\.critera"/);
+    expect(() => checkDemo({ ...DEMO, extra: {} })).toThrow(/unknown section "extra"/);
+  });
+
+  it("refuses a start marker without its end", () => {
+    expect(() => fillMarkers("<!-- links:start --> no end", readInputs(summary))).toThrow(/links:end/);
+  });
+
+  it("is idempotent over a whole docs folder, and leaves a missing optional doc alone", () => {
+    mkdirSync(path.join(tmp, "eval", "results"), { recursive: true });
+    mkdirSync(path.join(tmp, "docs"));
+    writeFileSync(path.join(tmp, "eval", "results", "summary.json"), JSON.stringify(SUMMARY));
+    writeFileSync(path.join(tmp, "docs", "demo-run.json"), JSON.stringify(DEMO));
+    writeFileSync(path.join(tmp, "JUDGES.md"), DOC);
+    expect(renderDocs(tmp)).toEqual(["README.md", "JUDGES.md"]);
+    const readmeOnce = readFileSync(readme, "utf8");
+    const judgesOnce = readFileSync(path.join(tmp, "JUDGES.md"), "utf8");
+    expect(judgesOnce).toContain("Holdback's build passed 21/22");
+    expect(readmeOnce).toContain("| C: Holdback | 21/22 |");
+    renderDocs(tmp);
+    expect(readFileSync(readme, "utf8")).toBe(readmeOnce);
+    expect(readFileSync(path.join(tmp, "JUDGES.md"), "utf8")).toBe(judgesOnce);
+    expect(existsSync(path.join(tmp, "CLAIMS.md"))).toBe(false);
+  });
+
+  it("checks the committed demo record and keeps it all null until the demo is recorded", () => {
+    const committed = JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "docs", "demo-run.json"), "utf8"));
+    expect(checkDemo(committed)).toEqual(emptyDemo());
   });
 });

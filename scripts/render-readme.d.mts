@@ -1,4 +1,25 @@
 export const START: string;
 export const END: string;
+export const DOCS: string[];
+export type DemoRun = {
+  links: { landing: string | null; video: string | null; replay: string | null };
+  recorded: { ledger: string | null };
+  spec: { questions: number | null; criteria: number | null; tests: number | null };
+  build: { turns: number | null; bugReports: number | null; gateOpen: boolean | null };
+  falsify: { planted: number | null; caught: number | null; breakerUsd: number | null };
+  drift: { reopened: number | null };
+  spend: { kaneCredits: number | null; agentUsd: number | null; wallMin: number | null };
+};
+export type DocInputs = { summary: unknown; demo: DemoRun };
 export function renderResults(summary: unknown): string;
-export function renderReadme(readmePath: string, summaryPath: string): string;
+export function renderHeadline(summary: unknown): string;
+export function renderExamStatus(summary: unknown): string;
+export function emptyDemo(): DemoRun;
+export function checkDemo(demo: unknown): DemoRun;
+export function renderLinks(demo: DemoRun | null): string;
+export function renderDemoStatus(demo: DemoRun | null): string;
+export function renderDemo(demo: DemoRun | null): string;
+export function fillMarkers(text: string, data: DocInputs): string;
+export function readInputs(summaryPath: string, demoPath?: string): DocInputs;
+export function renderReadme(readmePath: string, summaryPath: string, demoPath?: string): string;
+export function renderDocs(root?: string): string[];

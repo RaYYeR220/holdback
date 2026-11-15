@@ -1,0 +1,34 @@
+{
+  "_readme": "Figures of the recorded demo run. Each one is copied from the run's ledger (recorded.ledger, committed under examples/recorded-run/) or from `holdback status --json` on it; links are https only. null means not recorded yet, and the docs show it as pending. `pnpm render-readme` refuses unknown keys and values of the wrong form. Never put an estimate here.",
+  "links": {
+    "landing": null,
+    "video": null,
+    "replay": null
+  },
+  "recorded": {
+    "ledger": null
+  },
+  "spec": {
+    "questions": null,
+    "criteria": null,
+    "tests": null
+  },
+  "build": {
+    "turns": null,
+    "bugReports": null,
+    "gateOpen": null
+  },
+  "falsify": {
+    "planted": null,
+    "caught": null,
+    "breakerUsd": null
+  },
+  "drift": {
+    "reopened": null
+  },
+  "spend": {
+    "kaneCredits": null,
+    "agentUsd": null,
+    "wallMin": null
+  }
+}
