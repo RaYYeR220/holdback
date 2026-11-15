@@ -1,11 +1,13 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { tamperMessage } from "./messages.js";
 
 export type RunOptions = {
   maxTurns?: string | number;
   /** `--no-falsify` sets this to false. */
   falsify?: boolean;
+  /** Scripted answers and approvals (drift and falsify re-designs) instead of the terminal. */
+  answers?: string;
 };
 
 /** A falsify pass can send use cases back to the build loop; this many rounds is far more than it ever needs. */
@@ -145,7 +147,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
 export async function runCmd(ctx: Ctx, o: RunOptions): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback run")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = ctx.deps.humanIO();
+  const io = openHumanIO(ctx, o.answers);
   const sig = ctx.signals();
   try {
     return await runPipeline(ctx, p, io, sig.signal, o);

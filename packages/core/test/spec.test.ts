@@ -93,6 +93,35 @@ describe("runSpecStage", () => {
     expect(await io.approve([{ ref: "x", title: "", kind: "" }, { ref: "y", title: "", kind: "" }])).toEqual(["x"]);
   });
 
+  it("ScriptedHumanIO with default \"recommended\" takes Kane's recommended option for unscripted questions", async () => {
+    // Kane's questions are written by its model at run time: a script for a live run cannot list them in advance
+    const f = join(root, "script.json");
+    writeFileSync(f, JSON.stringify({ answers: { q1: "Show errors" }, default: "recommended", approve: "all" }));
+    const io = new ScriptedHumanIO(f);
+    const q = (id: string, recommendedIndex: number) => ({
+      id,
+      text: `question ${id}?`,
+      risk: "med" as const,
+      rationale: "",
+      options: [{ label: "Leave unspecified" }, { label: "Show errors" }, { label: "Provide spec" }],
+      recommendedIndex,
+      allowFreeText: false,
+    });
+    expect(await io.answer([q("q1", 0), q("q2", 0), q("q3", 2)])).toEqual({ q1: "Show errors", q2: "Leave unspecified", q3: "Provide spec" });
+    // a question with no option to recommend still fails loudly
+    await expect(io.answer([{ ...q("q4", 0), options: [] }])).rejects.toThrow("question q4?");
+    expect(await io.approve([{ ref: "x", title: "", kind: "" }])).toEqual(["x"]);
+    io.close(); // the CLI closes every human IO it opens
+  });
+
+  it("ScriptedHumanIO refuses an unknown default", async () => {
+    const f = join(root, "script.json");
+    writeFileSync(f, JSON.stringify({ answers: {}, default: "first" }));
+    const io = new ScriptedHumanIO(f);
+    const q = { id: "q1", text: "t", risk: "low" as const, rationale: "", options: [{ label: "a" }], recommendedIndex: 0, allowFreeText: false };
+    await expect(io.answer([q])).rejects.toThrow(/default/);
+  });
+
   const acceptAll: HumanIO = {
     answer: async (qs) => Object.fromEntries(qs.map((q) => [q.id, "a\n  b"])),
     approve: async (items) => items.map((i) => i.ref),

@@ -64,25 +64,29 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
   program
     .command("spec")
     .description("Have Kane design acceptance criteria from the spec, then approve and seal them")
-    .action(act(() => specCmd(ctx)));
+    .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
+    .action(act((o) => specCmd(ctx, o)));
 
   program
     .command("run")
     .description("Build until Kane proves every criterion, then falsify the proven ones")
     .option("--max-turns <n>", "highest turn number allowed (turns are numbered across runs)")
     .option("--no-falsify", "skip the planted-bug pass")
+    .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
     .action(act((o) => runCmd(ctx, o)));
 
   program
     .command("drift")
     .description("Apply a spec edit made after the last seal")
-    .action(act(() => driftCmd(ctx)));
+    .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
+    .action(act((o) => driftCmd(ctx, o)));
 
   program
     .command("watch")
     .description("Watch the spec files; on every edit run drift, then the run loop")
     .option("--max-turns <n>", "highest turn number allowed (turns are numbered across runs)")
     .option("--no-falsify", "skip the planted-bug pass")
+    .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
     .action(act((o) => watchCmd(ctx, o)));
 
   program

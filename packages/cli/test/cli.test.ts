@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   appendEvent,
   appSealFiles,
+  CliHumanIO,
   loadProject,
+  ScriptedHumanIO,
   seal,
   type BuildResult,
   type DriftResult,
@@ -15,6 +17,7 @@ import {
   type Project,
   type TestRunResult,
 } from "@holdback/core";
+import { defaultCtx } from "../src/context.js";
 import { EXIT, installSignals, main, scrubAgentEnv, type Deps } from "../src/index.js";
 
 const at = "2026-11-15T00:00:00.000Z";
@@ -297,6 +300,35 @@ describe("spec", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("Kane is not logged in");
     expect(io.closed).toBe(1);
+  });
+});
+
+describe("--answers", () => {
+  it("spec, run, drift and watch hand the answers file to the human IO; without it the terminal answers", async () => {
+    await fixture();
+    const seen: (string | undefined)[] = [];
+    const humanIO = ((file?: string) => (seen.push(file), fakeIO())) as never;
+    const answers = join(root, "answers.json");
+    await cli(["spec", "--answers", answers], { humanIO, runSpecStage: async () => {} });
+    await cli(["run", "--answers", answers, "--no-falsify"], { humanIO, runBuildLoop: async () => buildOk });
+    await cli(["drift", "--answers", answers], { humanIO, runDrift: async () => ({ changed: false }) });
+    const ctl = new AbortController();
+    ctl.abort();
+    await cli(["watch", "--answers", answers], { humanIO, watchSpec: (() => () => {}) as Deps["watchSpec"] }, { signals: () => ({ signal: ctl.signal, dispose() {} }) });
+    await cli(["drift"], { humanIO, runDrift: async () => ({ changed: false }) });
+    expect(seen).toEqual([answers, answers, answers, answers, undefined]);
+  });
+
+  it("the default human IO reads a scripted answers file (relative to the app folder), the terminal otherwise", async () => {
+    writeFileSync(join(appDir, "answers.json"), JSON.stringify({ answers: {}, default: "recommended", approve: "all" }));
+    const io = defaultCtx().deps.humanIO(join(appDir, "answers.json"));
+    expect(io).toBeInstanceOf(ScriptedHumanIO);
+    const q = { id: "q1", text: "?", risk: "med" as const, rationale: "", options: [{ label: "A" }, { label: "B" }], recommendedIndex: 1, allowFreeText: false };
+    expect(await io.answer([q])).toEqual({ q1: "B" });
+    io.close();
+    const tty = defaultCtx().deps.humanIO();
+    expect(tty).toBeInstanceOf(CliHumanIO);
+    tty.close();
   });
 });
 

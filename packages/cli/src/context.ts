@@ -1,9 +1,11 @@
+import path from "node:path";
 import { createInterface } from "node:readline";
 import {
   acquireCheckLock,
   appendEvent,
   checkSeal,
   CliHumanIO,
+  ScriptedHumanIO,
   defaultBuildDeps,
   defaultFalsifyDeps,
   forAgent,
@@ -50,7 +52,8 @@ export type Deps = {
   watchSpec: typeof watchSpec;
   buildDeps: BuildDeps;
   falsifyDeps: FalsifyDeps;
-  humanIO: () => ClosableIO;
+  /** The human in the loop: the terminal, or the scripted answers file a command was given (`--answers`). */
+  humanIO: (answersFile?: string) => ClosableIO;
   confirm: (question: string) => Promise<boolean>;
   /** The environment the commands read (CLAUDECODE, CLAUDE_PROJECT_DIR). */
   env: NodeJS.ProcessEnv;
@@ -134,13 +137,18 @@ export function defaultCtx(): Ctx {
       watchSpec,
       buildDeps: defaultBuildDeps,
       falsifyDeps: defaultFalsifyDeps,
-      humanIO: () => new CliHumanIO(stdin, stdout),
+      humanIO: (file) => (file ? new ScriptedHumanIO(file) : new CliHumanIO(stdin, stdout)),
       confirm: (q) => askYesNo(stdin, stdout, q),
       env: process.env,
       hooks: defaultHookDeps({ tests: runTests, app: startApp }),
       lockWaitMs: 20 * 60_000,
     },
   };
+}
+
+/** Opens the human in the loop for a command: `--answers <file>` (relative to the app folder) or the terminal. */
+export function openHumanIO(ctx: Ctx, answers: string | undefined): ClosableIO {
+  return answers === undefined ? ctx.deps.humanIO() : ctx.deps.humanIO(path.resolve(ctx.cwd, answers));
 }
 
 /** The ledger's only writer for the CLI: exactly one JSON line per event, which the loops' integrity check relies on. */

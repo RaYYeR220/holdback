@@ -80,9 +80,15 @@ export class CliHumanIO implements HumanIO {
   }
 }
 
-/** Answers + approvals from a JSON file the human wrote, for reproducible runs. */
+/**
+ * Answers + approvals from a JSON file the human wrote, for reproducible runs:
+ * `{ "answers": { "<question text or id>": "<answer>" }, "default": "recommended", "approve": "all" | [ids] }`.
+ * Kane writes its questions at run time, so `default: "recommended"` (the human's standing choice)
+ * takes Kane's recommended option for any question the file does not name; without it an
+ * unnamed question fails the run.
+ */
 export class ScriptedHumanIO implements HumanIO {
-  private script: { answers: Record<string, string>; approve: "all" | string[] } | null = null;
+  private script: { answers: Record<string, string>; recommended: boolean; approve: "all" | string[] } | null = null;
 
   constructor(private readonly file: string) {}
 
@@ -90,23 +96,30 @@ export class ScriptedHumanIO implements HumanIO {
     if (!this.script) {
       const doc = JSON.parse(await readFile(this.file, "utf8")) as {
         answers?: Record<string, string>;
+        default?: unknown;
         approve?: "all" | string[];
       };
-      this.script = { answers: doc.answers ?? {}, approve: doc.approve ?? [] };
+      if (doc.default !== undefined && doc.default !== "recommended") {
+        throw new Error(`ScriptedHumanIO: "default" must be "recommended", got ${JSON.stringify(doc.default)} in ${this.file}`);
+      }
+      this.script = { answers: doc.answers ?? {}, recommended: doc.default === "recommended", approve: doc.approve ?? [] };
     }
     return this.script;
   }
 
   async answer(qs: PendingQuestion[]): Promise<Record<string, string>> {
-    const { answers } = await this.load();
+    const { answers, recommended } = await this.load();
     const out: Record<string, string> = {};
     for (const q of qs) {
-      const a = answers[q.text] ?? answers[q.id];
+      const a = answers[q.text] ?? answers[q.id] ?? (recommended ? q.options[q.recommendedIndex]?.label : undefined);
       if (a === undefined) throw new Error(`ScriptedHumanIO: no scripted answer for question: ${q.text}`);
       out[q.id] = a;
     }
     return out;
   }
+
+  /** Nothing to release: the file is read once. */
+  close(): void {}
 
   async approve(items: ApprovalItem[]): Promise<string[]> {
     const { approve } = await this.load();
