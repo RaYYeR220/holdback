@@ -24,18 +24,20 @@ export async function holdbackGitOptions(home: string): Promise<GitOptions> {
 }
 
 /**
- * Config overrides on every git call Holdback makes: no fsmonitor hook and no signing program,
- * so nothing configured inside the (agent-writable) repo runs as part of Holdback's own commands.
+ * Config overrides on every git call Holdback makes: no fsmonitor hook, no signing program and no
+ * transport at all (Holdback never fetches or pushes), so nothing configured inside the
+ * (agent-writable) repo runs as part of Holdback's own commands, not even a promisor remote's
+ * lazy fetch of a missing object.
  */
-const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"];
+const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false", "-c", "protocol.allow=never"];
 
-/** Run `git <args>` in `cwd` (with the safety overrides above). */
+/** Run `git <args>` in `cwd` (with the safety overrides above, and lazy fetching off). */
 export function git(cwd: string, args: string[], opts: GitOptions = {}): Promise<GitResult> {
   const hooks = opts.hooksDir ? ["-c", `core.hooksPath=${opts.hooksDir}`] : [];
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...SAFE_CONFIG, ...hooks, ...args], {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

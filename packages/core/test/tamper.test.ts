@@ -81,20 +81,30 @@ describe("tamper marker", () => {
 });
 
 describe("gitConfigHash", { timeout: 60_000 }, () => {
-  it("ignores remote, branch, user, init, pull and push config, in any case, and comments", async () => {
+  it("ignores a remote's address/refspec keys and branch, user, init, pull and push config, in any case, and comments", async () => {
     const dir = repo();
     const cfg = join(dir, ".git", "config");
+    git(dir, "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "first");
     const before = await gitConfigHash(cfg);
     expect(before).toMatch(/^[0-9a-f]{64}$/);
-    // what `git remote add` and `git push -u` write, plus everyday identity and pull/push settings
+    // what `git remote add` and `git branch --set-upstream-to` (as `git push -u` does) write
     git(dir, "remote", "add", "origin", "https://example.com/app.git");
-    git(dir, "config", "branch.main.remote", "origin");
-    git(dir, "config", "branch.main.merge", "refs/heads/main");
+    const branch = git(dir, "symbolic-ref", "--short", "HEAD");
+    git(dir, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+    git(dir, "branch", "-q", `--set-upstream-to=origin/${branch}`);
+    expect(git(dir, "config", `branch.${branch}.remote`)).toBe("origin");
+    // everyday identity and pull/push settings
     git(dir, "config", "user.name", "Someone Else");
     git(dir, "config", "init.defaultBranch", "main");
     git(dir, "config", "pull.rebase", "true");
     git(dir, "config", "push.autoSetupRemote", "true");
-    appendFileSync(cfg, '# a comment\n[Remote "Upstream"]\n\tURL = https://example.com/up.git\n[BRANCH "dev"]\n\tRemote = upstream\n');
+    // every remote key that only names an address or refspecs, in any case
+    appendFileSync(
+      cfg,
+      '# a comment\n[Remote "Upstream"]\n\tURL = https://example.com/up.git\n\tpushurl = https://example.com/push.git\n' +
+        "\tfetch = +refs/heads/*:refs/remotes/upstream/*\n\tpush = refs/heads/main\n\tmirror = false\n\ttagOpt = --no-tags\n" +
+        '\tprune = true\n\tpruneTags = true\n\tskipDefaultUpdate = true\n\tskipFetchAll = true\n[BRANCH "dev"]\n\tRemote = upstream\n',
+    );
     expect(await gitConfigHash(cfg)).toBe(before);
   });
 
@@ -109,6 +119,14 @@ describe("gitConfigHash", { timeout: 60_000 }, () => {
     ["merge", '[merge "x"]\n\tdriver = node evil.js %O %A %B\n'],
     ["gpg", "[gpg]\n\tprogram = evil\n"],
     ["a value-less key", "[core]\n\tsymlinks\n"],
+    // a promisor remote lazily fetches a missing object during Holdback's own add/commit, running uploadpack
+    ["remote promisor", '[remote "x"]\n\tpromisor = true\n'],
+    ["remote uploadpack", '[remote "x"]\n\tuploadpack = node evil.js\n'],
+    ["remote uploadpack, mixed case", '[Remote "x"]\n\tUploadPack = node evil.js\n'],
+    ["remote partialclonefilter", '[remote "x"]\n\tpartialclonefilter = blob:none\n'],
+    ["remote receivepack", '[remote "x"]\n\treceivepack = node evil.js\n'],
+    ["remote vcs", '[remote "x"]\n\tvcs = evil\n'],
+    ["remote proxy", '[remote "x"]\n\tproxy = http://127.0.0.1:1\n'],
   ])("changes on a %s change", async (_name, text) => {
     const dir = repo();
     const cfg = join(dir, ".git", "config");

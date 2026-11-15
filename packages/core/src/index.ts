@@ -94,7 +94,6 @@ export {
   TAMPER_MARKER,
   markTampered,
   tamperMarker,
-  clearTamper,
   manifestDigest,
   gitConfigHash,
   snapshotRecordings,

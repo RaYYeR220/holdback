@@ -55,17 +55,35 @@ export async function clearTamper(p: Pick<Project, "home">): Promise<void> {
 const sha256 = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
 
 /**
- * Sections that only steer fetch, pull, push, identity and `git init`. Holdback runs none of those,
- * and a human changing them between runs (`git remote add`, `git push -u`) is not a tamper.
+ * Sections that only steer pull, push, identity and `git init`. Holdback runs none of those, and a
+ * human changing them between runs (`git push -u`, `git branch --set-upstream-to`) is not a tamper.
  */
-const INERT_GIT_SECTIONS = new Set(["remote", "branch", "user", "init", "pull", "push"]);
+const INERT_GIT_SECTIONS = new Set(["branch", "user", "init", "pull", "push"]);
+/**
+ * `remote.<name>.<key>` keys that only name an address or refspecs (what `git remote add` writes).
+ * Every other remote key stays hashed: `promisor` + `uploadpack` would run a command through a lazy
+ * fetch inside Holdback's own add/commit, and `vcs`, `proxy`, `receivepack`, `partialclonefilter`, …
+ * can run or redirect things too.
+ */
+const INERT_REMOTE_KEYS = new Set(["url", "pushurl", "fetch", "push", "mirror", "tagopt", "prune", "prunetags", "skipdefaultupdate", "skipfetchall"]);
+
+/** True for a config key (as git prints it: section and name lowercased) that cannot run code or redirect git. */
+function inertGitKey(key: string): boolean {
+  const first = key.indexOf(".");
+  if (first < 0) return false;
+  const section = key.slice(0, first);
+  if (section !== "remote") return INERT_GIT_SECTIONS.has(section);
+  const last = key.lastIndexOf(".");
+  return last > first && INERT_REMOTE_KEYS.has(key.slice(last + 1)); // remote.<name>.<key> only
+}
 
 /** Raw sha256 -> parsed hash: the parse is a pure function of the bytes (`--file` never follows includes). */
 const parsedConfigs = new Map<string, string>();
 
 /**
- * sha256 of the repo's git config as git itself parses it, leaving out the inert sections above, so
- * it covers what can run code or redirect git (core, filter, diff, merge, alias, gpg, include*, ...).
+ * sha256 of the repo's git config as git itself parses it, leaving out the inert keys above, so it
+ * covers what can run code or redirect git (core, filter, diff, merge, alias, gpg, include*, most
+ * remote keys, ...).
  * git prints every key normalised (section and name lowercased, a subsection as written); entries
  * are sorted by key, and a repeated key keeps its values' order (the last one wins).
  * "absent" when there is no config file; a config git cannot parse hashes its raw bytes.
@@ -90,7 +108,7 @@ export async function gitConfigHash(file: string, opts: GitOptions = {}): Promis
       if (item === "") continue;
       const nl = item.indexOf("\n"); // `key\nvalue`; a value-less key has no newline
       const key = nl < 0 ? item : item.slice(0, nl);
-      if (INERT_GIT_SECTIONS.has(key.split(".", 1)[0]!)) continue;
+      if (inertGitKey(key)) continue;
       entries.push([key, nl < 0 ? null : item.slice(nl + 1)]);
     }
     entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); // stable

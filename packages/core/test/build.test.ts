@@ -13,7 +13,7 @@ import { gate } from "../src/ledger/gate.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
-import { changedFiles, checkout, commitAll, ensureHead, headSha, isRepoRoot, worktreeAdd, worktreeRemove } from "../src/git.js";
+import { changedFiles, checkout, commitAll, ensureHead, git as runGit, headSha, isRepoRoot, worktreeAdd, worktreeRemove } from "../src/git.js";
 import { runBuildLoop, type BuildDeps } from "../src/loop/build.js";
 import { appSealFiles, reseal } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -1010,6 +1010,17 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
 });
 
 describe("git helpers", { timeout: 60_000 }, () => {
+  it("every git call runs with protocol.allow=never and GIT_NO_LAZY_FETCH=1 (Holdback never fetches)", async () => {
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    delete process.env.GIT_NO_LAZY_FETCH;
+    expect((await runGit(repo, ["config", "--get", "protocol.allow"])).stdout.trim()).toBe("never");
+    // a shell alias sees the environment git was spawned with
+    const probe = await runGit(repo, ["-c", 'alias.lazyprobe=!echo "lazy=$GIT_NO_LAZY_FETCH"', "lazyprobe"]);
+    expect(probe.stdout.trim()).toBe("lazy=1");
+  });
+
   it("commit, diff, checkout and worktrees over a scratch repo", async () => {
     const repo = join(root, "repo");
     mkdirSync(join(repo, "sub"), { recursive: true });
