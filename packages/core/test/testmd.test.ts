@@ -143,6 +143,36 @@ describe("runTest", () => {
   });
 });
 
+// Captured in the first live run (Task 15b), sanitized: shapes the spike did not record.
+describe("runTest on live Kane 0.10.4 output", () => {
+  it("a replay that healed: passed, heal triggered, both billed calls counted", async () => {
+    // step 4 replayed on an empty form, Kane healed it (adaptive heal from step 3) and re-ran it
+    use("11-heal-replay-t1.ndjson");
+    const r = await runTest(cwd, fx("tests/income-above-limit-returns-not-eligible-without-snap_test.md"), {});
+    expect(r.testId).toBe("t-1");
+    expect(r.status).toBe("passed");
+    expect(r.healTriggered).toBe(true);
+    expect(r.replayDecisions).toBe(4);
+    expect(r.credits).toBeCloseTo(2.55945 + 15.0233125, 4); // the failed replay's verdict, then the re-authored step
+    expect(r.criteriaPassed).toEqual(["ac-2", "ac-5", "ac-6", "ac-7", "ac-8", "ac-9", "ac-10", "ac-11"]);
+    expect(r.criteriaFailed).toEqual([]);
+  });
+
+  it("an authoring run that Kane's browser broke off: failed, nothing failed in coverage, the verdict kept", async () => {
+    // Kane classes it environment_issue / platform_failure; its coverage fails no criterion
+    use("12-env-failure-t3.ndjson");
+    const r = await runTest(cwd, fx("tests/inclusive-limits-and-published-household-size-schedule_test.md"), {});
+    expect(r.testId).toBe("t-3");
+    expect(r.status).toBe("failed");
+    expect(r.failedStep).toBe(2);
+    expect(r.criteriaPassed).toEqual(["ac-8", "ac-9", "ac-10", "ac-11"]);
+    expect(r.criteriaFailed).toEqual([]);
+    expect(r.verdict?.bugTitle).toBe("Browser target closed before screenshot capture");
+    expect(r.authorDecisions).toBe(11);
+    expect(r.credits).toBeGreaterThan(0);
+  });
+});
+
 describe("runTests", () => {
   it("returns results in input order", async () => {
     use("05-replay-t3.ndjson");
