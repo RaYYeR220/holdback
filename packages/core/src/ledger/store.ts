@@ -1,6 +1,9 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { parseEvents } from "./parse.js";
 import type { LedgerEvent } from "./types.js";
+
+export { parseEvents };
 
 export async function appendEvent(file: string, e: LedgerEvent): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
@@ -17,20 +20,4 @@ export async function readEvents(file: string): Promise<LedgerEvent[]> {
     throw err;
   }
   return parseEvents(raw);
-}
-
-/** Ledger text -> events; blank, corrupt or untyped lines are skipped. */
-export function parseEvents(raw: string): LedgerEvent[] {
-  const out: LedgerEvent[] = [];
-  for (const line of raw.split("\n")) {
-    const s = line.trim();
-    if (!s) continue;
-    try {
-      const v: unknown = JSON.parse(s);
-      if (v && typeof v === "object" && typeof (v as { t?: unknown }).t === "string") out.push(v as LedgerEvent);
-    } catch {
-      // corrupt line (e.g. torn write): skip
-    }
-  }
-  return out;
 }

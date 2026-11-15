@@ -874,6 +874,25 @@ describe("clean, serve and help", () => {
     expect(closed).toBe(1);
   });
 
+  it("serve without --static serves the built dashboard, and says so when there is none", async () => {
+    await fixture();
+    const ctl = new AbortController();
+    ctl.abort();
+    const calls: { port: number; staticDir?: string }[] = [];
+    const serve = (async (_p: Project, o: { port: number; staticDir?: string }) => (calls.push(o), { host: "127.0.0.1", port: o.port, token: "tok", human: {}, close: async () => {} })) as never;
+    const signals = () => ({ signal: ctl.signal, dispose() {} });
+    const built = join(root, "dashboard-dist");
+    const withBuild = await cli(["serve"], { serve, dashboardDir: () => built }, { signals });
+    expect(withBuild.code).toBe(0);
+    expect(calls).toEqual([{ port: 4317, staticDir: built }]);
+    expect(withBuild.out).toContain("http://127.0.0.1:4317/#token=tok");
+    const none = await cli(["serve"], { serve, dashboardDir: () => undefined }, { signals });
+    expect(none.code).toBe(0);
+    expect(calls[1]).toEqual({ port: 4317, staticDir: undefined });
+    expect(none.out).toContain("API only: no dashboard build found");
+    expect(none.out).not.toContain("#token=");
+  });
+
   it("serve takes --port, rejects a bad one, and refuses inside Claude Code", async () => {
     await fixture();
     const ctl = new AbortController();

@@ -1,6 +1,8 @@
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import {
   acquireCheckLock,
   appendEvent,
@@ -64,6 +66,8 @@ export type Deps = {
   hooks: HookDeps;
   /** How long a command that writes the ledger waits for a background check (Claude Code hooks) to finish. */
   lockWaitMs: number;
+  /** The built dashboard `serve` and `--dashboard` show at `/` when no `--static` is given; undefined when there is none. */
+  dashboardDir: () => string | undefined;
 };
 
 export type Ctx = {
@@ -147,6 +151,7 @@ export function defaultCtx(): Ctx {
       env: process.env,
       hooks: defaultHookDeps({ tests: runTests, app: startApp, balance }),
       lockWaitMs: 20 * 60_000,
+      dashboardDir: builtDashboard,
     },
   };
 }
@@ -199,14 +204,26 @@ export const dashboardUrl = (srv: { host: string; port: number; token: string },
  */
 async function openDashboard(ctx: Ctx, p: Project, portRaw: string | undefined): Promise<ClosableIO> {
   const port = parsePort(portRaw, DEFAULT_PORT);
-  const srv = await ctx.deps.serve(p, { port });
-  ctx.out(`Answer in the dashboard: ${dashboardUrl(srv)}`);
+  const staticDir = ctx.deps.dashboardDir();
+  const srv = await ctx.deps.serve(p, { port, ...(staticDir ? { staticDir } : {}) });
+  ctx.out(`Answer in the dashboard: ${dashboardUrl(srv, staticDir !== undefined)}${staticDir ? "" : "  (no dashboard build found: the API alone is up)"}`);
   ctx.out(`API token (header x-holdback-token): ${srv.token}`);
   return {
     answer: (qs) => srv.human.answer(qs),
     approve: (items) => srv.human.approve(items),
     close: () => void srv.close(),
   };
+}
+
+/**
+ * The dashboard build that ships with the CLI (`<cli>/dashboard`) or, in this monorepo,
+ * `apps/dashboard/dist` (`pnpm --filter @holdback/dashboard build`). Only a folder with an
+ * index.html counts.
+ */
+export function builtDashboard(): string | undefined {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [path.resolve(here, "../dashboard"), path.resolve(here, "../../../apps/dashboard/dist")];
+  return candidates.find((d) => existsSync(path.join(d, "index.html")));
 }
 
 /** The ledger's only writer for the CLI: exactly one JSON line per event, which the loops' integrity check relies on. */

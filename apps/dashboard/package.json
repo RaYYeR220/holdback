@@ -1,0 +1,32 @@
+{
+  "name": "@holdback/dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:replay": "vite --mode replay",
+    "build": "vite build && vite build --mode replay",
+    "build:replay": "vite build --mode replay",
+    "preview:replay": "vite preview --mode replay",
+    "fixture": "node scripts/sanitize-ledger.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/figtree": "^5.2.0",
+    "@fontsource/geist-mono": "^5.2.0",
+    "@fontsource/outfit": "^5.2.0",
+    "@holdback/core": "workspace:*",
+    "@holdback/tokens": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "playwright": "1.65.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.3.0"
+  }
+}

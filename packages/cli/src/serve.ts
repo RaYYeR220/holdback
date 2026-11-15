@@ -2,7 +2,10 @@ import path from "node:path";
 import { DEFAULT_PORT, loadProject } from "@holdback/core";
 import { dashboardUrl, EXIT, parsePort, refuseInsideClaudeCode, type Ctx } from "./context.js";
 
-/** `holdback serve`: the local dashboard on 127.0.0.1 until Ctrl-C. Human-only: it can answer Kane's questions. */
+/**
+ * `holdback serve`: the local dashboard on 127.0.0.1 until Ctrl-C. Human-only: it can answer Kane's
+ * questions. Without `--static` it serves the built dashboard when there is one.
+ */
 export async function serveCmd(ctx: Ctx, o: { port?: string; static?: string }): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback serve")) return EXIT.error;
   let port: number;
@@ -13,7 +16,7 @@ export async function serveCmd(ctx: Ctx, o: { port?: string; static?: string }):
     return EXIT.error;
   }
   const p = await loadProject(ctx.cwd);
-  const staticDir = o.static === undefined ? undefined : path.resolve(ctx.cwd, o.static);
+  const staticDir = o.static === undefined ? ctx.deps.dashboardDir() : path.resolve(ctx.cwd, o.static);
   const sig = ctx.signals();
   let srv: Awaited<ReturnType<Ctx["deps"]["serve"]>>;
   try {
@@ -24,7 +27,7 @@ export async function serveCmd(ctx: Ctx, o: { port?: string; static?: string }):
     ctx.err(code === "EADDRINUSE" ? `error: port ${port} is already in use (try --port)` : `error: ${e instanceof Error ? e.message : String(e)}`);
     return EXIT.error;
   }
-  ctx.out(`Holdback dashboard: ${dashboardUrl(srv, staticDir !== undefined)}${staticDir ? "" : "  (API only: pass --static <dir> to serve a dashboard build)"}`);
+  ctx.out(`Holdback dashboard: ${dashboardUrl(srv, staticDir !== undefined)}${staticDir ? "" : "  (API only: no dashboard build found; build apps/dashboard or pass --static <dir>)"}`);
   ctx.out(`API token (header x-holdback-token): ${srv.token}`);
   ctx.out("Ctrl-C to stop.");
   try {

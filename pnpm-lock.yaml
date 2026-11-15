@@ -18,7 +18,51 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.19.2)
 
+  apps/dashboard:
+    dependencies:
+      '@fontsource/figtree':
+        specifier: ^5.2.0
+        version: 5.3.0
+      '@fontsource/geist-mono':
+        specifier: ^5.2.0
+        version: 5.3.0
+      '@fontsource/outfit':
+        specifier: ^5.2.0
+        version: 5.3.0
+      '@holdback/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@holdback/tokens':
+        specifier: workspace:*
+        version: link:../../packages/tokens
+      react:
+        specifier: ^19.2.0
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.3.1(react@19.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.2.0
+        version: 19.3.0(@types/react@19.3.0)
+      playwright:
+        specifier: 1.65.0
+        version: 1.65.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.8(@types/node@24.19.2)
+
   apps/site:
+    dependencies:
+      '@holdback/tokens':
+        specifier: workspace:*
+        version: link:../../packages/tokens
     devDependencies:
       typescript:
         specifier: ^5.7.0
@@ -54,6 +98,8 @@ importers:
       '@types/cross-spawn':
         specifier: ^6.0.6
         version: 6.0.6
+
+  packages/tokens: {}
 
 packages:
 
@@ -351,6 +397,15 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@fontsource/figtree@5.3.0':
+    resolution: {integrity: sha512-/iTcTXL1eRBGhvD7NN9dnKzXzWqDLVZVEUFI9xIxAC1G/hXU8tCyYeXCAuPOuvSYPInFUP7H6KLGgygmDfy1SA==}
+
+  '@fontsource/geist-mono@5.3.0':
+    resolution: {integrity: sha512-UtJ1BBBCVpMYdIcW7nEB45UAoAw5M53ZXs2t0ciPW+IokuAAIc56M8+kW5tXbRJCTpDw4XTtU7proT6NdQAHTg==}
+
+  '@fontsource/outfit@5.3.0':
+    resolution: {integrity: sha512-0AVHzTTVJSxWDOxPKSfMeHhZeBFDU3cmgrcOb76ZEyhGo0+xgyG3GsLF3h9+X8w0IX7G4jzjJgFQEBiWdX6VgA==}
+
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
 
@@ -493,6 +548,14 @@ packages:
   '@types/node@24.19.2':
     resolution: {integrity: sha512-93d49wCWJkCyN87MxLpNN6KXPCwFw7bVUg79mGUV1OS40JGWwVCr8n61DXCSqz7CV6/VfPkb7xec7uP2M+QHWQ==}
 
+  '@types/react-dom@19.3.0':
+    resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
+    peerDependencies:
+      '@types/react': ^19.3.0
+
+  '@types/react@19.3.0':
+    resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
+
   '@vitest/expect@2.1.9':
     resolution: {integrity: sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==}
 
@@ -545,6 +608,9 @@ packages:
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
+
+  csstype@3.2.3:
+    resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -628,14 +694,36 @@ packages:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
 
+  playwright-core@1.65.0:
+    resolution: {integrity: sha512-vNSKgH6YqtN7cdT/L334zo0a+YwkrpicyrHJlWWPIm/Q+Nn2SWInil01oT0mbu96U4GgoRtCYQD9CzJQgju+lA==}
+    engines: {node: '>=20'}
+    hasBin: true
+
+  playwright@1.65.0:
+    resolution: {integrity: sha512-F3AMWcR44qMBt4kq+6Kb6mX7bjGXshktKFOPULd7reED6ZJWevjbNRqysP7q+AATE9kdPEZBibex1BYsvpVoeA==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   postcss@8.5.33:
     resolution: {integrity: sha512-RVHEU9/Pp1Fnjr/MpAJsZoADukCKhfIi15OunEYiGktIkYLkPVvC1sioWolGDS7XByMTx9m/IGbro0Js13zhnQ==}
     engines: {node: ^10 || ^12 || >=14}
+
+  react-dom@19.3.1:
+    resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
+    peerDependencies:
+      react: ^19.3.1
+
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
+    engines: {node: '>=0.10.0'}
 
   rollup@4.68.3:
     resolution: {integrity: sha512-wd2gavj7CEQv52rdcVqfUupO/KPIKcoJKxyFWl4cOqYZGMQEOSijJRkliz0dRa7gpkj/h4TRqyWa+dJJi6T0OA==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
     hasBin: true
+
+  scheduler@0.28.0:
+    resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
 
   shebang-command@2.0.0:
     resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
@@ -952,6 +1040,12 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
+  '@fontsource/figtree@5.3.0': {}
+
+  '@fontsource/geist-mono@5.3.0': {}
+
+  '@fontsource/outfit@5.3.0': {}
+
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
   '@rollup/rollup-android-arm-eabi@4.68.3':
@@ -1042,6 +1136,14 @@ snapshots:
     dependencies:
       undici-types: 7.24.6
 
+  '@types/react-dom@19.3.0(@types/react@19.3.0)':
+    dependencies:
+      '@types/react': 19.3.0
+
+  '@types/react@19.3.0':
+    dependencies:
+      csstype: 3.2.3
+
   '@vitest/expect@2.1.9':
     dependencies:
       '@vitest/spy': 2.1.9
@@ -1103,6 +1205,8 @@ snapshots:
       path-key: 3.1.1
       shebang-command: 2.0.0
       which: 2.0.2
+
+  csstype@3.2.3: {}
 
   debug@4.4.3:
     dependencies:
@@ -1202,11 +1306,24 @@ snapshots:
 
   picomatch@4.0.7: {}
 
+  playwright-core@1.65.0: {}
+
+  playwright@1.65.0:
+    dependencies:
+      playwright-core: 1.65.0
+
   postcss@8.5.33:
     dependencies:
       nanoid: 3.3.20
       picocolors: 1.1.1
       source-map-js: 1.2.2
+
+  react-dom@19.3.1(react@19.3.1):
+    dependencies:
+      react: 19.3.1
+      scheduler: 0.28.0
+
+  react@19.3.1: {}
 
   rollup@4.68.3:
     dependencies:
@@ -1239,6 +1356,8 @@ snapshots:
       '@rollup/rollup-win32-x64-gnu': 4.68.3
       '@rollup/rollup-win32-x64-msvc': 4.68.3
       fsevents: 2.3.3
+
+  scheduler@0.28.0: {}
 
   shebang-command@2.0.0:
     dependencies:

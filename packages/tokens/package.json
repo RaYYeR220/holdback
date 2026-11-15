@@ -1,0 +1,13 @@
+{
+  "name": "@holdback/tokens",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Design tokens shared by the landing page and the dashboard",
+  "exports": {
+    "./tokens.css": "./tokens.css"
+  },
+  "files": [
+    "tokens.css"
+  ],
+  "license": "MIT"
+}
