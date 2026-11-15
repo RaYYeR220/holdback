@@ -1,0 +1,233 @@
+{
+  "stage": "all",
+  "rollup_version": 2,
+  "coverage": {
+    "pct": 44.44444444444444,
+    "usecases": {
+      "total": 1,
+      "proven": 0,
+      "partial": 0,
+      "failing": 1,
+      "not_run": 0,
+      "not_designed": 0,
+      "no_criteria": 0
+    },
+    "criteria": {
+      "total": 9,
+      "proven": 4
+    }
+  },
+  "designed": {
+    "usecases": 1,
+    "of": 1
+  },
+  "design_completeness": {
+    "acs_designed": "9/9",
+    "usecases_complete": "1/1",
+    "ucs_needing_scenarios": 0,
+    "config": {
+      "criterion": "live_verifies_edge",
+      "freshness": "not_discounted"
+    }
+  },
+  "usecases": [
+    {
+      "id": "uc-1",
+      "title": "Check household eligibility for pantry food",
+      "risk": "high",
+      "coverage": {
+        "pct": 44.44444444444444,
+        "state": "failing",
+        "criteria": 9,
+        "proven": 4
+      },
+      "designed": {
+        "criteria": 9,
+        "of": 9
+      },
+      "design_completeness": {
+        "status": "complete"
+      },
+      "stale_acs": 0,
+      "pending": [
+        {
+          "ref": "ac-3",
+          "id": "ac-3",
+          "title": "For a household without SNAP, monthly income above…",
+          "risk": "high",
+          "stage": "cover",
+          "kind": "execution-failed",
+          "tag": "evolve",
+          "why": "covering test failed against this AC",
+          "ready_command": "kane-cli evidence serve <tmp>\\spike\\verifier\\.testmuai\\evidence\\e20cf657-cd3d-4a92-aa7e-3b88e033d3ab.evidence",
+          "execution_id": "e20cf657-cd3d-4a92-aa7e-3b88e033d3ab",
+          "via_tests": [
+            "t-3"
+          ]
+        },
+        {
+          "ref": "ac-4",
+          "id": "ac-4",
+          "title": "The reported applied monthly limit equals the July…",
+          "risk": "high",
+          "stage": "cover",
+          "kind": "execution-failed",
+          "tag": "evolve",
+          "why": "covering test failed against this AC",
+          "ready_command": "kane-cli evidence serve <tmp>\\spike\\verifier\\.testmuai\\evidence\\e20cf657-cd3d-4a92-aa7e-3b88e033d3ab.evidence",
+          "execution_id": "e20cf657-cd3d-4a92-aa7e-3b88e033d3ab",
+          "via_tests": [
+            "t-3"
+          ]
+        },
+        {
+          "ref": "ac-5",
+          "id": "ac-5",
+          "title": "The eligibility result appears below the Check eligibility…",
+          "risk": "high",
+          "stage": "cover",
+          "kind": "execution-failed",
+          "tag": "evolve",
+          "why": "covering test failed against this AC",
+          "ready_command": "kane-cli evidence serve <tmp>\\spike\\verifier\\.testmuai\\evidence\\e20cf657-cd3d-4a92-aa7e-3b88e033d3ab.evidence",
+          "execution_id": "e20cf657-cd3d-4a92-aa7e-3b88e033d3ab",
+          "via_tests": [
+            "t-3"
+          ]
+        },
+        {
+          "ref": "ac-1",
+          "id": "ac-1",
+          "title": "When someone in the household receives SNAP, the…",
+          "risk": "high",
+          "stage": "cover",
+          "kind": "covered-not-run",
+          "tag": "reuse-candidate",
+          "why": "a covering test exists but has not run yet",
+          "ready_command": "kane-cli testrun run"
+        },
+        {
+          "ref": "ac-2",
+          "id": "ac-2",
+          "title": "For a household without SNAP, monthly income at…",
+          "risk": "high",
+          "stage": "cover",
+          "kind": "covered-not-run",
+          "tag": "reuse-candidate",
+          "why": "a covering test exists but has not run yet",
+          "ready_command": "kane-cli testrun run"
+        }
+      ]
+    }
+  ],
+  "other": [
+    {
+      "ref": "gap-1",
+      "kind": "incomplete",
+      "why": "Missing inputs",
+      "risk": "high",
+      "stage": "design",
+      "tag": "create",
+      "ready_command": "kane-cli design explain gap-1",
+      "risk_rationale": "The PRD supplies no required-input or invalid-input behavior, so rejection rules and SNAP-path field requirements cannot be asserted.",
+      "question": {
+        "header": "Missing inputs",
+        "prompt": "What should happen when household size or monthly income is missing or invalid, including when SNAP is selected?",
+        "options": [
+          {
+            "label": "Specify validation",
+            "detail": "Supply the validation and SNAP-path required-field rules before adding negative-input scenarios."
+          },
+          {
+            "label": "Valid inputs only",
+            "detail": "Limit this design to fully specified, valid-input eligibility paths."
+          }
+        ],
+        "recommended_index": 0
+      },
+      "id": "gap-1",
+      "title": ""
+    },
+    {
+      "ref": "gap-4",
+      "kind": "incomplete",
+      "why": "Pantry page URL",
+      "risk": "high",
+      "stage": "design",
+      "tag": "create",
+      "ready_command": "kane-cli design explain gap-4",
+      "risk_rationale": "Neither the PRD nor the available variables contains a product URL or domain; all three browser tests are authored but cannot start until {{start_url}} is supplied.",
+      "question": {
+        "header": "Pantry page URL",
+        "prompt": "What product URL should {{start_url}} contain for the Food pantry eligibility check page?",
+        "options": [
+          {
+            "label": "Fill URL variable",
+            "detail": "Provide the actual product page URL in the start_url variable before running these browser tests."
+          },
+          {
+            "label": "Supply product source",
+            "detail": "Add source evidence identifying the product page URL, then revise the tests."
+          }
+        ],
+        "recommended_index": 0
+      },
+      "id": "gap-4",
+      "title": ""
+    },
+    {
+      "ref": "gap-2",
+      "kind": "budget-evicted",
+      "why": "Eight-person equality",
+      "risk": "med",
+      "stage": "design",
+      "tag": "create",
+      "ready_command": "kane-cli design explain gap-2",
+      "risk_rationale": "Ranked below the selected formula-extension boundary because it duplicates the eligible-at-equality outcome; score 60, omitted under max_pairs=3.",
+      "question": {
+        "header": "Eight-person equality",
+        "prompt": "Should the three-pair ceiling be raised to add an eight-person household earning exactly $8,591 as a base-table boundary check?",
+        "options": [
+          {
+            "label": "Keep ceiling",
+            "detail": "Retain the higher-priority nine-person equality check."
+          },
+          {
+            "label": "Raise ceiling",
+            "detail": "Add a pair to independently check the eight-person base limit."
+          }
+        ],
+        "recommended_index": 0
+      },
+      "id": "gap-2",
+      "title": ""
+    },
+    {
+      "ref": "gap-3",
+      "kind": "budget-evicted",
+      "why": "Below-limit household",
+      "risk": "low",
+      "stage": "design",
+      "tag": "create",
+      "ready_command": "kane-cli design explain gap-3",
+      "risk_rationale": "Ranked below the selected inclusive-limit path because it repeats the eligible outcome without covering another boundary; score 50, omitted under max_pairs=3.",
+      "question": {
+        "header": "Below-limit household",
+        "prompt": "Should the ceiling be raised to add an ordinary non-SNAP household with income below its monthly limit?",
+        "options": [
+          {
+            "label": "Keep ceiling",
+            "detail": "Rely on the stricter equality boundary to cover the eligible non-SNAP outcome."
+          },
+          {
+            "label": "Raise ceiling",
+            "detail": "Add a below-limit positive pair."
+          }
+        ],
+        "recommended_index": 0
+      },
+      "id": "gap-3",
+      "title": ""
+    }
+  ]
+}
