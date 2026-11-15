@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "blockReadsOutsideWorkingDirectories": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook guard", "onFailure": "block" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook post-edit", "asyncRewake": true, "timeout": 900 }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook stop", "timeout": 900 }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook prompt" }]
+      }
+    ]
+  }
+}

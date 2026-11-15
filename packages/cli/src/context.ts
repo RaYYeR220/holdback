@@ -14,6 +14,8 @@ import {
   runDrift,
   runFalsify,
   runSpecStage,
+  runTests,
+  startApp,
   sweepStaleWorktrees,
   tamperMarker,
   watchSpec,
@@ -25,6 +27,7 @@ import {
   type LedgerState,
   type Project,
 } from "@holdback/core";
+import { defaultHookDeps, type HookDeps } from "./hooks.js";
 import { tamperMessage } from "./messages.js";
 
 /** Process exit codes: 2 is only ever a tamper, 3 a finished run that is not fully green, 130 an interrupt. */
@@ -46,6 +49,10 @@ export type Deps = {
   falsifyDeps: FalsifyDeps;
   humanIO: () => ClosableIO;
   confirm: (question: string) => Promise<boolean>;
+  /** The environment the commands read (CLAUDECODE, CLAUDE_PROJECT_DIR). */
+  env: NodeJS.ProcessEnv;
+  /** Claude Code hooks: their background check, timing and the CLI entry they run. */
+  hooks: HookDeps;
 };
 
 export type Ctx = {
@@ -124,6 +131,8 @@ export function defaultCtx(): Ctx {
       falsifyDeps: defaultFalsifyDeps,
       humanIO: () => new CliHumanIO(stdin, stdout),
       confirm: (q) => askYesNo(stdin, stdout, q),
+      env: process.env,
+      hooks: defaultHookDeps({ tests: runTests, app: startApp }),
     },
   };
 }
@@ -174,6 +183,14 @@ export async function snapshot(p: Project): Promise<Snapshot> {
     specChanged,
     tamper: tampered ? tamperMessage(detail ?? "the ledger records a tamper") : null,
   };
+}
+
+/**
+ * True when the command runs inside a Claude Code session (its shells set CLAUDECODE): the coding
+ * agent, not the human. Commands that lift a tamper or take the hooks out refuse to run there.
+ */
+export function insideClaudeCode(ctx: Ctx): boolean {
+  return !!ctx.deps.env.CLAUDECODE;
 }
 
 /** Prints why a command failed. A tamper (on record or just found) is reported as one and exits 2. */

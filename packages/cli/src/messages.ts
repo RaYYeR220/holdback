@@ -8,6 +8,10 @@ export function tamperMessage(detail: string): string {
   ].join("\n");
 }
 
+/** A command only the human may run, refused inside a Claude Code session. */
+export const HUMAN_ONLY = (cmd: string) =>
+  `\`${cmd}\` is for you, not the coding agent: run it in your own terminal, outside Claude Code.`;
+
 export const HELP_FOOTER = [
   "",
   "Exit codes: 0 done (gate open, every criterion proved or passing); 1 error or not finished;",

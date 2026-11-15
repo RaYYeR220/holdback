@@ -6,6 +6,7 @@ import { Command, CommanderError } from "commander";
 import { cleanCmd } from "./clean.js";
 import { defaultCtx, EXIT, explainFailure, type Ctx, type CtxOverrides } from "./context.js";
 import { driftCmd } from "./drift.js";
+import { hookCmd } from "./hooks.js";
 import { initCmd } from "./init.js";
 import { HELP_FOOTER } from "./messages.js";
 import { owedCmd } from "./owed.js";
@@ -17,6 +18,7 @@ import { statusCmd } from "./status.js";
 import { watchCmd } from "./watch.js";
 
 export { EXIT, installSignals, scrubAgentEnv, type Ctx, type CtxOverrides, type Deps } from "./context.js";
+export { STOP_BLOCK_CAP, type CheckWorker, type HookDeps } from "./hooks.js";
 
 const collect = (v: string, prev: string[] = []) => [...prev, v];
 
@@ -55,6 +57,8 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
     .option("--start <cmd>", "command that starts your app")
     .option("--port <n>", "port the app listens on")
     .option("--force", "overwrite an existing holdback.config.json")
+    .option("--agent <agent>", "also install the hooks for an interactive coding agent session (claude)")
+    .option("--remove", "with --agent: take the hooks out again")
     .action(act((o) => initCmd(ctx, o)));
 
   program
@@ -104,6 +108,14 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
     .action(act(() => cleanCmd(ctx)));
 
   program
+    .command("hook")
+    .description("Claude Code hook entry point (installed by `holdback init --agent claude`)")
+    .argument("<name>", "guard | post-edit | stop | prompt")
+    .option("--app <dir>", "the app folder (background check only)")
+    .option("--reason <reason>", "edit | stop (background check only)")
+    .action(act((name: string, o: { app?: string; reason?: string }) => hookCmd(ctx, name, o)));
+
+  program
     .command("serve")
     .description("Local dashboard (coming soon)")
     .action(act(() => serveCmd(ctx)));
@@ -130,8 +142,13 @@ function isEntry(): boolean {
 }
 
 if (isEntry()) {
-  main(process.argv.slice(2)).then(
-    (c) => void (process.exitCode = c),
+  const args = process.argv.slice(2);
+  main(args).then(
+    (c) => {
+      process.exitCode = c;
+      // a Claude Code hook must answer, not linger: a Stop hook killed at its timeout lets the agent stop
+      if (args[0] === "hook") setTimeout(() => process.exit(c), 2_000).unref();
+    },
     (e) => {
       console.error(e instanceof Error ? e.message : String(e));
       process.exitCode = EXIT.error;

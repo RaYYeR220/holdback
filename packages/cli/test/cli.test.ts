@@ -93,7 +93,8 @@ type Fakes = Partial<Deps>;
 async function cli(args: string[], deps: Fakes = {}, extra: Record<string, unknown> = {}): Promise<Out> {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await main(args, { cwd: appDir, out: (l) => out.push(l), err: (l) => err.push(l), deps, ...extra });
+  // a clean environment: the suite itself may run inside a Claude Code session (CLAUDECODE is set there)
+  const code = await main(args, { cwd: appDir, out: (l) => out.push(l), err: (l) => err.push(l), deps: { env: {}, ...deps }, ...extra });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 

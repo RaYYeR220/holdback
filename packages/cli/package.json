@@ -6,7 +6,8 @@
     "holdback": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "templates"
   ],
   "license": "MIT",
   "dependencies": {
