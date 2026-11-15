@@ -86,7 +86,7 @@ describe("runSpecStage", () => {
   it("ScriptedHumanIO answers by text/id and throws on unknown questions", async () => {
     const f = join(root, "script.json");
     writeFileSync(f, JSON.stringify({ answers: { q1: "A" }, approve: ["x"] }));
-    const io = new ScriptedHumanIO(f);
+    const io = await ScriptedHumanIO.fromFile(f);
     const q = (id: string, text: string) => ({ id, text, risk: "low" as const, rationale: "", options: [], recommendedIndex: 0, allowFreeText: true });
     expect(await io.answer([q("q1", "t")])).toEqual({ q1: "A" });
     await expect(io.answer([q("q9", "mystery?")])).rejects.toThrow("mystery?");
@@ -97,7 +97,9 @@ describe("runSpecStage", () => {
     // Kane's questions are written by its model at run time: a script for a live run cannot list them in advance
     const f = join(root, "script.json");
     writeFileSync(f, JSON.stringify({ answers: { q1: "Show errors" }, default: "recommended", approve: "all" }));
-    const io = new ScriptedHumanIO(f);
+    const io = await ScriptedHumanIO.fromFile(f);
+    // read once, up front: later edits to the file (by anyone) change nothing
+    writeFileSync(f, JSON.stringify({ answers: { q1: "Provide spec", q2: "Provide spec" }, approve: [] }));
     const q = (id: string, recommendedIndex: number) => ({
       id,
       text: `question ${id}?`,
@@ -114,12 +116,21 @@ describe("runSpecStage", () => {
     io.close(); // the CLI closes every human IO it opens
   });
 
-  it("ScriptedHumanIO refuses an unknown default", async () => {
+  it("ScriptedHumanIO validates the whole file when it is read, before any question", async () => {
     const f = join(root, "script.json");
-    writeFileSync(f, JSON.stringify({ answers: {}, default: "first" }));
-    const io = new ScriptedHumanIO(f);
-    const q = { id: "q1", text: "t", risk: "low" as const, rationale: "", options: [{ label: "a" }], recommendedIndex: 0, allowFreeText: false };
-    await expect(io.answer([q])).rejects.toThrow(/default/);
+    const bad = async (doc: string) => {
+      writeFileSync(f, doc);
+      return ScriptedHumanIO.fromFile(f).then(
+        () => "accepted",
+        (e: Error) => e.message,
+      );
+    };
+    expect(await bad(JSON.stringify({ answers: {}, default: "first" }))).toMatch(/"default" must be "recommended"/);
+    expect(await bad(JSON.stringify({ answers: { q1: 1 } }))).toMatch(/"answers" must map/);
+    expect(await bad(JSON.stringify({ approve: "some" }))).toMatch(/"approve" must be/);
+    expect(await bad("[]")).toMatch(/expected a JSON object/);
+    expect(await bad("{nope")).toMatch(/not valid JSON/);
+    expect(await bad(JSON.stringify({ default: "recommended", approve: "all" }))).toBe("accepted");
   });
 
   const acceptAll: HumanIO = {

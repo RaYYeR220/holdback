@@ -80,35 +80,51 @@ export class CliHumanIO implements HumanIO {
   }
 }
 
+/** A human's scripted answers and approvals, as read (once) from their file. */
+export type HumanScript = { answers: Record<string, string>; recommended: boolean; approve: "all" | string[] };
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Validates a scripted answers document; throws with what is wrong and where. */
+export function parseHumanScript(text: string, file: string): HumanScript {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`answers file is not valid JSON (${file}): ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const bad = (what: string) => new Error(`answers file ${file}: ${what}`);
+  if (!isRecord(doc)) throw bad("expected a JSON object");
+  const answers = doc.answers ?? {};
+  if (!isRecord(answers) || Object.values(answers).some((v) => typeof v !== "string")) throw bad('"answers" must map question texts or ids to strings');
+  if (doc.default !== undefined && doc.default !== "recommended") throw bad(`"default" must be "recommended", got ${JSON.stringify(doc.default)}`);
+  const approve = doc.approve ?? [];
+  if (approve !== "all" && !(Array.isArray(approve) && approve.every((r) => typeof r === "string"))) throw bad('"approve" must be "all" or a list of ids');
+  return { answers: { ...(answers as Record<string, string>) }, recommended: doc.default === "recommended", approve: approve === "all" ? "all" : [...(approve as string[])] };
+}
+
 /**
  * Answers + approvals from a JSON file the human wrote, for reproducible runs:
  * `{ "answers": { "<question text or id>": "<answer>" }, "default": "recommended", "approve": "all" | [ids] }`.
  * Kane writes its questions at run time, so `default: "recommended"` (the human's standing choice)
  * takes Kane's recommended option for any question the file does not name; without it an
  * unnamed question fails the run.
+ * The file is read and validated once, up front (`fromFile`), before any agent turn: a later
+ * approval (a falsify re-design mid-run) answers from that snapshot, never from the file again.
  */
 export class ScriptedHumanIO implements HumanIO {
-  private script: { answers: Record<string, string>; recommended: boolean; approve: "all" | string[] } | null = null;
+  private readonly script: HumanScript;
 
-  constructor(private readonly file: string) {}
+  constructor(script: HumanScript) {
+    this.script = structuredClone(script);
+  }
 
-  private async load() {
-    if (!this.script) {
-      const doc = JSON.parse(await readFile(this.file, "utf8")) as {
-        answers?: Record<string, string>;
-        default?: unknown;
-        approve?: "all" | string[];
-      };
-      if (doc.default !== undefined && doc.default !== "recommended") {
-        throw new Error(`ScriptedHumanIO: "default" must be "recommended", got ${JSON.stringify(doc.default)} in ${this.file}`);
-      }
-      this.script = { answers: doc.answers ?? {}, recommended: doc.default === "recommended", approve: doc.approve ?? [] };
-    }
-    return this.script;
+  static async fromFile(file: string): Promise<ScriptedHumanIO> {
+    return new ScriptedHumanIO(parseHumanScript(await readFile(file, "utf8"), file));
   }
 
   async answer(qs: PendingQuestion[]): Promise<Record<string, string>> {
-    const { answers, recommended } = await this.load();
+    const { answers, recommended } = this.script;
     const out: Record<string, string> = {};
     for (const q of qs) {
       const a = answers[q.text] ?? answers[q.id] ?? (recommended ? q.options[q.recommendedIndex]?.label : undefined);
@@ -118,12 +134,12 @@ export class ScriptedHumanIO implements HumanIO {
     return out;
   }
 
-  /** Nothing to release: the file is read once. */
-  close(): void {}
-
   async approve(items: ApprovalItem[]): Promise<string[]> {
-    const { approve } = await this.load();
+    const { approve } = this.script;
     if (approve === "all") return items.map((i) => i.ref);
     return items.map((i) => i.ref).filter((r) => approve.includes(r));
   }
+
+  /** Nothing to release: the file was read once, up front. */
+  close(): void {}
 }

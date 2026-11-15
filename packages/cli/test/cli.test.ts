@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -304,11 +304,15 @@ describe("spec", () => {
 });
 
 describe("--answers", () => {
+  const script = { answers: {}, default: "recommended", approve: "all" };
+  const q = { id: "q1", text: "?", risk: "med" as const, rationale: "", options: [{ label: "A" }, { label: "B" }], recommendedIndex: 1, allowFreeText: false };
+
   it("spec, run, drift and watch hand the answers file to the human IO; without it the terminal answers", async () => {
     await fixture();
     const seen: (string | undefined)[] = [];
     const humanIO = ((file?: string) => (seen.push(file), fakeIO())) as never;
     const answers = join(root, "answers.json");
+    writeFileSync(answers, JSON.stringify(script));
     await cli(["spec", "--answers", answers], { humanIO, runSpecStage: async () => {} });
     await cli(["run", "--answers", answers, "--no-falsify"], { humanIO, runBuildLoop: async () => buildOk });
     await cli(["drift", "--answers", answers], { humanIO, runDrift: async () => ({ changed: false }) });
@@ -316,19 +320,62 @@ describe("--answers", () => {
     ctl.abort();
     await cli(["watch", "--answers", answers], { humanIO, watchSpec: (() => () => {}) as Deps["watchSpec"] }, { signals: () => ({ signal: ctl.signal, dispose() {} }) });
     await cli(["drift"], { humanIO, runDrift: async () => ({ changed: false }) });
-    expect(seen).toEqual([answers, answers, answers, answers, undefined]);
+    const real = realpathSync.native(answers);
+    expect(seen).toEqual([real, real, real, real, undefined]);
   });
 
-  it("the default human IO reads a scripted answers file (relative to the app folder), the terminal otherwise", async () => {
-    writeFileSync(join(appDir, "answers.json"), JSON.stringify({ answers: {}, default: "recommended", approve: "all" }));
-    const io = defaultCtx().deps.humanIO(join(appDir, "answers.json"));
+  it("the default human IO reads a scripted answers file, the terminal otherwise", async () => {
+    const file = join(root, "answers.json");
+    writeFileSync(file, JSON.stringify(script));
+    const io = await defaultCtx().deps.humanIO(file);
     expect(io).toBeInstanceOf(ScriptedHumanIO);
-    const q = { id: "q1", text: "?", risk: "med" as const, rationale: "", options: [{ label: "A" }, { label: "B" }], recommendedIndex: 1, allowFreeText: false };
     expect(await io.answer([q])).toEqual({ q1: "B" });
     io.close();
-    const tty = defaultCtx().deps.humanIO();
+    const tty = await defaultCtx().deps.humanIO();
     expect(tty).toBeInstanceOf(CliHumanIO);
     tty.close();
+  });
+
+  it("refuses an answers file inside the app folder, also through a linked folder, before anything runs", async () => {
+    // the coding agent can edit anything in the app folder: its approvals must not come from there
+    await fixture();
+    mkdirSync(join(appDir, "notes"));
+    writeFileSync(join(appDir, "notes", "answers.json"), JSON.stringify(script));
+    const outside = join(root, "linked");
+    symlinkSync(join(appDir, "notes"), outside, "junction");
+    for (const args of [
+      ["spec", "--answers", "notes/answers.json"],
+      ["spec", "--answers", join(outside, "answers.json")],
+      ["run", "--answers", join(outside, "answers.json")],
+      ["drift", "--answers", join(appDir, "notes", "answers.json")],
+    ]) {
+      const r = await cli(args, { runSpecStage: notCalled("spec"), runBuildLoop: notCalled("build"), runDrift: notCalled("drift") });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("the answers file must be outside the app folder");
+    }
+  });
+
+  it("reads and checks the answers file when the command starts, and answers from that snapshot only", async () => {
+    await fixture({ seal: false });
+    const file = join(root, "answers.json");
+    writeFileSync(file, "{ not json");
+    const broken = await cli(["spec", "--answers", file], { runSpecStage: notCalled("spec") });
+    expect(broken.code).toBe(1);
+    expect(broken.err).toContain("not valid JSON");
+    expect((await cli(["spec", "--answers", join(root, "missing.json")], { runSpecStage: notCalled("spec") })).err).toContain("cannot read the answers file");
+
+    writeFileSync(file, JSON.stringify({ answers: { q1: "A" }, approve: ["ac-1"] }));
+    let got: unknown;
+    const r = await cli(["spec", "--answers", file], {
+      runSpecStage: async (_p, io, logFn) => {
+        // an edit after the command started (by anyone) changes nothing
+        writeFileSync(file, JSON.stringify({ answers: { q1: "B" }, approve: "all" }));
+        got = { answers: await io.answer([q]), approved: await io.approve([{ ref: "ac-1", title: "", kind: "ac" }, { ref: "ac-2", title: "", kind: "ac" }]) };
+        await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(got).toEqual({ answers: { q1: "A" }, approved: ["ac-1"] });
   });
 });
 

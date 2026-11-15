@@ -147,7 +147,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
 export async function runCmd(ctx: Ctx, o: RunOptions): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback run")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = openHumanIO(ctx, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers);
   const sig = ctx.signals();
   try {
     return await runPipeline(ctx, p, io, sig.signal, o);

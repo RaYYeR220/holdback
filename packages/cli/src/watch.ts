@@ -6,7 +6,7 @@ import { runPipeline, type RunOptions } from "./run.js";
 export async function watchCmd(ctx: Ctx, o: RunOptions): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback watch")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = openHumanIO(ctx, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers);
   const sig = ctx.signals();
   let code: number = EXIT.ok;
   let running = false;

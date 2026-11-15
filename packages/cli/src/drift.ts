@@ -5,7 +5,7 @@ import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, w
 export async function driftCmd(ctx: Ctx, o: { answers?: string } = {}): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback drift")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = openHumanIO(ctx, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers);
   try {
     let r!: Awaited<ReturnType<typeof ctx.deps.runDrift>>;
     const locked = await withCheckLock(ctx, p, async () => {

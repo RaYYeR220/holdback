@@ -7,7 +7,7 @@ export type SpecOptions = { answers?: string };
 export async function specCmd(ctx: Ctx, o: SpecOptions = {}): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback spec")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = openHumanIO(ctx, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers);
   try {
     const locked = await withCheckLock(ctx, p, async () => {
       await ctx.deps.runSpecStage(p, io, ledgerLog(p));

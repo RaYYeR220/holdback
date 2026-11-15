@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import {
@@ -53,7 +54,7 @@ export type Deps = {
   buildDeps: BuildDeps;
   falsifyDeps: FalsifyDeps;
   /** The human in the loop: the terminal, or the scripted answers file a command was given (`--answers`). */
-  humanIO: (answersFile?: string) => ClosableIO;
+  humanIO: (answersFile?: string) => ClosableIO | Promise<ClosableIO>;
   confirm: (question: string) => Promise<boolean>;
   /** The environment the commands read (CLAUDECODE, CLAUDE_PROJECT_DIR). */
   env: NodeJS.ProcessEnv;
@@ -137,7 +138,7 @@ export function defaultCtx(): Ctx {
       watchSpec,
       buildDeps: defaultBuildDeps,
       falsifyDeps: defaultFalsifyDeps,
-      humanIO: (file) => (file ? new ScriptedHumanIO(file) : new CliHumanIO(stdin, stdout)),
+      humanIO: (file) => (file ? ScriptedHumanIO.fromFile(file) : new CliHumanIO(stdin, stdout)),
       confirm: (q) => askYesNo(stdin, stdout, q),
       env: process.env,
       hooks: defaultHookDeps({ tests: runTests, app: startApp }),
@@ -146,9 +147,26 @@ export function defaultCtx(): Ctx {
   };
 }
 
-/** Opens the human in the loop for a command: `--answers <file>` (relative to the app folder) or the terminal. */
-export function openHumanIO(ctx: Ctx, answers: string | undefined): ClosableIO {
-  return answers === undefined ? ctx.deps.humanIO() : ctx.deps.humanIO(path.resolve(ctx.cwd, answers));
+/**
+ * Opens the human in the loop when a command starts, before any agent turn: the terminal, or the
+ * `--answers <file>` script (a path relative to the app folder). The script is read and checked
+ * here, once; later approvals (a falsify re-design mid-run) answer from that snapshot. A file
+ * inside the app folder is refused, links resolved: the coding agent can edit anything there.
+ */
+export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefined): Promise<ClosableIO> {
+  if (answers === undefined) return await ctx.deps.humanIO();
+  const file = path.resolve(ctx.cwd, answers);
+  let real: string;
+  try {
+    real = await realpath(file);
+  } catch (e) {
+    throw new Error(`cannot read the answers file ${file}: ${(e as NodeJS.ErrnoException).code ?? String(e)}`);
+  }
+  const rel = path.relative(await realpath(p.appDir), real);
+  if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+    throw new Error(`the answers file must be outside the app folder, where the coding agent cannot edit it: ${file}`);
+  }
+  return await ctx.deps.humanIO(real);
 }
 
 /** The ledger's only writer for the CLI: exactly one JSON line per event, which the loops' integrity check relies on. */
