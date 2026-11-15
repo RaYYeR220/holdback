@@ -64,7 +64,10 @@ describe("runSpecStage", () => {
     expect(await tamperMarker(p)).toBeNull();
 
     const events = await readEvents(p.ledgerFile);
-    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.approved", "design", "spec.approved", "seal"]);
+    // the marker's tamper goes into the ledger before the seal, so the seal drops any result from before it;
+    // the app dir is not a git repo here, so no recordings anchor follows the seal
+    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.approved", "design", "spec.approved", "tamper", "seal"]);
+    expect(events.at(-2)).toMatchObject({ t: "tamper", detail: expect.stringContaining("left over from an earlier build") });
     expect(asked).toEqual(["q1", "q2"]);
     expect(approvals).toEqual([["uc-1"], ["ac-1", "sc-1", "t-1"]]);
 

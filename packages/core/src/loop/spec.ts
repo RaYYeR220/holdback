@@ -12,10 +12,13 @@ import {
   type IngestResult,
   type Paused,
 } from "../kane/assurance.js";
+import { holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
+import { reduce } from "../ledger/reduce.js";
+import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
 import type { Project } from "../project.js";
 import { seal } from "../seal.js";
-import { clearTamper } from "../tamper.js";
+import { clearTamper, logRecordings, tamperMarker } from "../tamper.js";
 import type { HumanIO } from "./human.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
@@ -56,6 +59,28 @@ export async function resealAppFiles(p: Project, manifest: Record<string, string
   const out = { ...manifest };
   for (const [k, v] of Object.entries(fresh)) if (k.startsWith("app:")) out[k] = v;
   return out;
+}
+
+/**
+ * Every human re-seal goes through here (the spec stage, and a re-seal after a tamper or drift).
+ * `log` must append to `p.ledgerFile`.
+ * 1. A tamper known only to the `TAMPERED` marker (the ledger could not take it) is logged first, so
+ *    the seal below drops every build result from before it instead of keeping forged ones.
+ * 2. A fresh seal of the verifier side and the app's spec/config files, then the marker is cleared.
+ * 3. When the app dir is a git repo, Kane's recordings and the git config are anchored as they are
+ *    now, so the next build loop holds the disk to this moment instead of seeding from it later.
+ */
+export async function reseal(p: Project, log: Log, git?: GitOptions): Promise<Record<string, string>> {
+  const at = () => new Date().toISOString();
+  const gitOpts = git ?? (await holdbackGitOptions(p.home));
+  const marker = await tamperMarker(p);
+  // an unreadable ledger throws here: nothing is sealed and the marker stays
+  if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
+  const manifest = await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) });
+  await log({ at: at(), t: "seal", manifest });
+  await clearTamper(p);
+  if (await isRepoRoot(p.appDir, gitOpts)) await logRecordings(p, log, gitOpts);
+  return manifest;
 }
 
 /** Append-only: creates the heading once, then only adds lines. */
@@ -172,8 +197,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
     await review(cwd, approvedSet);
   }
 
-  // 6. point the tests at the app, then seal
+  // 6. point the tests at the app, then seal (a fresh seal is the only thing that lifts a tamper)
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
-  await emit({ t: "seal", manifest: await seal(cwd, { appDir: p.appDir, files: appSealFiles(p) }) });
-  await clearTamper(p); // a fresh seal is the only thing that lifts a tamper
+  await reseal(p, log);
 }

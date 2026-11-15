@@ -6,7 +6,7 @@ import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
 import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, startApp, type RunningApp } from "../app.js";
-import { changedFiles, commitAll, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
+import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { runTests, type TestRunResult } from "../kane/testmd.js";
 import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
@@ -14,7 +14,7 @@ import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent } from "../ledger/types.js";
 import type { Project } from "../project.js";
 import { checkRecordings, checkSeal } from "../seal.js";
-import { hashFileOrAbsent, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
+import { checkRecordingsAnchor, gitConfigHash, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { buildBrief, byAcId, type AcFailure } from "./brief.js";
 import { appSealFiles } from "./spec.js";
 
@@ -45,10 +45,11 @@ const TURN_TIMEOUT_MS = 30 * 60_000;
 /** Every Nth turn (and on the turn that empties the owed list) the passing ACs' tests are replayed too. */
 const REPLAY_EVERY = 3;
 const SETTINGS_FILE = "agent-settings.json";
-const EMPTY_HOOKS_DIR = "empty-hooks";
 /** Copies of Kane's failure screenshots inside the app dir, where the agent may open them; never committed. */
 export const EVIDENCE_DIR = "kane-evidence";
-const RESEAL_HINT = "a tamper is on record: run the spec stage (re-seal) before building again";
+const RESEAL_HINT = "a tamper is on record: re-seal (the spec stage, or a human re-seal) before building again";
+const NO_SEAL = "no seal in the ledger: run the spec stage first";
+const NO_ACS = "no acceptance criteria in the ledger: run the spec stage first";
 
 function defaultGuardCommand(p: Project): string {
   const main = guardMainPath();
@@ -195,10 +196,18 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     mark = await markAfterAppend(p.ledgerFile, mark, e);
     events.push(e);
   };
-  /** The marker goes first: it must survive a ledger that cannot take the event. */
+  /**
+   * The marker goes first: it must survive a ledger that cannot take the event. A marker that cannot
+   * be written must not keep the event out of the ledger either.
+   */
   const recordTamper = async (detail: string) => {
-    await markTampered(p, detail);
-    await emit({ t: "tamper", detail });
+    let logged = detail;
+    try {
+      await markTampered(p, detail);
+    } catch (e) {
+      logged = `${detail} (tamper marker not written: ${errText(e)})`;
+    }
+    await emit({ t: "tamper", detail: logged });
   };
   const stopApp = async () => {
     const a = app;
@@ -211,7 +220,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
    */
   const tampered = async (withRecordings: boolean): Promise<boolean> => {
     const bad = manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
-    if (baseline && (await hashFileOrAbsent(baseline.gitConfigFile)) !== baseline.gitConfig) bad.push(".git/config");
+    if (baseline && (await gitConfigHash(baseline.gitConfigFile, gitOpts)) !== baseline.gitConfig) bad.push(".git/config");
     if (withRecordings && baseline) bad.push(...(await checkRecordings(p.verifierDir, baseline.manifest)));
     if (bad.length === 0) return false;
     await recordTamper(`sealed files changed: ${bad.join(", ")}`);
@@ -247,36 +256,48 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     const rel = evidencePath(f.turn, f.test, f.step);
     return existsSync(path.join(p.appDir, ...rel.split("/"))) ? rel : undefined;
   };
+  /** After a Kane batch, with the app stopped: the recordings as they are now become the baseline, and are logged. */
+  const closeKaneWindow = async () => {
+    const snap = await snapshotRecordings(p, gitOpts);
+    baseline = { ...snap, gitConfig: baseline!.gitConfig }; // the config itself was checked just before, never re-trusted
+    await emit({ t: "recordings", digest: baseline.digest, gitConfig: baseline.gitConfig });
+    kaneWindow = false;
+  };
 
   const loop = async (): Promise<BuildResult> => {
     const maxTurns = opts.maxTurnsOverride ?? p.config.loop.maxTurns;
     if (typeof maxTurns !== "number" || !(maxTurns >= 0)) return done(false, "error", `loop.maxTurns must be a number, got ${JSON.stringify(maxTurns)}`);
-    // a tamper on record, in the marker or the ledger, is answered before anything else is checked or logged
-    if ((await tamperMarker(p)) !== null) return done(false, "tamper", RESEAL_HINT);
+    // a tamper on record, in the marker or the ledger, is answered before anything else is checked
+    const marker = await tamperMarker(p);
+    if (marker !== null) {
+      // a tamper only the marker knows (the ledger could not take it) goes into the ledger once, so
+      // whatever seal comes next drops the results from before it; later starts find it there
+      try {
+        if (!reduce(parseEvents((await readLedger(p.ledgerFile)).toString("utf8"))).tampered) await log({ at: at(), t: "tamper", detail: marker });
+      } catch {
+        /* best effort: the marker blocks either way */
+      }
+      return done(false, "tamper", RESEAL_HINT);
+    }
     await mkdir(hooksDir, { recursive: true });
     if (!(await isRepoRoot(p.appDir, gitOpts))) return done(false, "error", `the app dir must be the root of a git repository: ${p.appDir}`);
     const found = await readLedger(p.ledgerFile); // trusted as found at loop start
     mark = { size: found.length, sha256: sha256(found) };
     events = parseEvents(found.toString("utf8"));
-    if (reduce(events).tampered) return done(false, "tamper", RESEAL_HINT);
+    const initial = reduce(events);
+    if (initial.tampered) return done(false, "tamper", RESEAL_HINT);
+    if (!lastSeal(events)) return done(false, "error", NO_SEAL);
+    if (Object.keys(initial.acs).length === 0) return done(false, "error", NO_ACS);
 
     // Kane's recordings and the repo's git config are held to the latest `recordings` event,
     // unless a seal came after it (spec stage, drift, human re-seal): then the disk seeds a new one.
-    baseline = await snapshotRecordings(p, gitOpts);
-    const ri = lastIndex(events, "recordings");
-    const anchor = ri > lastIndex(events, "seal") ? events[ri] : undefined;
-    if (anchor && anchor.t === "recordings") {
-      const moved = [
-        ...(anchor.digest !== baseline.digest ? ["Kane's recordings"] : []),
-        ...(anchor.gitConfig !== baseline.gitConfig ? [".git/config"] : []),
-      ];
-      if (moved.length > 0) {
-        await recordTamper(`changed since Holdback last recorded them: ${moved.join(", ")}`);
-        return done(false, "tamper");
-      }
-    } else {
-      await emit({ t: "recordings", digest: baseline.digest, gitConfig: baseline.gitConfig });
+    const anchor = await checkRecordingsAnchor(p, events, gitOpts);
+    baseline = anchor.snapshot;
+    if (anchor.moved.length > 0) {
+      await recordTamper(`changed since Holdback last recorded them: ${anchor.moved.join(", ")}`);
+      return done(false, "tamper");
     }
+    if (!anchor.anchored) await emit({ t: "recordings", digest: baseline.digest, gitConfig: baseline.gitConfig });
 
     const settingsFile = path.join(p.home, SETTINGS_FILE);
     await writeAgentSettings(
@@ -297,10 +318,10 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     for (;;) {
       events = parseEvents((await verifiedLedger(p.ledgerFile, mark)).toString("utf8"));
       manifest = lastSeal(events);
-      if (!manifest) return done(false, "error", "no seal in the ledger: run the spec stage first");
+      if (!manifest) return done(false, "error", NO_SEAL);
       let state = reduce(events);
       if (state.tampered) return done(false, "tamper", RESEAL_HINT);
-      if (Object.keys(state.acs).length === 0) return done(false, "error", "no acceptance criteria in the ledger: run the spec stage first");
+      if (Object.keys(state.acs).length === 0) return done(false, "error", NO_ACS);
       // before any decision: a change made at any point since the last check is flagged
       if (await tampered(true)) return done(false, "tamper");
       const g = gate(state);
@@ -405,24 +426,25 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         await stopApp();
       }
       // the app is down: Kane's recordings as they are now are what the next check (and run) holds them to
-      if (kaneWindow) {
-        const snap = await snapshotRecordings(p, gitOpts);
-        baseline = { ...snap, gitConfig: baseline!.gitConfig }; // the config itself was checked above, never re-trusted
-        await emit({ t: "recordings", digest: baseline.digest, gitConfig: baseline.gitConfig });
-        kaneWindow = false;
-      }
+      if (kaneWindow) await closeKaneWindow();
     }
   };
 
-  /** Every exit re-checks the ledger (and, on an error, the seal): a forgery never leaves as a plain error. */
+  /**
+   * Every exit re-checks the ledger (and, on an error, the seal): a forgery never leaves as a plain error.
+   * An exit from inside a Kane batch (Kane threw, too few results, the app's stop() threw) still
+   * anchors the recordings Kane left, once the seal and config check out; otherwise the next run
+   * would take them for a tamper.
+   */
   const finalize = async (r: BuildResult, thrown?: unknown): Promise<BuildResult> => {
     try {
       if (thrown instanceof LedgerTampered) throw thrown;
       if (r.reason === "tamper") return r;
       if (mark) await verifiedLedger(p.ledgerFile, mark);
-      if (r.reason === "error") {
-        await stopApp();
+      if (r.reason === "error" || kaneWindow) {
+        await stopApp().catch(() => {}); // a failed stop must not skip the checks
         if (await tampered(!kaneWindow)) return done(false, "tamper");
+        if (kaneWindow) await closeKaneWindow();
       }
       return r;
     } catch (e) {

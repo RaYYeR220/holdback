@@ -61,7 +61,7 @@ export {
 export { runClaudeTurn, contractPath, guardMainPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
-export { runSpecStage, resealAppFiles, appSealFiles } from "./loop/spec.js";
+export { runSpecStage, reseal, resealAppFiles, appSealFiles } from "./loop/spec.js";
 export { buildBrief, type BriefOptions, type AcFailure } from "./loop/brief.js";
 export {
   runBuildLoop,
@@ -81,6 +81,8 @@ export {
   ensureHead,
   excludeFromGit,
   gitPath,
+  holdbackGitOptions,
+  EMPTY_HOOKS_DIR,
   changedFiles,
   checkout,
   worktreeAdd,
@@ -94,7 +96,10 @@ export {
   tamperMarker,
   clearTamper,
   manifestDigest,
+  gitConfigHash,
   snapshotRecordings,
   logRecordings,
+  checkRecordingsAnchor,
   type RecordingsSnapshot,
+  type RecordingsAnchorCheck,
 } from "./tamper.js";

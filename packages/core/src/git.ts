@@ -13,6 +13,16 @@ export type GitOptions = {
   hooksDir?: string;
 };
 
+/** Holdback's own empty hooks dir, under its home (never inside the agent-writable app repo). */
+export const EMPTY_HOOKS_DIR = "empty-hooks";
+
+/** The GitOptions for every git call Holdback makes on the app repo; creates `<home>/empty-hooks`. */
+export async function holdbackGitOptions(home: string): Promise<GitOptions> {
+  const hooksDir = path.join(home, EMPTY_HOOKS_DIR);
+  await mkdir(hooksDir, { recursive: true });
+  return { hooksDir };
+}
+
 /**
  * Config overrides on every git call Holdback makes: no fsmonitor hook and no signing program,
  * so nothing configured inside the (agent-writable) repo runs as part of Holdback's own commands.

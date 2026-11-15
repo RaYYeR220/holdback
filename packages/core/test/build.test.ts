@@ -15,10 +15,10 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { changedFiles, checkout, commitAll, ensureHead, headSha, isRepoRoot, worktreeAdd, worktreeRemove } from "../src/git.js";
 import { runBuildLoop, type BuildDeps } from "../src/loop/build.js";
-import { appSealFiles } from "../src/loop/spec.js";
+import { appSealFiles, reseal } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { seal, sealRecordings } from "../src/seal.js";
-import { clearTamper, manifestDigest } from "../src/tamper.js";
+import { clearTamper, manifestDigest, markTampered, tamperMarker } from "../src/tamper.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fxTests = join(here, "fixtures", "kane", "tests");
@@ -26,6 +26,8 @@ const at = "2026-11-15T00:00:00.000Z";
 const PRD = "# Food pantry\n\nA household is eligible when its monthly income is at or below the monthly limit for its size.\n";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+/** POSIX root ignores a 0o444 mode: the read-only ledger tests cannot fail an append there. */
+const asRoot = process.getuid?.() === 0;
 
 const AC1: AcNode = {
   id: "ac-1",
@@ -659,7 +661,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(git(appDir, "-c", "core.fsmonitor=false", "log", "--format=%s").split("\n")).toEqual(["holdback turn 1: 2 owed", "holdback: initial commit"]);
   });
 
-  it("stops with tamper when the agent changes the repo's git config, before any git command reads it", async () => {
+  it("stops with tamper when the agent changes the repo's git config, before any git command of Holdback's acts on it", async () => {
     await setup();
     const { deps, calls } = fakes({
       edit: () => {
@@ -692,7 +694,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.claude[1]!.prompt).not.toContain("Screenshot:");
   });
 
-  it("a tamper the ledger cannot take (read-only after a forgery) still blocks the next run", async () => {
+  it.skipIf(asRoot)("a tamper the ledger cannot take (read-only after a forgery) still blocks the next run", async () => {
     await setup();
     const { deps } = fakes({
       edit: () => {
@@ -719,7 +721,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(existsSync(join(p.home, "TAMPERED"))).toBe(false);
   });
 
-  it("treats an append the ledger refuses as tamper (marker written first)", async () => {
+  it.skipIf(asRoot)("treats an append the ledger refuses as tamper (marker written first)", async () => {
     await setup();
     const { deps } = fakes({ edit: () => chmodSync(p.ledgerFile, 0o444), kane: (_t, files) => files.map(pass) });
     try {
@@ -728,6 +730,162 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     } finally {
       chmodSync(p.ledgerFile, 0o644);
     }
+  });
+
+  /** Run 1: the agent forges green runs and makes the ledger read-only, so the tamper reaches only the marker. */
+  const forgeIntoReadOnlyLedger = async () => {
+    const { deps } = fakes({
+      edit: () => {
+        forgeGreen();
+        chmodSync(p.ledgerFile, 0o444);
+      },
+      kane: (_t, files) => files.map(pass),
+    });
+    try {
+      expect(await runBuildLoop(p, deps, log)).toMatchObject({ allowStop: false, turns: 1, reason: "tamper" });
+    } finally {
+      chmodSync(p.ledgerFile, 0o644);
+    }
+    // the ledger alone (no tamper event made it in) would open the gate
+    expect(gate(reduce(await readEvents(p.ledgerFile))).allowStop).toBe(true);
+  };
+
+  it.skipIf(asRoot)("a marker-only tamper does not survive a re-seal: the forged greens are dropped and verified again", async () => {
+    await setup();
+    await forgeIntoReadOnlyLedger();
+    await reseal(p, log);
+    expect(await tamperMarker(p)).toBeNull();
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.slice(-3).map((e) => e.t)).toEqual(["tamper", "seal", "recordings"]);
+    expect(ev.at(-3)).toMatchObject({ t: "tamper", detail: expect.stringMatching(/ledger/) });
+    expect(Object.values(reduce(ev).acs).map((a) => a.status)).toEqual(["owed", "owed"]);
+    // the next run does not open the gate on the forged results: both tests run again
+    const next = fakes({ kane: (_t, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    expect(await runBuildLoop(p, next.deps, log, { maxTurnsOverride: 2 })).toEqual({ allowStop: false, turns: 1, reason: "max-turns" });
+    expect(next.calls.tests[0]!.files).toEqual([T1, T3]);
+  });
+
+  it.skipIf(asRoot)("copies a marker-only tamper into the ledger once at the next start, so even a bare seal drops the forged greens", async () => {
+    await setup();
+    await forgeIntoReadOnlyLedger();
+    const before = (await readEvents(p.ledgerFile)).length;
+    for (let i = 0; i < 2; i++) {
+      const next = fakes({ kane: (_t, files) => files.map(pass) });
+      const r = await runBuildLoop(p, next.deps, log);
+      expect(r).toMatchObject({ allowStop: false, turns: 0, reason: "tamper" });
+      expect(r.error).toMatch(/re-seal/);
+      expect(next.calls.claude).toHaveLength(0);
+    }
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.slice(before)).toEqual([{ at: expect.any(String), t: "tamper", detail: expect.stringMatching(/ledger/) }]);
+    expect(gate(reduce(ev))).toMatchObject({ allowStop: false, tampered: true });
+    await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+    await clearTamper(p);
+    expect(gate(reduce(await readEvents(p.ledgerFile)))).toMatchObject({ allowStop: false, tampered: false });
+  });
+
+  it("reseal logs a marker's tamper once, before its seal, then clears the marker and anchors the recordings", async () => {
+    await setup();
+    const since = async (n: number) => (await readEvents(p.ledgerFile)).slice(n);
+    let n = (await readEvents(p.ledgerFile)).length;
+    // no tamper anywhere: a plain re-seal, which keeps verified results (drift)
+    await reseal(p, log);
+    expect((await since(n)).map((e) => e.t)).toEqual(["seal", "recordings"]);
+    n += 2;
+    await markTampered(p, "ledger append failed: EPERM");
+    await reseal(p, log);
+    const ev = await since(n);
+    expect(ev.map((e) => e.t)).toEqual(["tamper", "seal", "recordings"]);
+    expect(ev[0]).toMatchObject({ detail: expect.stringContaining("ledger append failed: EPERM") });
+    expect(ev[2]).toMatchObject({ digest: manifestDigest(await sealRecordings(p.verifierDir)) });
+    expect(await tamperMarker(p)).toBeNull();
+    n += 3;
+    // a tamper already on record in the ledger is not logged twice
+    await log({ at, t: "tamper", detail: "sealed files changed: x" });
+    await markTampered(p, "sealed files changed: x");
+    n += 1;
+    await reseal(p, log);
+    expect((await since(n)).map((e) => e.t)).toEqual(["seal", "recordings"]);
+    // the anchor holds: the next run starts without seeding another one
+    n += 2;
+    const { deps } = fakes({ kane: (_t, files) => files.map(pass) });
+    expect(await runBuildLoop(p, deps, log)).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
+    expect((await since(n))[0]).toMatchObject({ t: "turn.start" });
+  });
+
+  it("still logs the tamper, and stops with tamper, when the marker cannot be written", async () => {
+    await setup();
+    const { deps, calls } = fakes({
+      edit: () => {
+        mkdirSync(join(p.home, "TAMPERED")); // writing the marker fails from here on
+        appendFileSync(T3, "\nweakened\n");
+      },
+      kane: (_t, files) => files.map(pass),
+    });
+    expect(await runBuildLoop(p, deps, log)).toMatchObject({ allowStop: false, turns: 1, reason: "tamper" });
+    expect(calls.tests).toHaveLength(0);
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper", detail: expect.stringContaining(".testmuai/tests/t3_test.md") });
+  });
+
+  it("treats anything at the marker path, even a directory, as a tamper on record", async () => {
+    await setup();
+    mkdirSync(join(p.home, "TAMPERED"));
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 0, reason: "tamper" });
+    expect(r.error).toMatch(/re-seal/);
+    expect(calls.claude).toHaveLength(0);
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper", detail: expect.stringMatching(/directory/) });
+  });
+
+  it.each(["Kane throws", "Kane returns too few results", "the app's stop() throws"] as const)(
+    "anchors Kane's recordings after an interrupted batch (%s), so the next run sees no false tamper",
+    async (how) => {
+      await setup();
+      const first = fakes({
+        kane: (turn, files) => {
+          // Kane writes its recording before anything goes wrong
+          const out = join(dirname(T3), "output-t3_test");
+          mkdirSync(out, { recursive: true });
+          writeFileSync(join(out, `recording-${turn}.json`), `{"turn":${turn}}`);
+          if (how === "Kane throws") throw new Error("kane crashed");
+          return how === "Kane returns too few results" ? files.slice(1).map(pass) : files.map(pass);
+        },
+      });
+      if (how === "the app's stop() throws") {
+        const start = first.deps.app;
+        first.deps.app = async (o) => {
+          const a = await start(o);
+          return {
+            ...a,
+            stop: async () => {
+              await a.stop();
+              throw new Error("stop failed");
+            },
+          };
+        };
+      }
+      const r1 = await runBuildLoop(p, first.deps, log);
+      expect(r1).toMatchObject({ allowStop: false, turns: 1, reason: "error" });
+      expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "recordings", digest: manifestDigest(await sealRecordings(p.verifierDir)) });
+      const second = fakes({ kane: (_t, files) => files.map(pass) });
+      expect((await runBuildLoop(p, second.deps, log)).reason).toBe("gate-open");
+      expect(await tamperMarker(p)).toBeNull();
+    },
+  );
+
+  it("lets a human add a remote and set an upstream between runs without a tamper", async () => {
+    await setup();
+    const kane = (turn: number, files: string[]) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f)));
+    expect(await runBuildLoop(p, fakes({ kane }).deps, log, { maxTurnsOverride: 1 })).toMatchObject({ reason: "max-turns" });
+    // what `git remote add` and `git push -u` write
+    git(appDir, "remote", "add", "origin", "https://example.com/app.git");
+    git(appDir, "config", "branch.master.remote", "origin");
+    git(appDir, "config", "branch.master.merge", "refs/heads/master");
+    git(appDir, "config", "push.default", "current");
+    const next = fakes({ kane: (_t, files) => files.map(pass) });
+    expect(await runBuildLoop(p, next.deps, log)).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
+    expect(await tamperMarker(p)).toBeNull();
   });
 
   it("seeds the baseline at loop start, so a change before any Kane batch is still caught next run", async () => {
@@ -821,6 +979,15 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(r2).toMatchObject({ reason: "error", turns: 0 });
     expect(r2.error).toMatch(/seal/i);
     expect(b.calls.claude).toHaveLength(0);
+    // nothing to anchor before a seal: no recordings seed either
+    expect((await readEvents(p.ledgerFile)).map((e) => e.t)).toEqual(["design"]);
+
+    // a seal but no acceptance criteria
+    writeFileSync(p.ledgerFile, JSON.stringify({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) }) + "\n");
+    const r3 = await runBuildLoop(p, fakes({ kane: (_t, files) => files.map(pass) }).deps, log);
+    expect(r3).toMatchObject({ reason: "error", turns: 0 });
+    expect(r3.error).toMatch(/acceptance criteria/);
+    expect((await readEvents(p.ledgerFile)).map((e) => e.t)).toEqual(["seal"]);
   });
 
   it("refuses to run the agent without a guard entry to hook", async () => {
