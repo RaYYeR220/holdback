@@ -294,6 +294,20 @@ export function humanView(ctx: Ctx): Ctx {
   return { ...ctx, out: (l) => ctx.out(escapeControls(l)), err: (l) => ctx.err(escapeControls(l)) };
 }
 
+/**
+ * JSON for a terminal (`--json`): DEL, every C1 control and every Unicode format character (bidi
+ * controls, zero-width characters, the BOM) written as `\uXXXX` escapes (C0 ones already are), so
+ * the output is still valid JSON with the same strings, and none of them reaches the terminal raw.
+ */
+export function jsonForTerminal(json: string): string {
+  return json.replace(/[\u007f-\u009f\p{Cf}]/gu, (c) =>
+    c
+      .split("")
+      .map((u) => `\\u${u.charCodeAt(0).toString(16).padStart(4, "0")}`)
+      .join(""),
+  );
+}
+
 /** Refuses a human-only command inside Claude Code: true (and the reason printed) when it must not run. */
 export function refuseInsideClaudeCode(ctx: Ctx, cmd: string): boolean {
   if (!insideClaudeCode(ctx)) return false;

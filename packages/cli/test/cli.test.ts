@@ -298,6 +298,17 @@ describe("status and owed", () => {
     }
   });
 
+  it("status --json escapes C1 and format characters as \\u escapes: still valid JSON, the same strings (addendum 4)", async () => {
+    await fixture();
+    const title = "Limit\u009b31m off\u202Eby one\u200B";
+    await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "failed", { verdict: { bugTitle: title } }) });
+    const r = await cli(["status", "--json"]);
+    expect(/[\u007f-\u009f]|\p{Cf}/u.test(r.out)).toBe(false);
+    expect(r.out).toContain("\\u009b");
+    expect(r.out).toContain("\\u202e");
+    expect(JSON.parse(r.out).state.acs["ac-2"].lastFailure.verdict.bugTitle).toBe(title);
+  });
+
   it("reports an edited spec as drift, not a tamper", async () => {
     await fixture();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\nPlus a new rule.\n");

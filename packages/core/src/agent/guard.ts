@@ -143,8 +143,9 @@ function gitViolation(text: string): string | undefined {
  * is `PRD.md`), and no trailing dots or spaces on any segment (`PRD.md.` is `PRD.md`); `.` and `..`
  * stay. Applied everywhere: on other systems it only makes the match wider.
  */
-function fsPath(p: string): string {
-  const segs = drivePath(unquote(p).replace(/\\/g, "/")).split("/");
+function fsPath(p: string, drive = true, platform: NodeJS.Platform = process.platform): string {
+  const slashed = unquote(p).replace(/\\/g, "/");
+  const segs = (drive ? drivePath(slashed, platform) : slashed).split("/");
   return segs
     .map((s, i) => {
       if (i === 0 && /^[a-zA-Z]:$/.test(s)) return s; // a drive
@@ -169,11 +170,22 @@ function drivePath(p: string, platform: NodeJS.Platform = process.platform): str
   return p;
 }
 
-/** Lowercase, `/`-separated, Windows quirks dropped (`fsPath`), no `./` or `../` prefixes: how a shell token is matched to a spec path. */
+/**
+ * Every way a path may be read (addendum 4): as it is, and, on Windows, in its drive form (an MSYS,
+ * Cygwin or device path), each with Windows quirks dropped (`fsPath`). A spec match on any one counts.
+ */
+export function specPathForms(token: string, platform: NodeJS.Platform = process.platform): string[] {
+  return [...new Set([fsPath(token, false, platform), fsPath(token, true, platform)])];
+}
+
+/** Lowercase, no `./` or `../` prefixes: how a normalised path (`fsPath`) is matched to a spec path. */
+function suffixForm(p: string): string {
+  return p.toLowerCase().replace(/^(?:\.{1,2}\/)+/, "");
+}
+
+/** A spec file's own path as a match compares it. */
 function specPathOf(token: string): string {
-  return fsPath(token)
-    .toLowerCase()
-    .replace(/^(?:\.{1,2}\/)+/, "");
+  return suffixForm(fsPath(token));
 }
 
 /** The long, real form of `abs`: 8.3 short names expanded through the file itself, or else its existing parent. */
@@ -201,11 +213,11 @@ function sameFile(a: string, b: string): boolean {
 }
 
 /**
- * Whether a path the agent names is one of the spec files (R38), failing closed. Any path whose
- * normalised form (`fsPath`, lowercase; MSYS, Cygwin and device prefixes turned into drives) is the
- * spec's relative path or ends in `/<spec>`. With the app dir known, also: the path resolved against
- * it, 8.3 short names expanded, equal to a spec file's, or, when it exists, the same file as one (a
- * hard link, a short name).
+ * Whether a path the agent names is one of the spec files (R38), failing closed, on every form it
+ * may be read in (`specPathForms`: as it is, and with MSYS, Cygwin and device prefixes as drives):
+ * a form that is the spec's relative path or ends in `/<spec>` (lowercase); with the app dir known,
+ * also the form resolved against it, 8.3 short names expanded, equal to a spec file's, or, when it
+ * exists, the same file as one (a hard link, a short name).
  */
 function specMatcher(ctx: GuardContext): (token: string) => boolean {
   const files = ctx.specFiles ?? [];
@@ -213,16 +225,17 @@ function specMatcher(ctx: GuardContext): (token: string) => boolean {
   const appDir = ctx.appDir;
   const real = appDir === undefined ? [] : files.map((s) => path.resolve(appDir, fsPath(s)));
   const realLong = real.map((s) => norm(longPath(s)));
-  return (token: string) => {
-    const t = specPathOf(token);
-    if (t === "") return false;
-    // fail closed: any path ending in the spec's relative path counts (a shell's `cd`, another root)
-    if (specs.some((s) => t === s || t.endsWith(`/${s}`))) return true;
-    if (appDir === undefined) return false;
-    const abs = path.resolve(appDir, fsPath(token));
-    if (realLong.includes(norm(longPath(abs)))) return true;
-    return real.some((s) => sameFile(abs, s));
-  };
+  return (token: string) =>
+    specPathForms(token).some((form) => {
+      const t = suffixForm(form);
+      if (t === "") return false;
+      // fail closed: any path ending in the spec's relative path counts (a shell's `cd`, another root)
+      if (specs.some((s) => t === s || t.endsWith(`/${s}`))) return true;
+      if (appDir === undefined) return false;
+      const abs = path.resolve(appDir, form);
+      if (realLong.includes(norm(longPath(abs)))) return true;
+      return real.some((s) => sameFile(abs, s));
+    });
 }
 
 /** Commands that write the file named by any of their arguments (PowerShell's, and `tee`). */

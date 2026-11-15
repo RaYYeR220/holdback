@@ -1,5 +1,5 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, humanView, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
+import { EXIT, explainFailure, humanView, jsonForTerminal, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
 import { inconclusiveLine, kaneCreditsText } from "./messages.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
@@ -24,7 +24,8 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
 
   if (o.json) {
     ctx.out(
-      JSON.stringify(
+      jsonForTerminal(
+        JSON.stringify(
         {
           state: agent ? { ...s.state, inconclusive: s.state.inconclusive.length } : s.state,
           gate: {
@@ -42,6 +43,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
         },
         null,
         2,
+        ),
       ),
     );
     if (s.tamper !== null) ctx.err(s.tamper);

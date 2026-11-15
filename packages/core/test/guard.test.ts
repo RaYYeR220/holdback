@@ -3,7 +3,7 @@ import { linkSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { guardDecision, guardHookCommand, guardPayload, writeAgentSettings, posixAbs } from "../src/agent/guard.js";
+import { guardDecision, guardHookCommand, guardPayload, writeAgentSettings, posixAbs, specPathForms } from "../src/agent/guard.js";
 
 const ctx = {
   home: "C:\\Users\\x\\.holdback\\abc",
@@ -249,6 +249,14 @@ describe("guardDecision hardening", () => {
     // other files stay open
     expect(edit(join(app, "PRD.md.bak"))).toEqual({ allow: true });
     expect(edit(join(app, "src", "app.js"))).toEqual({ allow: true });
+  });
+
+  it("reads a path both as it is and in its drive form, and matches the spec on either (addendum 4)", () => {
+    expect(specPathForms("/c/work/app/PRD.md", "win32")).toEqual(["/c/work/app/PRD.md", "C:/work/app/PRD.md"]);
+    expect(specPathForms("/cygdrive/d/x/PRD.md", "win32")).toEqual(["/cygdrive/d/x/PRD.md", "D:/x/PRD.md"]);
+    expect(specPathForms("\\\\?\\C:\\x\\PRD.md", "win32")).toEqual(["//?/C:/x/PRD.md", "C:/x/PRD.md"]);
+    expect(specPathForms("/c/work/app/PRD.md", "linux")).toEqual(["/c/work/app/PRD.md"]);
+    expect(specPathForms("PRD.md::$DATA", "win32")).toEqual(["PRD.md"]);
   });
 
   it("still lets the agent read the spec, and write other files", () => {
