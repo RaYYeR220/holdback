@@ -320,7 +320,9 @@ async function promptHook(ctx: Ctx, o: HookOptions): Promise<number> {
       const regressed = [...s.gate.regressed].sort(byAcId).map((a) => a.id);
       const owed = [...regressed, ...[...s.gate.owed].sort(byAcId).map((a) => a.id)];
       const shown = owed.slice(0, 8).join(", ") + (owed.length > 8 ? `, +${owed.length - 8} more` : "");
-      lines.push(owed.length > 0 ? `Holdback: ${owed.length} owed (${shown})` : "Holdback: 0 owed — every criterion passes");
+      // a run that proved nothing shuts the gate too; which one, and why, is for the human (`holdback status`)
+      const zero = s.gate.inconclusive.length > 0 ? "Holdback: 0 owed — the gate stays shut until Kane re-checks some criteria" : "Holdback: 0 owed — every criterion passes";
+      lines.push(owed.length > 0 ? `Holdback: ${owed.length} owed (${shown})` : zero);
       if (regressed.length > 0) lines.push(`Regressed: ${regressed.join(", ")}`);
       if (s.specChanged.length > 0) lines.push(`The spec changed since the last seal (${s.specChanged.join(", ")}): a human runs \`holdback drift\`.`);
     }

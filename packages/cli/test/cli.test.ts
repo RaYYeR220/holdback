@@ -186,6 +186,17 @@ describe("status and owed", () => {
     expect(doc.gate).toMatchObject({ open: false, owed: ["ac-2"], tampered: false });
   });
 
+  it("status keeps the gate closed while every criterion passes but a test's latest run proved nothing (R34)", async () => {
+    await greenFixture();
+    await log({ at, t: "run", kind: "build", turn: 3, result: result("t-1", "failed", { status: "error", reason: "timeout", inconclusive: "timeout" }) });
+    const r = await cli(["status"]);
+    expect(r.out).toMatch(/ac-1\s+passing/);
+    expect(r.out).toContain("Gate: closed | owed 0 |");
+    expect(r.out).toContain("t-1 turn 3: timeout");
+    const doc = JSON.parse((await cli(["status", "--json"])).out);
+    expect(doc.gate).toMatchObject({ open: false, owed: [], inconclusive: ["t-1"] });
+  });
+
   it("status shows Kane credits by balance beside the per-run sum, and the runs that proved nothing (R34)", async () => {
     await fixture();
     // the fixture's two runs (1.5 each) as one metered batch: the balance dropped 4.5

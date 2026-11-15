@@ -402,6 +402,27 @@ describe("gate", () => {
     expect(gate(reduce(evs)).allowStop).toBe(allow);
   });
 
+  it("stays shut while the latest build run of a test a criterion depends on proved nothing, even with every AC green (R34)", () => {
+    const flaky = run(result("t-1", [], [], { status: "error", reason: "timeout", inconclusive: "timeout" }), "build", 2);
+    const g = gate(reduce([...green, flaky]));
+    expect(reduce([...green, flaky]).acs["ac-1"]!.status).toBe("passing");
+    expect(g.allowStop).toBe(false);
+    expect(g.inconclusive).toEqual([{ test: "t-1", turn: 2, reason: "timeout" }]);
+    expect(g.owed).toEqual([]);
+    // a later conclusive run of that test opens it again
+    expect(gate(reduce([...green, flaky, run(result("t-1", ["ac-1"], []), "build", 3)])).allowStop).toBe(true);
+    // a falsify or bisect run proves nothing about the build: never shuts the gate
+    expect(gate(reduce([...green, run(result("t-1", [], [], { status: "error", reason: "timeout" }), "falsify")])).allowStop).toBe(true);
+  });
+
+  it("an inconclusive test no live criterion depends on does not shut the gate", () => {
+    const s = reduce(green);
+    s.inconclusive = [{ test: "t-9", reason: "timeout" }];
+    s.acs["ac-3"]!.tests = ["t-9"]; // only a needs-spec criterion names it
+    expect(s.acs["ac-3"]!.status).toBe("needs-spec");
+    expect(gate(s)).toMatchObject({ allowStop: true, inconclusive: [] });
+  });
+
   it("stays shut after a tamper, even with every AC green, until a fresh seal", () => {
     const tamper: LedgerEvent = { t: "tamper", at, detail: "sealed files changed: x" };
     const g = gate(reduce([...green, tamper]));
@@ -504,9 +525,11 @@ describe("inconclusive runs (R34: only the app's own failures count)", () => {
     expect(s.acs["ac-1"]!.lastFailure).toMatchObject({ verdict: { bugTitle: "limit off by one" }, turn: 1 });
   });
 
-  it("an application_issue (confirmed or not) counts as a failure", () => {
+  it("an application_issue (confirmed or not), or a family Holdback does not know, counts as a failure", () => {
     const app = result("t-1", [], ["ac-1"], { verdict: { family: "application_issue", bugTitle: "b" } });
     expect(status([d, run(result("t-1", ["ac-1"], [])), run(app)], "ac-1")).toBe("regressed");
+    const unknown = result("t-1", [], ["ac-1"], { verdict: { family: "rendering_quirk", bugTitle: "b" } });
+    expect(status([d, run(result("t-1", ["ac-1"], [])), run(unknown)], "ac-1")).toBe("regressed");
   });
 
   it("a later conclusive run of the test clears it from the inconclusive list; so does a design that drops the test", () => {

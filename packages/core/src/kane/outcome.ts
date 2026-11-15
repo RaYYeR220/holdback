@@ -1,23 +1,26 @@
 import type { RunTestOptions, TestRunResult } from "./testmd.js";
 
-/** The only verdict family that blames the app (Kane 0.10.4: also `environment_issue`, `automation_bug`). */
-const APP_FAMILY = "application_issue";
+/**
+ * The verdict families (Kane 0.10.4) that put a failure down to Kane's own side: its browser or
+ * platform, its own replay or authoring. Matched trimmed and case-insensitively. Any other family,
+ * `application_issue` or one Holdback does not know, is the app's failure: unknown fails closed.
+ */
+const NOT_THE_APP = new Set(["environment_issue", "automation_bug"]);
 
 /**
  * Why a run that did not pass says nothing about the app, or undefined when it did pass or failed
- * on the app. Only Kane's `application_issue`, or a plain assertion failure with no verdict family,
- * is a product failure. Everything else is not: another verdict family (Kane's browser or
- * platform, its own replay or authoring), a Holdback timeout, a crash (no complete run), or a run
- * already found inconclusive. Pure: the ledger reducer reads old and new results through it.
+ * on the app. Not the app's: a verdict family in `NOT_THE_APP`, a Holdback timeout, a crash (no
+ * complete run, or Kane ending neither passed nor failed with no verdict family), or a run already
+ * found inconclusive. Everything else is a product failure. Pure: the ledger reducer reads old and
+ * new results through it.
  */
 export function notAnAppFailure(r: TestRunResult): string | undefined {
   if (r.inconclusive !== undefined) return r.inconclusive;
   if (r.status === "passed") return undefined;
   if (r.status === "error") return r.reason === "timeout" ? "timeout" : `crash: ${r.reason ?? "no result"}`;
-  const family = r.verdict?.family;
-  if (family !== undefined && family !== "") {
-    return family === APP_FAMILY ? undefined : `${family}${r.verdict?.bugTitle ? `: ${r.verdict.bugTitle}` : ""}`;
-  }
+  const family = r.verdict?.family?.trim().toLowerCase() ?? "";
+  if (NOT_THE_APP.has(family)) return `${family}${r.verdict?.bugTitle ? `: ${r.verdict.bugTitle}` : ""}`;
+  if (family !== "") return undefined;
   // Kane finished without a pass or a fail and blamed nothing: not an assertion failure
   if (r.status === "broken") return `crash: ${r.reason ?? "Kane reported no outcome"}`;
   return undefined;

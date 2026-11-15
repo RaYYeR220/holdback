@@ -426,6 +426,11 @@ describe("hook prompt (UserPromptSubmit)", { timeout: 60_000 }, () => {
     await log({ at, t: "run", kind: "build", turn: 1, result: result(T1, "passed") });
     await log({ at, t: "run", kind: "build", turn: 1, result: result(T2, "passed") });
     expect((await hook("prompt", promptIn())).out).toBe("Holdback: 0 owed — every criterion passes");
+    // a latest run that proved nothing keeps the gate shut: never "every criterion passes", never which test or why
+    await log({ at, t: "run", kind: "build", turn: 2, result: { ...result(T1, "passed"), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    const unsure = (await hook("prompt", promptIn())).out;
+    expect(unsure).toBe("Holdback: 0 owed — the gate stays shut until Kane re-checks some criteria");
+    await log({ at, t: "run", kind: "build", turn: 3, result: result(T1, "passed") });
     await log({ at, t: "tamper", detail: "sealed files changed: x" });
     expect((await hook("prompt", promptIn())).out).toContain("shut by a tamper");
     expect(await hook("prompt", "garbage")).toEqual({ code: 0, out: "", err: "" });

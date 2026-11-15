@@ -352,6 +352,23 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked", allowStop: true });
   });
 
+  it("refuses the stop while a passing criterion's latest replay proved nothing, though nothing is owed (R34)", async () => {
+    await setup();
+    const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
+    let stuck = false;
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (stuck && idOf(f) === "t-1" ? timeout(f) : pass(f))) });
+    expect(await checkOnce(p, deps, log, { reason: "edit" })).toMatchObject({ status: "checked", allowStop: true, owed: [] });
+
+    // the agent saves again: nothing owed, so Kane replays every green criterion; t-1 times out twice
+    stuck = true;
+    await markEdit(p.home, Date.now() + 1);
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(calls.tests).toEqual([[T1, T3], [T1, T3], [T1]]);
+    expect(r).toMatchObject({ status: "checked", allowStop: false, owed: [], inconclusive: ["t-1: timeout"] });
+    expect(r.gate.inconclusive).toEqual([{ test: "t-1", turn: 1, reason: "timeout" }]);
+    expect(r.brief).not.toMatch(/timeout|t-1/);
+  });
+
   it("a run Kane could not finish is re-run once, surfaced to the human, never briefed, and the next check runs Kane again (R34)", async () => {
     await setup();
     const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout", credits: 160 });

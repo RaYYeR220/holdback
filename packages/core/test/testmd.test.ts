@@ -263,7 +263,7 @@ describe("notAnAppFailure / runSettled (R34: Kane's verdict family gates everyth
   });
   const verdict = (family?: string) => ({ bugTitle: "something broke", ...(family ? { family } : {}) });
 
-  it("only an application_issue, or a plain failure with no verdict family, is an app failure", () => {
+  it("only Kane's known non-app families, a timeout or a crash are not app failures; anything else fails closed on the app", () => {
     expect(notAnAppFailure(base({ status: "passed", criteriaFailed: [] }))).toBeUndefined();
     expect(notAnAppFailure(base({ verdict: verdict("application_issue") }))).toBeUndefined();
     expect(notAnAppFailure(base())).toBeUndefined(); // a plain assertion failure
@@ -271,7 +271,13 @@ describe("notAnAppFailure / runSettled (R34: Kane's verdict family gates everyth
     expect(notAnAppFailure(base({ status: "broken", verdict: verdict("application_issue") }))).toBeUndefined();
     expect(notAnAppFailure(base({ verdict: verdict("environment_issue") }))).toBe("environment_issue: something broke");
     expect(notAnAppFailure(base({ verdict: verdict("automation_bug") }))).toBe("automation_bug: something broke");
-    expect(notAnAppFailure(base({ verdict: verdict("tooling_glitch") }))).toBe("tooling_glitch: something broke");
+    // compared trimmed and case-insensitively
+    expect(notAnAppFailure(base({ verdict: verdict("  Environment_Issue ") }))).toBe("environment_issue: something broke");
+    expect(notAnAppFailure(base({ verdict: verdict("AUTOMATION_BUG") }))).toBe("automation_bug: something broke");
+    // a family Holdback does not know (a new Kane, a typo) is the app's failure: fail closed
+    expect(notAnAppFailure(base({ verdict: verdict("tooling_glitch") }))).toBeUndefined();
+    expect(notAnAppFailure(base({ status: "broken", verdict: verdict("platform_hiccup") }))).toBeUndefined();
+    expect(notAnAppFailure(base({ verdict: verdict("environment issue") }))).toBeUndefined();
     expect(notAnAppFailure(base({ status: "error", reason: "timeout" }))).toBe("timeout");
     expect(notAnAppFailure(base({ status: "error", reason: "spawn kane-cli ENOENT" }))).toBe("crash: spawn kane-cli ENOENT");
     expect(notAnAppFailure(base({ status: "broken", reason: "Kane exited mid-run" }))).toBe("crash: Kane exited mid-run");

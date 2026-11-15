@@ -295,6 +295,38 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(reduce(await readEvents(p.ledgerFile)).inconclusive).toEqual([]);
   });
 
+  it("keeps the gate shut while a passing criterion's latest replay proved nothing, and re-runs it next turn (R34)", async () => {
+    await setup();
+    let t1Replays = 0;
+    const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
+    const { deps, calls } = fakes({
+      kane: (turn, files) =>
+        files.map((f) => {
+          if (turn === 1) return idOf(f) === "t-3" ? fail(f) : pass(f);
+          // turn 2: ac-3 fixed, then t-1's replay (and its re-run) time out; turn 3: all fine
+          if (turn === 2 && idOf(f) === "t-1") return (t1Replays++, timeout(f));
+          return pass(f);
+        }),
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({ allowStop: true, turns: 3, reason: "gate-open" });
+    expect(t1Replays).toBe(2);
+    expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
+      [1, [T1, T3]],
+      [2, [T3]],
+      [2, [T1]],
+      [2, [T1]],
+      [3, [T1, T3]], // nothing owed: the replay runs every green criterion's tests again
+    ]);
+    // ac-1 never left `passing`, and the agent's third brief names nothing of the timeout
+    const third = calls.claude[2]!.prompt;
+    expect(third.startsWith("# Holdback — 0 criteria still owed\n")).toBe(true);
+    expect(third).not.toMatch(/timeout|t-1|inconclusive/i);
+    const afterTurn2 = (await readEvents(p.ledgerFile)).filter((e) => !(e.t === "run" && e.turn === 3));
+    expect(reduce(afterTurn2).acs["ac-1"]!.status).toBe("passing");
+    expect(gate(reduce(afterTurn2))).toMatchObject({ allowStop: false, owed: [], inconclusive: [{ test: "t-1", turn: 2, reason: "timeout" }] });
+  });
+
   it("logs Kane's balance drop around each batch, and a batch whose balance cannot be read with its per-run sum (R34)", async () => {
     await setup();
     let bal = 1000;
