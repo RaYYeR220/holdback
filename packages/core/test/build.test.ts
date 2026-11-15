@@ -320,6 +320,28 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(reduce(await readEvents(p.ledgerFile)).acs["ac-1"]!.status).toBe("passing");
   });
 
+  it("re-runs a stuck test against the newest code before stopping inconclusive, after a turn that fixed the owed work", async () => {
+    await setup();
+    // ac-1 passed at turn 1; t-1 then proved nothing at turn 2; ac-3 is still owed
+    await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "turn.start", n: 2, owed: ["ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 2, result: { ...pass(T1), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
+    // t-1 never finishes; ac-3 fails in the run's first agent turn (ledger turn 3, a replay turn) and passes in the next
+    const { deps, calls } = fakes({ kane: (turn, files) => files.map((f) => (idOf(f) === "t-1" ? timeout(f) : turn === 1 ? fail(f) : pass(f))) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({ allowStop: false, turns: 2, reason: "inconclusive", inconclusive: [{ test: "t-1", turn: 4, reason: "timeout" }] });
+    expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
+      [1, [T3]],
+      [1, [T1]], // turn 3's replay re-ran t-1 while ac-3 was still owed
+      [1, [T1]],
+      [2, [T3]], // turn 4 fixed ac-3...
+      [2, [T1]], // ...and t-1 ran again against that code before the run stopped
+      [2, [T1]],
+    ]);
+  });
+
   it("bisects a regression the re-check finds, the same way as one a turn finds", async () => {
     await setup();
     // ac-1 green at turn 1; by turn 3 its replay timed out twice (inconclusive), nothing else owed
@@ -337,7 +359,8 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       return null;
     };
     const r = await runBuildLoop(p, deps, log);
-    // the re-check found a real failure: regressed, bisected, then briefed and fixed in turn 4
+    // the re-check found a real failure: regressed and bisected, then briefed and fixed in the next agent turn
+    // (ledger turn 4, this run's first and only one)
     expect(blamed).toEqual([["ac-1", 1, 3]]);
     expect(r).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
     const regressions = (await loopEvents()).filter((e) => e.t === "regression");

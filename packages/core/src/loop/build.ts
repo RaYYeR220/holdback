@@ -538,6 +538,8 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       s.assertSealed(owedFiles);
       lastTurn = n;
       turns += 1;
+      // new code is coming: a test that proved nothing gets its re-check against it again
+      rechecked = false;
       await s.emit({ t: "turn.start", n, owed: owed.map((a) => a.id) });
 
       // 1. agent turn
