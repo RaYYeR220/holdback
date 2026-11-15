@@ -21,6 +21,7 @@ import {
   runTests,
   serve,
   snapshot as coreSnapshot,
+  escapeControls,
   specDiff,
   type Snapshot as CoreSnapshot,
   startApp,
@@ -271,6 +272,15 @@ export function insideClaudeCode(ctx: Ctx): boolean {
 export function readerView(ctx: Ctx, p: Project): Ctx {
   if (!insideClaudeCode(ctx)) return ctx;
   return { ...ctx, out: (l) => ctx.out(forAgent(p, l)), err: (l) => ctx.err(forAgent(p, l)) };
+}
+
+/**
+ * The output side of a command whose lines carry text an agent, the app or Kane wrote (a brief, a
+ * status line, Kane's verdicts, an agent's stderr) for a human to act on: every line goes through
+ * `escapeControls`, so no escape sequence or bidi control reaches the terminal as one.
+ */
+export function humanView(ctx: Ctx): Ctx {
+  return { ...ctx, out: (l) => ctx.out(escapeControls(l)), err: (l) => ctx.err(escapeControls(l)) };
 }
 
 /** Refuses a human-only command inside Claude Code: true (and the reason printed) when it must not run. */

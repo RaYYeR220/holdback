@@ -288,6 +288,16 @@ describe("status and owed", () => {
     expect(forged.err).toContain(".testmuai/tests/t1_test.md");
   });
 
+  it("status and owed escape control and bidi characters in what Kane and the agent wrote (addendum 3)", async () => {
+    await fixture();
+    await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "failed", { failedStep: 2, verdict: { bugTitle: "Limit\u001b[2J off‮by one", observed: "Total​: $4\u009b31m" } }) });
+    for (const cmd of ["status", "owed"]) {
+      const r = await cli([cmd]);
+      expect(r.out, cmd).toMatch(/\\x1b\[2J|\\u200B/);
+      expect(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\p{Cf}/u.test(r.out + r.err), cmd).toBe(false);
+    }
+  });
+
   it("reports an edited spec as drift, not a tamper", async () => {
     await fixture();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\nPlus a new rule.\n");

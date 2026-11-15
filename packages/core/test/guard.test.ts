@@ -199,8 +199,8 @@ describe("guardDecision hardening", () => {
     expect(edit("Write", "PRD.md")).toMatchObject({ allow: false, spec: "edit" });
     expect(edit("MultiEdit", `${app}/./prd.md`)).toMatchObject({ allow: false, spec: "edit" });
     expect(guardDecision({ tool_name: "Bash", tool_input: { command: "echo x >> PRD.md" } }, c)).toMatchObject({ allow: false, spec: "shell" });
-    // another file of that name elsewhere is not the spec
-    expect(edit("Edit", join(app, "docs", "PRD.md"))).toEqual({ allow: true });
+    // fail closed: another file of that name elsewhere counts as the spec too
+    expect(edit("Edit", join(app, "docs", "PRD.md"))).toMatchObject({ allow: false, spec: "edit" });
     expect(guardDecision({ tool_name: "Read", tool_input: { file_path: join(app, "PRD.md") } }, c)).toEqual({ allow: true });
     // other denials carry no spec mark
     const other = guardDecision({ tool_name: "Bash", tool_input: { command: "git commit -m x" } }, c);
@@ -230,6 +230,18 @@ describe("guardDecision hardening", () => {
         expect(edit(short), short).toMatchObject({ allow: false, spec: "edit" });
       }
     }
+    // MSYS, Cygwin and long-path forms of the same file (Windows)
+    if (process.platform === "win32") {
+      const fwd = app.replace(/\\/g, "/");
+      const drive = fwd[0]!.toLowerCase();
+      for (const form of [`/${drive}${fwd.slice(2)}/PRD.md`, `/cygdrive/${drive}${fwd.slice(2)}/PRD.md`, `\\\\?\\${app}\\PRD.md`, `//?/${fwd}/PRD.md`]) {
+        expect(edit(form), form).toMatchObject({ allow: false, spec: "edit" });
+        expect(guardDecision({ tool_name: "Bash", tool_input: { command: `echo x >> '${form}'` } }, c), form).toMatchObject({ allow: false, spec: "shell" });
+      }
+    }
+    // fail closed: any absolute path ending in the spec's relative path counts as the spec
+    expect(edit(join(app, "docs", "PRD.md"))).toMatchObject({ allow: false, spec: "edit" });
+    expect(edit("/somewhere/else/PRD.md")).toMatchObject({ allow: false, spec: "edit" });
     // other files stay open
     expect(edit(join(app, "PRD.md.bak"))).toEqual({ allow: true });
     expect(edit(join(app, "src", "app.js"))).toEqual({ allow: true });

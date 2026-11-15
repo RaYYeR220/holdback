@@ -142,7 +142,7 @@ function gitViolation(text: string): string | undefined {
  * stay. Applied everywhere: on other systems it only makes the match wider.
  */
 function fsPath(p: string): string {
-  const segs = unquote(p).replace(/\\/g, "/").split("/");
+  const segs = drivePath(unquote(p).replace(/\\/g, "/")).split("/");
   return segs
     .map((s, i) => {
       if (i === 0 && /^[a-zA-Z]:$/.test(s)) return s; // a drive
@@ -151,6 +151,20 @@ function fsPath(p: string): string {
       return out;
     })
     .join("/");
+}
+
+/**
+ * On Windows, the drive form of an MSYS (`/c/x`), Cygwin (`/cygdrive/c/x`) or long-path / device
+ * (`//?/C:/x`, `//./C:/x`) absolute path, given `/`-separated. Anything else, and every path on other
+ * systems, as it is.
+ */
+function drivePath(p: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return p;
+  const device = /^\/\/[?.]\/([a-zA-Z]:(?:\/.*)?)$/.exec(p);
+  if (device) return device[1]!;
+  const posix = /^\/(?:cygdrive\/)?([a-zA-Z])(\/.*)?$/i.exec(p);
+  if (posix) return `${posix[1]!.toUpperCase()}:${posix[2] ?? "/"}`;
+  return p;
 }
 
 /** Lowercase, `/`-separated, Windows quirks dropped (`fsPath`), no `./` or `../` prefixes: how a shell token is matched to a spec path. */
@@ -185,10 +199,11 @@ function sameFile(a: string, b: string): boolean {
 }
 
 /**
- * Whether a path the agent names is one of the spec files (R38). A relative path (or any, without the
- * app dir): the normalised path, or one ending in `/<spec>`, compared case-insensitively. With the app
- * dir known, also: the path resolved against it (Windows quirks dropped, 8.3 short names expanded)
- * equal to a spec file's, or, when it exists, the same file as one (a hard link, a short name).
+ * Whether a path the agent names is one of the spec files (R38), failing closed. Any path whose
+ * normalised form (`fsPath`, lowercase; MSYS, Cygwin and device prefixes turned into drives) is the
+ * spec's relative path or ends in `/<spec>`. With the app dir known, also: the path resolved against
+ * it, 8.3 short names expanded, equal to a spec file's, or, when it exists, the same file as one (a
+ * hard link, a short name).
  */
 function specMatcher(ctx: GuardContext): (token: string) => boolean {
   const files = ctx.specFiles ?? [];
@@ -199,9 +214,8 @@ function specMatcher(ctx: GuardContext): (token: string) => boolean {
   return (token: string) => {
     const t = specPathOf(token);
     if (t === "") return false;
-    // a relative path may be relative to anywhere (a shell's `cd`): any path ending in the spec's matches
-    const absolute = path.isAbsolute(fsPath(token)) || /^[a-zA-Z]:/.test(t);
-    if ((appDir === undefined || !absolute) && specs.some((s) => t === s || t.endsWith(`/${s}`))) return true;
+    // fail closed: any path ending in the spec's relative path counts (a shell's `cd`, another root)
+    if (specs.some((s) => t === s || t.endsWith(`/${s}`))) return true;
     if (appDir === undefined) return false;
     const abs = path.resolve(appDir, fsPath(token));
     if (realLong.includes(norm(longPath(abs)))) return true;

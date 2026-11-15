@@ -1,5 +1,5 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, humanView, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { reviewSpecChange } from "./specchange.js";
 
 /**
@@ -7,7 +7,8 @@ import { reviewSpecChange } from "./specchange.js";
  * human always sees the diff from the sealed spec first; a change not known to be theirs must be
  * accepted in the terminal, whatever `--answers` says (R37, R38).
  */
-export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: boolean; port?: string; kaneCap?: string } = {}): Promise<number> {
+export async function driftCmd(caller: Ctx, o: { answers?: string; dashboard?: boolean; port?: string; kaneCap?: string } = {}): Promise<number> {
+  const ctx = humanView(caller); // the diff and Kane's plan are text others wrote
   if (refuseInsideClaudeCode(ctx, "holdback drift")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
   const io = await openHumanIO(ctx, p, o.answers, o);

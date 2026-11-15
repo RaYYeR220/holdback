@@ -1,10 +1,10 @@
 import { buildBrief, loadProject } from "@holdback/core";
-import { EXIT, explainFailure, readerView, snapshot, type Ctx } from "./context.js";
+import { EXIT, explainFailure, humanView, readerView, snapshot, type Ctx } from "./context.js";
 
 /** Prints the brief the coding agent would get next. */
 export async function owedCmd(caller: Ctx): Promise<number> {
   const p = await loadProject(caller.cwd);
-  const ctx = readerView(caller, p);
+  const ctx = humanView(readerView(caller, p));
   let s: Awaited<ReturnType<typeof snapshot>>;
   try {
     s = await snapshot(p);

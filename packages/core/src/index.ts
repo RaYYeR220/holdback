@@ -79,7 +79,6 @@ export {
   latestSpecChange,
   classifySpecChange,
   settleSpecChange,
-  escapeControls,
   specDiff,
   type SpecChangeNow,
   SEALED_DIR,
@@ -88,6 +87,7 @@ export {
   type SpecDeps,
 } from "./loop/spec.js";
 export { logSpecAttempt, specAttemptsSince, attemptsText, SPEC_ATTEMPTS, type SpecAttempt } from "./agent/attempts.js";
+export { escapeControls } from "./text.js";
 export { freshDataDir, appEnv, DATA_DIR_ENV, DATA_ROOT, KEEP_DATA_DIRS } from "./datadir.js";
 export { runDrift, watchSpec, defaultDriftKane, type DriftDeps, type DriftKane, type DriftResult } from "./loop/drift.js";
 export { buildBrief, byAcId, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";

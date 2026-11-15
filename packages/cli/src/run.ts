@@ -1,5 +1,5 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, humanView, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
 import { reviewSpecChange } from "./specchange.js";
 
@@ -105,7 +105,9 @@ export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: Abo
   }
 }
 
-async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions, on: PipelineEvents): Promise<number> {
+async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions, on: PipelineEvents): Promise<number> {
+  // stop reasons carry an agent's stderr, Kane's verdicts and the spec diff
+  const ctx = humanView(caller);
   const log = ledgerLog(p);
   let turns = 0;
   let falsified: FalsifyResult | undefined;

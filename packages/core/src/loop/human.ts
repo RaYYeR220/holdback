@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createInterface, type Interface } from "node:readline";
 import type { PendingQuestion } from "../kane/assurance.js";
+import { escapeControls } from "../text.js";
 
 export type ApprovalItem = { ref: string; title: string; kind: string };
 
@@ -64,8 +65,9 @@ export class CliHumanIO implements HumanIO {
       });
       const hint = q.allowFreeText ? "number or free text" : "number";
       const rec = q.options[q.recommendedIndex];
-      this.output.write(lines.filter(Boolean).join("\n") + "\n");
-      const raw = await this.ask(`Answer (${hint}, Enter = ${rec ? rec.label : "recommended"}): `);
+      // Kane wrote these: shown with their control and format characters escaped
+      this.output.write(escapeControls(lines.filter(Boolean).join("\n")) + "\n");
+      const raw = await this.ask(escapeControls(`Answer (${hint}, Enter = ${rec ? rec.label : "recommended"}): `));
       const picked = /^\d+$/.test(raw) ? q.options[Number(raw) - 1] : undefined;
       out[q.id] = raw === "" ? (rec?.label ?? "") : (picked?.label ?? raw);
     }
@@ -73,7 +75,7 @@ export class CliHumanIO implements HumanIO {
   }
 
   async approve(items: ApprovalItem[]): Promise<string[]> {
-    this.output.write("\nApprove:\n" + items.map((i) => `  ${i.ref} [${i.kind}] ${i.title}`).join("\n") + "\n");
+    this.output.write("\nApprove:\n" + escapeControls(items.map((i) => `  ${i.ref} [${i.kind}] ${i.title}`).join("\n")) + "\n");
     const raw = await this.ask("Enter = approve all, or type ids to REJECT (space/comma separated): ");
     const reject = new Set(raw.split(/[\s,]+/).filter(Boolean));
     return items.map((i) => i.ref).filter((r) => !reject.has(r));

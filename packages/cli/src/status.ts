@@ -1,5 +1,5 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
+import { EXIT, explainFailure, humanView, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
 import { inconclusiveLine, kaneCreditsText } from "./messages.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
@@ -7,7 +7,9 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 
 export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<number> {
   const p = await loadProject(caller.cwd);
-  const ctx = readerView(caller, p);
+  const reader = readerView(caller, p);
+  // JSON escapes its own strings; every other line is for a human to read
+  const ctx = o.json ? reader : humanView(reader);
   let s: Awaited<ReturnType<typeof snapshot>>;
   try {
     s = await snapshot(p);

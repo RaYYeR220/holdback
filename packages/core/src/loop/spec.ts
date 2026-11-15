@@ -23,6 +23,7 @@ import type { LedgerEvent } from "../ledger/types.js";
 import type { EventBody } from "../ledger/vouched.js";
 import { kaneCapCredits, type Project } from "../project.js";
 import { attemptsText, specAttemptsSince } from "../agent/attempts.js";
+import { escapeControls } from "../text.js";
 import { appSealKey, checkSeal, isAppKeyOf, seal } from "../seal.js";
 import { clearTamper, logRecordings, markTampered, tamperMarker } from "../tamper.js";
 import type { HumanIO } from "./human.js";
@@ -169,13 +170,7 @@ export async function settleSpecChange(p: Project, log: Log): Promise<SpecChange
   return { kind: "drift", files, unverified: c.unverified };
 }
 
-/**
- * Text fit for a terminal: every C0 and C1 control character but tab and newline shown as `\xNN`
- * (an escape sequence in a spec diff must never reach the terminal as one).
- */
-export function escapeControls(text: string): string {
-  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
-}
+export { escapeControls };
 
 /** `<home>/sealed/<spec>`: each spec file as the latest seal hashed it, for the diff drift shows the human (R37). */
 export const SEALED_DIR = "sealed";
