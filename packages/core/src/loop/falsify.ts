@@ -1,18 +1,18 @@
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, readlink, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
-import { BreakerError, BudgetRefused, pickFiles, proposeMutant, checkPatch, type Mutant } from "../breaker/mutate.js";
+import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, type Mutant } from "../breaker/mutate.js";
 import { Budget, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
-import { designTests, extractResume, listNodes, readGraph, resumeSession, review } from "../kane/assurance.js";
+import { designTests, extractResume, listNodes, readGraph, resumeSession, review, type ListedNode } from "../kane/assurance.js";
 import { runTests, type TestRunResult } from "../kane/testmd.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent } from "../ledger/types.js";
 import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type EventBody, type LedgerMark } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
-import { checkSeal } from "../seal.js";
+import { checkSeal, tier1Entries, type SealEntry } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { byAcId } from "./brief.js";
 import { assertTestsSealed, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
@@ -127,35 +127,23 @@ function redesignedAfterSurvival(events: LedgerEvent[]): Set<string> {
 /** A re-design that cannot go ahead; the verifier is rolled back. */
 class RedesignDropped extends Error {}
 
-/** Tier-1 sealed files (verifier tests outside Kane's recordings, variables) and the sealed app files, as bytes. */
-type SealedCopy = { verifier: Map<string, Buffer>; app: Map<string, Buffer | null> };
+/**
+ * The tier-1 entries as the seal lists them (file bytes, or a link's target) and the sealed app
+ * files (null when absent), taken before a re-design so it can be rolled back.
+ */
+type SealedCopy = { verifier: Map<string, Buffer | string>; app: Map<string, Buffer | null> };
 
-const TIER1_DIRS = [".testmuai/tests", ".testmuai/variables"];
+const inVerifier = (p: Project, rel: string) => path.join(p.verifierDir, ...rel.split("/"));
 
-async function tier1Files(verifierDir: string): Promise<string[]> {
-  const out: string[] = [];
-  const walk = async (dir: string, rel: string, inTests: boolean) => {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw e;
-    }
-    for (const ent of entries) {
-      const r = `${rel}/${ent.name}`;
-      if (ent.isDirectory()) {
-        if (!(inTests && ent.name.startsWith("output-"))) await walk(path.join(dir, ent.name), r, inTests);
-      } else out.push(r);
-    }
-  };
-  for (const d of TIER1_DIRS) await walk(path.join(verifierDir, ...d.split("/")), d, d.endsWith("tests"));
-  return out;
+async function entryValue(file: string, kind: SealEntry["kind"]): Promise<Buffer | string> {
+  if (kind === "file") return readFile(file);
+  if (kind === "symlink") return `symlink:${await readlink(file).catch(() => "?")}`;
+  return "special";
 }
 
 async function copySealed(p: Project): Promise<SealedCopy> {
-  const verifier = new Map<string, Buffer>();
-  for (const rel of await tier1Files(p.verifierDir)) verifier.set(rel, await readFile(path.join(p.verifierDir, ...rel.split("/"))));
+  const verifier = new Map<string, Buffer | string>();
+  for (const e of await tier1Entries(p.verifierDir)) verifier.set(e.rel, await entryValue(inVerifier(p, e.rel), e.kind));
   const app = new Map<string, Buffer | null>();
   for (const rel of appSealFiles(p)) {
     try {
@@ -168,17 +156,47 @@ async function copySealed(p: Project): Promise<SealedCopy> {
   return { verifier, app };
 }
 
+const same = (a: Buffer | string, b: Buffer | string) => (Buffer.isBuffer(a) && Buffer.isBuffer(b) ? a.equals(b) : a === b);
+
+/** Tier-1 test entries added or changed since `copy`. */
+async function changedTests(p: Project, copy: SealedCopy): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of await tier1Entries(p.verifierDir)) {
+    if (!e.rel.startsWith(".testmuai/tests/")) continue;
+    const was = copy.verifier.get(e.rel);
+    if (was === undefined || !same(was, await entryValue(inVerifier(p, e.rel), e.kind))) out.push(e.rel);
+  }
+  return out;
+}
+
+/** Remove a file, link or junction without ever following it. */
+async function removeEntry(file: string): Promise<void> {
+  try {
+    if ((await lstat(file)).isSymbolicLink()) await unlink(file);
+    else await rm(file, { force: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+}
+
+/** Put the sealed files back as `copy` holds them (links are only removed, never written through). */
 async function restoreSealed(p: Project, copy: SealedCopy): Promise<void> {
-  for (const rel of await tier1Files(p.verifierDir)) if (!copy.verifier.has(rel)) await rm(path.join(p.verifierDir, ...rel.split("/")), { force: true });
+  for (const e of await tier1Entries(p.verifierDir)) {
+    const was = copy.verifier.get(e.rel);
+    if (was === undefined || e.kind !== "file" || !Buffer.isBuffer(was)) {
+      if (was === undefined || !same(was, await entryValue(inVerifier(p, e.rel), e.kind))) await removeEntry(inVerifier(p, e.rel));
+    }
+  }
   for (const [rel, bytes] of copy.verifier) {
-    const file = path.join(p.verifierDir, ...rel.split("/"));
+    if (!Buffer.isBuffer(bytes)) continue;
+    const file = inVerifier(p, rel);
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, bytes);
   }
   for (const [rel, bytes] of copy.app) {
     const file = path.join(p.appDir, ...rel.split("/"));
-    if (bytes === null) await rm(file, { force: true });
-    else await writeFile(file, bytes);
+    await removeEntry(file);
+    if (bytes !== null) await writeFile(file, bytes);
   }
 }
 
@@ -358,6 +376,12 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
             await finish("invalid", `patch did not apply: ${failure}; retry refused: ${e.message}`);
             return "budget";
           }
+          if (e instanceof BreakerUnavailable) {
+            // an outage proves nothing about the AC; the pass goes on (and still ends with the replay)
+            usd += e.usd;
+            await finish("invalid", `breaker unavailable: ${e.message}`);
+            return "done";
+          }
           throw e;
         }
         usd += m.usd;
@@ -424,47 +448,76 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
 
   /**
    * Re-design the use cases once (Kane `design tests --force`), let the human approve the derived
-   * nodes, then log the new design and re-seal. Anything short of that rolls the sealed files back.
+   * nodes of those use cases, then log the new design and re-seal. It is rolled back (sealed files
+   * restored byte for byte, recordings re-anchored, `redesign.dropped` logged with Kane's credits)
+   * unless the human approved something, every survivor is still in the approved design, and every
+   * test file Kane added or changed is one the human approved here.
    */
-  const redesign = async (ucs: string[]): Promise<void> => {
+  const redesign = async (ucs: string[], survivors: string[]): Promise<void> => {
     const copy = await copySealed(p);
     const credits = new Map<string, number>();
-    let rejected: Set<string>;
+    const designs: Extract<EventBody, { t: "design" }>[] = [];
+    const designNode = (n: ListedNode) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label);
     kaneWindow = true; // Kane writes into the verifier while it designs
     try {
+      const derivedBefore = new Set((await deps.kane.listNodes(cwd)).filter(designNode).map((n) => n.id));
       for (const uc of ucs) {
         const first = await deps.kane.designTests(cwd, uc, { force: true, max: p.config.kane.designMax });
         const d = await drivePaused(p, io, emit, first, deps.kane);
-        if (d.status !== "complete") throw new RedesignDropped(`re-design of ${uc} ${d.status}${d.message ? `: ${d.message}` : ""}`);
         credits.set(uc, d.credits);
+        if (d.status !== "complete") throw new RedesignDropped(`re-design of ${uc} ${d.status}${d.message ? `: ${d.message}` : ""}`);
       }
-      const derived = (await deps.kane.listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label));
+      // only nodes of these use cases: new since the re-design started, or attributed to them by the graph
+      const g = await deps.kane.readGraph(cwd);
+      const ucAcs = new Set(g.acs.filter((a) => ucs.includes(a.useCase)).map((a) => a.id));
+      const ucTests = new Set(g.tests.filter((t) => t.verifies.some((v) => ucAcs.has(v))).map((t) => t.id));
+      const derived = (await deps.kane.listNodes(cwd)).filter((n) => designNode(n) && (!derivedBefore.has(n.id) || ucAcs.has(n.id) || ucTests.has(n.id)));
       if (derived.length === 0) throw new RedesignDropped("the re-design produced nothing to approve");
       const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
       const refs = derived.map((n) => n.id).filter((id) => approved.includes(id));
-      rejected = new Set(derived.map((n) => n.id).filter((id) => !refs.includes(id)));
+      const rejected = new Set(derived.map((n) => n.id).filter((id) => !refs.includes(id)));
       await emit({ t: "spec.approved", refs, rejected: [...rejected] });
       if (refs.length === 0) throw new RedesignDropped("no re-designed test was approved");
+
+      for (const uc of ucs) {
+        const acs = g.acs.filter((a) => a.useCase === uc && !rejected.has(a.id));
+        const ids = new Set(acs.map((a) => a.id));
+        const tests = g.tests.filter((t) => !rejected.has(t.id) && t.verifies.some((v) => ids.has(v)));
+        designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.get(uc) ?? 0 });
+      }
+      // a survivor never leaves the gate silently: it stays vacuous unless the new design still holds it
+      const kept = new Set(designs.flatMap((d) => d.acs.map((a) => a.id)));
+      const gone = survivors.filter((id) => !kept.has(id));
+      if (gone.length > 0) throw new RedesignDropped(`the approved re-design no longer holds ${gone.join(", ")} (rejected or not re-derived)`);
+      // the seal below hashes whatever is on disk: every test byte Kane wrote must be one the human approved
+      const approvedFiles = new Set(
+        g.tests.filter((t) => refs.includes(t.id) && t.file).map((t) => path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)).split(path.sep).join("/")),
+      );
+      const unapproved = (await changedTests(p, copy)).filter((f) => !approvedFiles.has(f));
+      if (unapproved.length > 0) throw new RedesignDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
+      // only now is Kane told what the human approved
       await deps.kane.review(cwd, refs);
     } catch (e) {
-      if (e instanceof LedgerTampered) throw e;
-      await restoreSealed(p, copy);
-      const left = manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
-      if (left.length > 0) throw new Error(`re-design rolled back, but sealed files still differ (${left.join(", ")}): re-seal before building`);
-      await closeKaneWindow();
-      if (e instanceof RedesignDropped) {
-        out.redesignError = e.message;
-        return;
+      // the sealed files go back first, whatever happened (local files only)
+      let restoreError: unknown;
+      try {
+        await restoreSealed(p, copy);
+      } catch (re) {
+        restoreError = re;
       }
-      throw e;
+      if (e instanceof LedgerTampered) throw e;
+      const left = restoreError === undefined && manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
+      if (restoreError !== undefined || left.length > 0) {
+        const why = restoreError !== undefined ? errText(restoreError) : `sealed files still differ (${left.join(", ")})`;
+        throw new Error(`re-design rolled back incompletely: ${why}: re-seal before building`);
+      }
+      await closeKaneWindow();
+      const detail = e instanceof RedesignDropped ? e.message : `Kane failed during the re-design: ${errText(e)}`;
+      out.redesignError = detail;
+      await emit({ t: "redesign.dropped", useCases: ucs, detail, credits: [...credits.values()].reduce((a, b) => a + b, 0) });
+      return;
     }
-    const g = await deps.kane.readGraph(cwd);
-    for (const uc of ucs) {
-      const acs = g.acs.filter((a) => a.useCase === uc && !rejected.has(a.id));
-      const ids = new Set(acs.map((a) => a.id));
-      const tests = g.tests.filter((t) => !rejected.has(t.id) && t.verifies.some((v) => ids.has(v)));
-      await emit({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.get(uc) ?? 0 });
-    }
+    for (const d of designs) await emit(d);
     await reseal(p, append, gitOpts); // also anchors the recordings as they are now
     kaneWindow = false;
     manifest = lastSeal(events);
@@ -520,6 +573,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   };
 
   const run = async (): Promise<FalsifyResult> => {
+    await dropStaleMutants(); // touches nothing sealed
     const marker = await tamperMarker(p);
     if (marker !== null) {
       try {
@@ -557,7 +611,6 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     const passing = Object.values(state.acs)
       .filter((a) => a.status === "passing")
       .sort(byAcId);
-    await dropStaleMutants();
     let budgetOut = false;
     for (const ac of passing) {
       if (budgetOut) {
@@ -582,7 +635,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       const ucs = [...new Set(ucOf.values())].filter((uc) => !again.has(uc)).sort();
       for (const [id, uc] of ucOf) if (again.has(uc)) out.vacuous.push(id);
       if (ucs.length > 0) {
-        await redesign(ucs);
+        await redesign(
+          ucs,
+          [...ucOf].filter(([, uc]) => ucs.includes(uc)).map(([id]) => id),
+        );
         if (out.redesigned.length === 0) for (const [id, uc] of ucOf) if (ucs.includes(uc)) out.vacuous.push(id);
       }
     }

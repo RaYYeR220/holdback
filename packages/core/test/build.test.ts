@@ -140,6 +140,7 @@ function fakes(plan: Plan) {
     tests: [] as { turn: number; cwd: string; files: string[]; opts: unknown }[],
     starts: 0,
     stops: 0,
+    appEnv: [] as (Record<string, string> | undefined)[],
   };
   let turn = 0;
   const deps: BuildDeps = {
@@ -155,6 +156,7 @@ function fakes(plan: Plan) {
     },
     app: async (o) => {
       calls.starts++;
+      calls.appEnv.push(o.env);
       if (plan.appUp && !plan.appUp(turn)) throw new AppStartError("app exited before becoming ready", "> node app.js\nError: Cannot find module 'express'");
       return { url: `http://127.0.0.1:${o.port}`, logs: () => "", stop: async () => void calls.stops++ };
     },
@@ -221,6 +223,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.tests[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 420, parallel: 3 });
     expect(calls.starts).toBe(2);
     expect(calls.stops).toBe(2);
+    expect(calls.appEnv).toEqual([{ VENICE_API_KEY: "" }, { VENICE_API_KEY: "" }]); // the breaker's key never reaches the app
 
     // ledger
     const ev = await loopEvents();

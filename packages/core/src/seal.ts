@@ -66,16 +66,26 @@ async function hashAppFile(appDir: string, rel: string): Promise<string> {
   }
 }
 
+export type SealEntry = Entry;
+
 /**
- * Tier 1, checked at every gate: sha256 of every entry under .testmuai/tests except inside Kane's
- * `output-*` recording folders, and of every entry under .testmuai/variables, keyed by `/` relative
- * path; plus `app:<rel>` entries when `app` is given.
+ * The tier-1 entries exactly as the seal walks them: everything under .testmuai/tests except
+ * inside Kane's `output-*` recording folders, and everything under .testmuai/variables, with `/`
+ * relative paths. Links and special files are listed by kind, never followed.
  */
-export async function seal(verifierDir: string, app?: AppSeal): Promise<Record<string, string>> {
+export async function tier1Entries(verifierDir: string): Promise<SealEntry[]> {
   const entries: Entry[] = [];
   await walk(abs(verifierDir, TESTS_DIR), TESTS_DIR, "skip", entries);
   await walk(abs(verifierDir, VARIABLES_DIR), VARIABLES_DIR, "all", entries);
-  const manifest = await hashEntries(verifierDir, entries);
+  return entries;
+}
+
+/**
+ * Tier 1, checked at every gate: sha256 of every `tier1Entries` entry, keyed by `/` relative
+ * path; plus `app:<rel>` entries when `app` is given.
+ */
+export async function seal(verifierDir: string, app?: AppSeal): Promise<Record<string, string>> {
+  const manifest = await hashEntries(verifierDir, await tier1Entries(verifierDir));
   if (app) {
     for (const f of app.files) {
       const rel = f.split(path.sep).join("/");

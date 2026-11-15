@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { acKeywords, BreakerError, BudgetRefused, checkPatch, pickFiles, proposeMutant, PATCH_SCHEMA } from "../src/breaker/mutate.js";
-import { Budget, estimateUsd, PRICES, veniceChat, VeniceOutputError, type VeniceChatOptions } from "../src/breaker/venice.js";
+import { acKeywords, BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, PATCH_SCHEMA } from "../src/breaker/mutate.js";
+import { Budget, estimateUsd, PRICES, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
 import type { AcState } from "../src/ledger/types.js";
 
 const AC3: AcState = {
@@ -95,12 +95,35 @@ describe("veniceChat", () => {
   it("throws on an HTTP error without echoing the key, and refuses without a key", async () => {
     vi.stubGlobal("fetch", async () => new Response('{"error":"Invalid API key"}', { status: 401, statusText: "Unauthorized" }));
     const e = (await veniceChat(opts).catch((x: unknown) => x)) as Error;
+    expect(e).toBeInstanceOf(VeniceHttpError);
+    expect((e as VeniceHttpError).status).toBe(401);
     expect(e.message).toMatch(/Venice 401/);
     expect(e.message).not.toContain("sk-test-123");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await expect(veniceChat({ ...opts, apiKey: "" })).rejects.toThrow(/VENICE_API_KEY/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("veniceChat outages", () => {
+  const opts: VeniceChatOptions = { model: "deepseek-v4-flash", messages: [{ role: "user", content: "x".repeat(400) }], schema: PATCH_SCHEMA, apiKey: "k" };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reports a request that got no answer (network failure or timeout) as VeniceUnreachable", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    });
+    const e = await veniceChat(opts).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(VeniceUnreachable);
+    expect((e as Error).message).toMatch(/timeout/);
+  });
+
+  it("charges a 200 whose body is not JSON as the worst case", async () => {
+    vi.stubGlobal("fetch", async () => new Response("<html>gateway</html>", { status: 200 }));
+    const e = await veniceChat(opts).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(VeniceOutputError);
+    expect((e as VeniceOutputError).usage).toEqual({ prompt_tokens: 100, completion_tokens: 2048 });
   });
 });
 
@@ -239,6 +262,33 @@ describe("proposeMutant", () => {
     expect((e as Error).message).toMatch(/cap/);
     expect(chat).not.toHaveBeenCalled();
     expect(budget.spent).toBe(1.9995);
+  });
+
+  it("throws BreakerUnavailable on an outage: charged at the worst case when the request may have been billed, else free", async () => {
+    const budget = new Budget(2, 0);
+    const unreachable = await proposeMutant(AC3, files, {
+      model: "deepseek-v4-flash",
+      apiKey: "k",
+      budget,
+      chat: async () => {
+        throw new VeniceUnreachable("Venice unreachable: fetch failed");
+      },
+    }).catch((x: unknown) => x);
+    expect(unreachable).toBeInstanceOf(BreakerUnavailable);
+    const worst = budget.spent;
+    expect((unreachable as BreakerUnavailable).usd).toBe(worst);
+    expect(worst).toBeGreaterThan((2048 * 0.275) / 1e6);
+    const http = await proposeMutant(AC3, files, {
+      model: "deepseek-v4-flash",
+      apiKey: "k",
+      budget,
+      chat: async () => {
+        throw new VeniceHttpError("Venice 429 Too Many Requests: slow down", 429);
+      },
+    }).catch((x: unknown) => x);
+    expect(http).toBeInstanceOf(BreakerUnavailable);
+    expect((http as BreakerUnavailable).usd).toBe(0);
+    expect(budget.spent).toBe(worst);
   });
 
   it("charges a billed reply that carries no usable patch and throws BreakerError with its cost", async () => {

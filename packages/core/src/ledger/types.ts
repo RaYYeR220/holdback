@@ -31,6 +31,8 @@ export type LedgerEvent = { at: string } & (
       verdict: "killed" | "survived" | "survived-by-heal" | "invalid";
       note?: string;
     }
+  /** A falsify-stage re-design that was rolled back (nothing sealed); its Kane credits still count. */
+  | { t: "redesign.dropped"; useCases: string[]; detail: string; credits: number }
   | { t: "drift"; rows: { kind: string; ref: string; why: string }[]; applied: boolean }
   | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string }
   | { t: "tamper"; detail: string }

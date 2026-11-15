@@ -73,6 +73,28 @@ export class VeniceOutputError extends Error {
   }
 }
 
+/**
+ * The request may have reached Venice (and been billed) but no answer came back: a network
+ * failure or a timeout. The caller charges it as the worst case.
+ */
+export class VeniceUnreachable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VeniceUnreachable";
+  }
+}
+
+/** Venice answered with an error status (nothing billed). */
+export class VeniceHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "VeniceHttpError";
+  }
+}
+
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const count = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 
@@ -102,31 +124,38 @@ export function parseReply(content: string): unknown {
  */
 export async function veniceChat(opts: VeniceChatOptions): Promise<VeniceChatResult> {
   if (!opts.apiKey) throw new Error("VENICE_API_KEY is not set");
-  const res = await fetch(VENICE_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` },
-    body: JSON.stringify({
-      model: opts.model,
-      messages: opts.messages,
-      max_tokens: MAX_TOKENS,
-      response_format: { type: "json_schema", json_schema: { name: "patch", schema: opts.schema, strict: true } },
-      venice_parameters: { include_venice_system_prompt: false },
-    }),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Venice ${res.status} ${res.statusText}: ${text.slice(0, 300)}`);
+  const chars = opts.messages.reduce((n, m) => n + m.content.length, 0);
+  const worstCase: Usage = { prompt_tokens: Math.ceil(chars / 4), completion_tokens: MAX_TOKENS };
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetch(VENICE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: opts.messages,
+        max_tokens: MAX_TOKENS,
+        response_format: { type: "json_schema", json_schema: { name: "patch", schema: opts.schema, strict: true } },
+        venice_parameters: { include_venice_system_prompt: false },
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    text = await res.text();
+  } catch (e) {
+    throw new VeniceUnreachable(`Venice unreachable: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!res.ok) throw new VeniceHttpError(`Venice ${res.status} ${res.statusText}: ${text.slice(0, 300)}`, res.status);
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(`Venice returned non-JSON: ${text.slice(0, 300)}`);
+    throw new VeniceOutputError(`Venice returned non-JSON: ${text.slice(0, 300)}`, worstCase);
   }
   const u = isObj(body) && isObj(body.usage) ? body.usage : {};
-  const chars = opts.messages.reduce((n, m) => n + m.content.length, 0);
   const usage: Usage = {
-    prompt_tokens: count(u.prompt_tokens) ?? Math.ceil(chars / 4),
-    completion_tokens: count(u.completion_tokens) ?? MAX_TOKENS,
+    prompt_tokens: count(u.prompt_tokens) ?? worstCase.prompt_tokens,
+    completion_tokens: count(u.completion_tokens) ?? worstCase.completion_tokens,
   };
   const choice = isObj(body) && Array.isArray(body.choices) && isObj(body.choices[0]) ? body.choices[0] : undefined;
   const content = isObj(choice?.message) ? choice.message.content : undefined;

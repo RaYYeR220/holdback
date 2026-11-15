@@ -310,7 +310,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
           cmd: p.config.start.cmd,
           port: p.config.start.port,
           readyPath: p.config.start.readyPath,
-          env: p.config.start.env,
+          env: { ...p.config.start.env, VENICE_API_KEY: "" }, // the breaker's key never reaches the app
         });
       } catch (e) {
         startError = startFailureText(e);

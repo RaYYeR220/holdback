@@ -1,7 +1,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AcState } from "../ledger/types.js";
-import { Budget, estimateUsd, veniceChat, VeniceOutputError, type ChatMessage } from "./venice.js";
+import { Budget, estimateUsd, MAX_TOKENS, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type ChatMessage } from "./venice.js";
 
 export type SourceFile = { path: string; content: string };
 export type Mutant = { patch: string; usd: number; rationale: string };
@@ -43,6 +43,20 @@ export class BreakerError extends Error {
   ) {
     super(message);
     this.name = "BreakerError";
+  }
+}
+
+/**
+ * The breaker could not be reached or answered with an error. `usd` is what it may have cost:
+ * the worst-case estimate when the request may have been billed, else 0.
+ */
+export class BreakerUnavailable extends Error {
+  constructor(
+    message: string,
+    readonly usd: number,
+  ) {
+    super(message);
+    this.name = "BreakerUnavailable";
   }
 }
 
@@ -218,7 +232,8 @@ export type ProposeOptions = {
 /**
  * Ask the breaker for the smallest patch that makes the app violate exactly `ac`. Refuses
  * (BudgetRefused, no call) when the call's worst case would pass the cap; a paid reply without
- * a usable patch throws BreakerError carrying its cost.
+ * a usable patch throws BreakerError carrying its cost; an outage throws BreakerUnavailable
+ * (charged at the worst case when the request may have been billed).
  */
 export async function proposeMutant(ac: AcState, files: SourceFile[], opts: ProposeOptions): Promise<Mutant> {
   const messages = messagesFor(ac, files, opts.retry);
@@ -230,6 +245,11 @@ export async function proposeMutant(ac: AcState, files: SourceFile[], opts: Prop
     reply = await chat({ model: opts.model, messages, schema: PATCH_SCHEMA, apiKey: opts.apiKey });
   } catch (e) {
     if (e instanceof VeniceOutputError) throw new BreakerError(e.message, opts.budget.charge(opts.model, e.usage));
+    if (e instanceof VeniceUnreachable) {
+      const chars = messages.reduce((n, m) => n + m.content.length, 0);
+      throw new BreakerUnavailable(e.message, opts.budget.charge(opts.model, { prompt_tokens: chars / 4, completion_tokens: MAX_TOKENS }));
+    }
+    if (e instanceof VeniceHttpError) throw new BreakerUnavailable(e.message, 0);
     throw e;
   }
   const usd = opts.budget.charge(opts.model, reply.usage);

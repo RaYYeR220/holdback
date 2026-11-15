@@ -46,7 +46,7 @@ export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
-export { seal, checkSeal, sealRecordings, checkRecordings, type AppSeal } from "./seal.js";
+export { seal, checkSeal, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
 export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
 export {
   guardDecision,
@@ -90,6 +90,8 @@ export {
   usdOf,
   estimateUsd,
   VeniceOutputError,
+  VeniceUnreachable,
+  VeniceHttpError,
   VENICE_URL,
   MAX_TOKENS,
   type ChatMessage,
@@ -104,6 +106,7 @@ export {
   checkPatch,
   BudgetRefused,
   BreakerError,
+  BreakerUnavailable,
   PATCH_SCHEMA,
   MAX_PATCH_LINES,
   type SourceFile,
