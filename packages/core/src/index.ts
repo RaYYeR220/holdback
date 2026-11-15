@@ -82,6 +82,7 @@ export {
   defaultFalsifyDeps,
   falsifyVerdict,
   type FalsifyDeps,
+  type FalsifyOptions,
   type FalsifyKane,
   type FalsifyResult,
   type FalsifyStopReason,

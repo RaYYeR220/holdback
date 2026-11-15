@@ -342,6 +342,27 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.claude[1]!.prompt).toContain("Kane reported: timeout");
   });
 
+  it("stops with reason aborted after the current step when the signal fires, leaving the turn on record", async () => {
+    await setup();
+    const ctl = new AbortController();
+    const { deps, calls } = fakes({
+      claude: (turn) => {
+        if (turn === 1) ctl.abort();
+        return undefined;
+      },
+      kane: (_t, files) => files.map(fail),
+    });
+    const r = await runBuildLoop(p, deps, log, { signal: ctl.signal });
+    expect(r).toEqual({ allowStop: false, turns: 1, reason: "aborted" });
+    expect(calls.claude).toHaveLength(1);
+    expect(calls.tests).toHaveLength(0); // no Kane batch after the abort
+    expect(calls.stops).toBe(calls.starts); // the app is down
+    expect((await loopEvents()).map((e) => e.t)).toEqual(["turn.start", "turn.end"]);
+    // a signal already aborted never starts a turn
+    expect(await runBuildLoop(p, deps, log, { signal: ctl.signal })).toEqual({ allowStop: false, turns: 0, reason: "aborted" });
+    expect(calls.claude).toHaveLength(1);
+  });
+
   it("replays passing ACs every 3rd turn and logs a regression when one breaks", async () => {
     await setup({ config: { loop: { maxTurns: 3 } } });
     const { deps, calls } = fakes({

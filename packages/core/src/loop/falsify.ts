@@ -51,7 +51,7 @@ export const defaultFalsifyDeps: FalsifyDeps = {
   kane: { designTests, listNodes, review, readGraph, resumeSession, extractResume },
 };
 
-export type FalsifyStopReason = "done" | "budget" | "tamper" | "error";
+export type FalsifyStopReason = "done" | "budget" | "tamper" | "error" | "aborted";
 
 export type FalsifyResult = {
   /** ACs whose mutant Kane caught: now `proved`. */
@@ -252,6 +252,11 @@ export async function linkAppNodeModules(p: Project, dir: string): Promise<void>
   await symlink(src, dst, "junction");
 }
 
+export type FalsifyOptions = {
+  /** Aborts the pass: it stops after the current AC, still replays the real build, and returns reason `aborted`. */
+  signal?: AbortSignal;
+};
+
 /**
  * Falsify every `passing` AC: the breaker (a different model family, via Venice) writes the
  * smallest patch that violates exactly that AC; it is applied in a throwaway worktree of HEAD,
@@ -262,7 +267,7 @@ export async function linkAppNodeModules(p: Project, dir: string): Promise<void>
  * the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
  * Throws, before anything else, when VENICE_API_KEY is not set.
  */
-export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log: Log): Promise<FalsifyResult> {
+export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log: Log, opts: FalsifyOptions = {}): Promise<FalsifyResult> {
   const apiKey = deps.apiKey ?? process.env.VENICE_API_KEY ?? "";
   if (!apiKey) throw new Error("VENICE_API_KEY is not set: the falsify stage needs it for the breaker (Venice API)");
 
@@ -631,7 +636,12 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       .filter((a) => a.status === "passing")
       .sort(byAcId);
     let budgetOut = false;
+    let aborted = false;
     for (const ac of passing) {
+      if (opts.signal?.aborted) {
+        aborted = true;
+        break;
+      }
       if (budgetOut) {
         out.skipped.push(ac.id);
         continue;
@@ -648,7 +658,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     }
 
     // survivors: one re-design per use case and pass; a use case already re-designed for a survivor stays vacuous
-    if (out.survived.length > 0) {
+    if (out.survived.length > 0 && !aborted) {
       const again = redesignedAfterSurvival(events);
       const ucOf = new Map(out.survived.map((id) => [id, state.acs[id]!.useCase]));
       const ucs = [...new Set(ucOf.values())].filter((uc) => !again.has(uc)).sort();
@@ -664,7 +674,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
 
     // falsify runs left failing coverage in Kane's project store: replay the real build once
     if (attacked && (await replayRealBuild()) === "tamper") return result("tamper");
-    return result(budgetOut ? "budget" : "done");
+    return result(aborted ? "aborted" : budgetOut ? "budget" : "done");
   };
 
   /**

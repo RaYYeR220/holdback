@@ -38,9 +38,11 @@ export const defaultBuildDeps: BuildDeps = { claude: runClaudeTurn, tests: runTe
 export type BuildOptions = {
   /** A human raising the turn cap for this run; turn numbers are global, so this is the highest turn allowed. */
   maxTurnsOverride?: number;
+  /** Aborts the loop: it stops after the current step (never mid-batch) and returns reason `aborted`. */
+  signal?: AbortSignal;
 };
 
-export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error";
+export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted";
 /** `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on record). */
 export type BuildResult = { allowStop: boolean; turns: number; reason: BuildStopReason; error?: string };
 
@@ -273,6 +275,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       if (await tampered(true)) return done(false, "tamper");
       const g = gate(state);
       if (g.allowStop) return done(true, "gate-open");
+      if (opts.signal?.aborted) return done(false, "aborted");
       const n = Math.max(state.turn, lastTurn) + 1;
       if (n > maxTurns) return done(false, "max-turns");
 
@@ -298,7 +301,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       });
       // right after the agent, before any git command of Holdback's reads what it may have planted
       if (await tampered(true)) return done(false, "tamper");
-      if (agent.subtype === undefined && !agent.timedOut && agent.exitCode !== 0) {
+      if (agent.subtype === undefined && !agent.timedOut && agent.exitCode !== 0 && !opts.signal?.aborted) {
         // no result line at all (bad auth, bad flags, crash): another turn would fail the same way
         const why = agent.stderrTail.trim().slice(-500) || agent.resultText || "no output";
         return done(false, "error", `claude exited with code ${agent.exitCode} without a result: ${why}`);
@@ -328,6 +331,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         appUp: app !== undefined,
         agentExit: agent.exitCode,
       });
+      if (opts.signal?.aborted) return done(false, "aborted"); // the turn is committed and on record; the app stops in `finally`
       if (!app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top
 
       // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then.

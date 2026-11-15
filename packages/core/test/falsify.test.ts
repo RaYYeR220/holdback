@@ -369,6 +369,19 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(git(appDir, "status", "--porcelain")).toBe("");
   });
 
+  it("stops with reason aborted after the current AC, still replays the real build, and skips the rest", async () => {
+    await setup();
+    const ctl = new AbortController();
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), onBatch: () => ctl.abort() });
+    const r = await runFalsify(p, deps, io, log, { signal: ctl.signal });
+    expect(r).toMatchObject({ killed: ["ac-1"], reason: "aborted" });
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
+    expect(calls.tests.filter((t) => !t.opts.noHeal)).toHaveLength(1); // Kane's coverage restored
+    expect(calls.stops).toBe(calls.apps.length);
+    expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+    expect((await checkRecordingsAnchor(p, await readEvents(p.ledgerFile))).moved).toEqual([]);
+  });
+
   it("marks a surviving AC vacuous and re-designs its use case once, with the human's approval and a fresh seal", async () => {
     await setup();
     const since = (await readEvents(p.ledgerFile)).length;
