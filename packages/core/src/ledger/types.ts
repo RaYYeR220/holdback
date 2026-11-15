@@ -1,5 +1,6 @@
 import type { AcNode, GapNode, PendingQuestion, TestNode } from "../kane/assurance.js";
 import type { BugVerdict, TestRunResult } from "../kane/testmd.js";
+import type { Slip } from "../breaker/mutate.js";
 
 export type RunKind = "build" | "falsify" | "exam" | "bisect";
 
@@ -11,12 +12,14 @@ export type LedgerEvent = { at: string } & (
   /**
    * A use case's criteria and tests as Kane designed them. `rejected`: the ids among them a human
    * turned down when approving the design (a rejected criterion is never owed, a rejected test never
-   * runs). A later design of the use case replaces it whole.
+   * runs). A later design of the use case replaces it whole. `notes`: why a criterion is as it is,
+   * by id (one an evolve left without a test, say), for the human.
    */
-  | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number; rejected?: string[] }
+  | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number; rejected?: string[]; notes?: Record<string, string> }
   /** The spec stage's extraction finished for the spec files and links as they hash to `hash`: a resumed stage need not ingest again. */
   | { t: "spec.extracted"; hash: string }
-  | { t: "seal"; manifest: Record<string, string> }
+  /** `by: "kane"`: the seal after Kane's evolve of a use case, whose new tests Kane authored (R40). */
+  | { t: "seal"; manifest: Record<string, string>; by?: "kane" }
   | { t: "turn.start"; n: number; owed: string[] }
   | {
       t: "turn.end";
@@ -40,9 +43,26 @@ export type LedgerEvent = { at: string } & (
       usd: number;
       verdict: "killed" | "survived" | "survived-by-heal" | "invalid";
       note?: string;
+      /** The breaker's account of the bug in a user's terms (what Kane is told if it survives). */
+      slip?: Slip;
+      /**
+       * The id of the surviving mutant this one re-plants after Kane evolved the use case (R40): it
+       * must now be killed; any other verdict leaves the criterion vacuous.
+       */
+      recheck?: string;
     }
-  /** A falsify-stage re-design that was rolled back (nothing sealed); its Kane credits still count. */
-  | { t: "redesign.dropped"; useCases: string[]; detail: string; credits: number }
+  /**
+   * A planted bug survived every test of use case `uc`, and Kane evolved it (`maintain evolve`, R40):
+   * `because` is what Kane was told slipped through, `minted` and `retired` the test ids its new set
+   * adds and replaces, `mutants` the survivors it answers. `followUp`: the bounded second evolve
+   * that asked Kane to cover criteria the first left without a test.
+   */
+  | { t: "falsify.evolved"; uc: string; because: string; minted: string[]; retired: string[]; credits: number; mutants: string[]; followUp?: boolean }
+  /**
+   * A drift re-plan or falsify evolve that was rolled back (nothing sealed); its Kane credits still
+   * count. `acs` and `reason`: the vacuous criteria it leaves so, and why in plain words.
+   */
+  | { t: "redesign.dropped"; useCases: string[]; detail: string; credits: number; acs?: string[]; reason?: string }
   | { t: "drift"; rows: { kind: string; ref: string; why: string }[]; applied: boolean; credits?: number }
   | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string; detail?: string }
   /**
@@ -75,6 +95,8 @@ export type AcState = {
   cites: AcNode["cites"];
   tests: string[];
   status: AcStatus;
+  /** Why a vacuous or needs-spec criterion is so, in plain words, when Holdback knows more than its status says. */
+  reason?: string;
   lastFailure?: {
     test: string;
     step?: number;

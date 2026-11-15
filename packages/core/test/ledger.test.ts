@@ -309,6 +309,48 @@ describe("mutants", () => {
   });
 });
 
+describe("a surviving mutant, Kane's evolve and the re-check (R40)", () => {
+  const d = design(["ac-1", "ac-2"], [["t-1", ["ac-1", "ac-2"]]]);
+  const green = [d, run(result("t-1", ["ac-1", "ac-2"], []))];
+  const survived: LedgerEvent = { t: "mutant", at, id: "m-ac-1-1", ac: "ac-1", patch: "p", model: "m", usd: 0, verdict: "survived" };
+  const evolved: LedgerEvent = { t: "falsify.evolved", at, uc: "uc-1", because: "b", minted: ["t-4"], retired: ["t-1"], credits: 11.39, mutants: ["m-ac-1-1"] };
+  const recheck = (verdict: "killed" | "survived" | "invalid"): LedgerEvent => ({ t: "mutant", at, id: "m-ac-1-2", ac: "ac-1", patch: "p", model: "m", usd: 0, verdict, recheck: "m-ac-1-1" });
+
+  it("the evolve's credits count; its new design sends every criterion of the use case back to owed", () => {
+    const after = [...green, survived, evolved, design(["ac-1", "ac-2"], [["t-4", ["ac-1", "ac-2"]]])];
+    const s = reduce(after);
+    expect(s.credits).toBeCloseTo(11.39, 9);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "owed", tests: ["t-4"] });
+    expect(s.acs["ac-2"]).toMatchObject({ status: "owed", tests: ["t-4"] });
+  });
+
+  it("the original mutant re-checked against the new tests: killed proves the criterion; anything else leaves it vacuous", () => {
+    const base = [...green, survived, evolved, design(["ac-1", "ac-2"], [["t-4", ["ac-1", "ac-2"]]]), run(result("t-4", ["ac-1", "ac-2"], []))];
+    expect(reduce([...base, recheck("killed")]).acs["ac-1"]).toMatchObject({ status: "proved" });
+    expect(reduce([...base, recheck("survived")]).acs["ac-1"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/got past the new tests too/) });
+    // a re-check that proved nothing (the patch no longer applies, Kane's environment) fails closed
+    expect(reduce([...base, recheck("invalid")]).acs["ac-1"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/could not be re-checked/) });
+  });
+
+  it("an evolve that adds no test leaves the survivor vacuous with a plain-words reason", () => {
+    const dropped: LedgerEvent = { t: "redesign.dropped", at, useCases: ["uc-1"], detail: "Kane found nothing to change", credits: 5.69, acs: ["ac-1"], reason: "Kane could not add a test that catches this planted bug" };
+    const s = reduce([...green, survived, dropped]);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "vacuous", reason: "Kane could not add a test that catches this planted bug" });
+    expect(s.acs["ac-2"]!.reason).toBeUndefined();
+    expect(s.credits).toBeCloseTo(5.69, 9);
+  });
+
+  it("a criterion an evolve left without a test needs the spec, with the reason on it; a later run that changes its status clears a reason", () => {
+    const evolvedDesign = { ...design(["ac-1", "ac-2"], [["t-4", ["ac-1"]]]), notes: { "ac-2": "no test covers it after Kane's evolve" } } as LedgerEvent;
+    const s = reduce([...green, survived, evolved, evolvedDesign]);
+    expect(s.acs["ac-2"]).toMatchObject({ status: "needs-spec", tests: [], reason: "no test covers it after Kane's evolve" });
+    const dropped: LedgerEvent = { t: "redesign.dropped", at, useCases: ["uc-1"], detail: "x", credits: 0, acs: ["ac-1"], reason: "r" };
+    const later = reduce([...green, survived, dropped, design(["ac-1"], [["t-9", ["ac-1"]]]), run(result("t-9", ["ac-1"], []))]);
+    expect(later.acs["ac-1"]).toMatchObject({ status: "passing" });
+    expect(later.acs["ac-1"]!.reason).toBeUndefined();
+  });
+});
+
 describe("aggregates", () => {
   it("credits sum across design + run events (all run kinds)", () => {
     const s = reduce([

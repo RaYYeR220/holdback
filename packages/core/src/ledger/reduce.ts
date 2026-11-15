@@ -45,6 +45,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           unsure.clear();
           for (const ac of Object.values(state.acs)) {
             if (ac.status !== "rejected") ac.status = ac.tests.length > 0 ? "owed" : "needs-spec";
+            if (ac.status === "owed") delete ac.reason;
             delete ac.lastFailure;
           }
         }
@@ -65,6 +66,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         for (const ac of e.acs) {
           const turnedDown = rejected.has(ac.id);
           const tests = turnedDown ? [] : e.tests.filter((t) => t.verifies.includes(ac.id) && !rejected.has(t.id)).map((t) => t.id);
+          const note = e.notes?.[ac.id];
           state.acs[ac.id] = {
             id: ac.id,
             text: ac.text,
@@ -72,6 +74,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
             cites: ac.cites,
             tests,
             status: turnedDown ? "rejected" : tests.length > 0 ? "owed" : "needs-spec",
+            ...(note !== undefined ? { reason: note } : {}),
           };
         }
         break;
@@ -108,6 +111,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           m.set(testId, passed);
           if (!passed) {
             ac.status = ac.status === "passing" || ac.status === "proved" ? "regressed" : "owed";
+            delete ac.reason;
             ac.lastFailure = {
               test: testId,
               step: r.failedStep,
@@ -120,6 +124,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           } else if ((ac.status === "owed" || ac.status === "regressed") && allPass(ac)) {
             ac.status = "passing";
             delete ac.lastFailure;
+            delete ac.reason;
           }
         };
         if (r.criteriaPassed.length === 0 && r.criteriaFailed.length === 0) {
@@ -142,14 +147,33 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         else state.mutants.survived += 1;
         const ac = state.acs[e.ac];
         if (!ac) break;
+        const green = ac.status === "passing" || ac.status === "proved";
         if (e.verdict === "killed") {
           if (ac.status === "passing") ac.status = "proved";
+          delete ac.reason;
+        } else if (e.recheck !== undefined) {
+          // R40: the planted bug that got past the old tests, re-planted against Kane's evolved ones,
+          // must now be killed; anything else (it survived, or it proved nothing) fails closed
+          if (green) {
+            ac.status = "vacuous";
+            ac.reason =
+              e.verdict === "invalid"
+                ? `the planted bug that got past the old tests could not be re-checked against the new ones${e.note ? ` (${e.note})` : ""}`
+                : "the planted bug that got past the old tests got past the new tests too";
+          }
         } else if (e.verdict !== "invalid") {
           // only a green AC can be vacuous; never mask owed/regressed (would open the gate)
-          if (ac.status === "passing" || ac.status === "proved") ac.status = "vacuous";
+          if (green) ac.status = "vacuous";
         }
         break;
       }
+      case "redesign.dropped":
+        // an evolve that added no test: its survivors stay vacuous, and the human is told why
+        for (const id of e.acs ?? []) {
+          const ac = state.acs[id];
+          if (ac?.status === "vacuous") ac.reason = e.reason ?? e.detail;
+        }
+        break;
       default:
         break;
     }
