@@ -562,6 +562,9 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(r.error).toContain("port 3100 is already in use");
     expect(calls.claude).toHaveLength(1);
     expect(calls.tests).toHaveLength(0);
+    // the turn was committed: it is on record, so a bisect can use its commit (M11)
+    const end = (await readEvents(p.ledgerFile)).find((e) => e.t === "turn.end");
+    expect(end).toMatchObject({ t: "turn.end", n: 1, commit: git(appDir, "rev-parse", "--short", "HEAD"), appUp: false });
   });
 
   it("stops with tamper when the agent's turn changed a sealed test file, before Kane runs", async () => {

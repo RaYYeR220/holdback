@@ -97,6 +97,7 @@ export {
   runBuildLoop,
   defaultBuildDeps,
   evidencePath,
+  evidenceScreenshot,
   lastSeal,
   EVIDENCE_DIR,
   VerifySession,

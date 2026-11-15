@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  acquireCheckLock,
   appendEvent,
   appSealFiles,
   CliHumanIO,
@@ -239,6 +240,20 @@ describe("status and owed", () => {
     expect(r.out).toMatch(/ac-1\s+passing\s+t-1\s*$/m);
     expect(r.out).toMatch(/ac-2\s+owed\s+t-2\s+Limit off by one/);
     expect(r.out).toContain("Gate: closed");
+  });
+
+  it("owed points at Kane's screenshot as the agent sees it (kane-evidence/), never at Kane's temp file (M15)", async () => {
+    await fixture();
+    const temp = join(root, "tmp", "v16-run-1", "screenshots", "step_002.png");
+    await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "failed", { failedStep: 2, screenshot: temp, verdict: { bugTitle: "Limit off by one" } }) });
+    const none = await cli(["owed"]);
+    expect(none.out).not.toContain("step_002.png");
+    expect(none.out).not.toContain("Screenshot:");
+    mkdirSync(join(appDir, "kane-evidence", "turn-2"), { recursive: true });
+    writeFileSync(join(appDir, "kane-evidence", "turn-2", "t-2-step-2.png"), "png");
+    const r = await cli(["owed"]);
+    expect(r.out).toContain("Screenshot: kane-evidence/turn-2/t-2-step-2.png");
+    expect(r.out).not.toContain("step_002.png");
   });
 
   it("owed prints the brief for the criteria still owed", async () => {
@@ -1195,6 +1210,22 @@ describe("clean, serve and help", () => {
     const r = await cli(["clean"], { sweepStaleWorktrees: (async (pr: Project) => void (swept = pr)) as never });
     expect(r.code).toBe(0);
     expect(swept?.appDir).toBe(p.appDir);
+  });
+
+  it("clean waits for the check lock: it never removes a worktree a falsify pass or a check is using (M12)", async () => {
+    await fixture();
+    const lock = await acquireCheckLock(p.home, { waitMs: 0 });
+    let swept = 0;
+    try {
+      const r = await cli(["clean"], { sweepStaleWorktrees: (async () => void swept++) as never, lockWaitMs: 50 });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("still running");
+      expect(swept).toBe(0);
+    } finally {
+      await lock!.release();
+    }
+    expect((await cli(["clean"], { sweepStaleWorktrees: (async () => void swept++) as never })).code).toBe(0);
+    expect(swept).toBe(1);
   });
 
   it("reports a tamper marker in an odd state when a command fails, instead of swallowing it", async () => {

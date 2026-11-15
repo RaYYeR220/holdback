@@ -150,6 +150,19 @@ export function evidencePath(turn: number, testId: string, step: number | undefi
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
+ * Where a failure's screenshot is for whoever reads the brief: its copy under `kane-evidence/` in
+ * the app dir, relative and `/`-separated, or undefined (no line) when there is none. Never Kane's
+ * own temp file, which the agent cannot open (M15).
+ */
+export function evidenceScreenshot(appDir: string): (f: AcFailure) => string | undefined {
+  return (f) => {
+    if (f.turn === undefined) return undefined;
+    const rel = evidencePath(f.turn, f.test, f.step);
+    return existsSync(path.join(appDir, ...rel.split("/"))) ? rel : undefined;
+  };
+}
+
+/**
  * Why a session cannot go on before (or between) Kane batches. `unsealed`: no seal or no criteria
  * yet. `drift`: a spec file, and nothing else sealed, changed since the seal.
  */
@@ -298,11 +311,7 @@ export class VerifySession {
   }
 
   /** Where the brief points the agent for a failure's screenshot (undefined drops the line). */
-  readonly screenshot = (f: AcFailure): string | undefined => {
-    if (f.turn === undefined) return undefined;
-    const rel = evidencePath(f.turn, f.test, f.step);
-    return existsSync(path.join(this.p.appDir, ...rel.split("/"))) ? rel : undefined;
-  };
+  readonly screenshot = (f: AcFailure): string | undefined => evidenceScreenshot(this.p.appDir)(f);
 
   /** After a Kane batch, with the app stopped: the recordings as they are now become the baseline, and are logged. */
   async closeKaneWindow(): Promise<void> {
@@ -658,7 +667,14 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       // 2. commit the turn (never the spec files: they are the human's), restart the app
       const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, s.gitOpts, p.config.spec);
       const filesChanged = commit && before ? await changedFiles(p.appDir, before, commit, s.gitOpts) : [];
-      startError = await s.startApp(p.config.start.port, `turn-${n}`);
+      // another program on the port is the human's to fix: the run stops, but the committed turn goes on record first (M11)
+      let portInUse: PortInUse | undefined;
+      try {
+        startError = await s.startApp(p.config.start.port, `turn-${n}`);
+      } catch (e) {
+        if (!(e instanceof PortInUse)) throw e;
+        portInUse = e;
+      }
       await s.emit({
         t: "turn.end",
         n,
@@ -670,6 +686,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         ...(agent.costUsd !== undefined ? { agentUsd: agent.costUsd } : {}),
         ...(agent.numTurns !== undefined ? { agentTurns: agent.numTurns } : {}),
       });
+      if (portInUse) throw portInUse;
       if (opts.signal?.aborted) return done(false, "aborted"); // the turn is committed and on record; the app stops in `finally`
       if (drifted) return drift();
       if (!s.app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top
