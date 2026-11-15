@@ -77,14 +77,29 @@ function commitArgs(message: string, opts: GitOptions, extra: string[] = []): st
   return [opts.hooksDir ? ["commit", "--no-verify"] : ["commit"], ["-q", ...extra, "-m", message]].flat();
 }
 
+/** Commit what is staged (under `paths` only, when given). Returns the new short SHA, or null when nothing there is staged. */
+async function commitStaged(cwd: string, message: string, opts: GitOptions, paths: string[] = []): Promise<string | null> {
+  const only = paths.length > 0 ? ["--", ...paths] : [];
+  const staged = await git(cwd, ["diff", "--cached", "--quiet", ...only], opts);
+  if (staged.code === 0) return null;
+  if (staged.code !== 1) throw new Error(`git diff --cached failed (exit ${staged.code}): ${staged.stderr.trim()}`);
+  await gitOk(cwd, [...commitArgs(message, opts), ...only], opts);
+  return (await gitOk(cwd, ["rev-parse", "--short", "HEAD"], opts)).trim();
+}
+
 /** Stage everything not ignored and commit. Returns the new short SHA, or null when nothing changed. */
 export async function commitAll(cwd: string, message: string, opts: GitOptions = {}): Promise<string | null> {
   await gitOk(cwd, ["add", "-A", "--", "."], opts);
-  const staged = await git(cwd, ["diff", "--cached", "--quiet"], opts);
-  if (staged.code === 0) return null;
-  if (staged.code !== 1) throw new Error(`git diff --cached failed (exit ${staged.code}): ${staged.stderr.trim()}`);
-  await gitOk(cwd, commitArgs(message, opts), opts);
-  return (await gitOk(cwd, ["rev-parse", "--short", "HEAD"], opts)).trim();
+  return commitStaged(cwd, message, opts);
+}
+
+/**
+ * Stage and commit `paths` alone: anything else staged stays staged, and out of the commit.
+ * Returns the new short SHA, or null when they did not change.
+ */
+export async function commitPaths(cwd: string, message: string, paths: string[], opts: GitOptions = {}): Promise<string | null> {
+  await gitOk(cwd, ["add", "--", ...paths], opts);
+  return commitStaged(cwd, message, opts, paths);
 }
 
 /** Give an unborn HEAD a first commit of whatever is there. Returns HEAD's short SHA. */

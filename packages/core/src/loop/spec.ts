@@ -13,7 +13,7 @@ import {
   type ReconcileResult,
   type Paused,
 } from "../kane/assurance.js";
-import { holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
+import { commitPaths, headSha, holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
 import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { readEvents } from "../ledger/store.js";
@@ -27,6 +27,8 @@ import type { HumanIO } from "./human.js";
 type Log = (e: LedgerEvent) => Promise<void>;
 
 const CLARIFICATIONS = "## Clarifications";
+/** The app-side file Holdback appends the human's answers to. */
+const CLARIFIED_FILE = "PRD.md";
 const CONFIG_FILE = "holdback.config.json";
 
 const oneLine = (t: string): string => t.replace(/\s+/g, " ").trim();
@@ -89,7 +91,7 @@ export async function reseal(p: Project, log: Log, git?: GitOptions): Promise<Re
 /** Append-only: creates the heading once, then only adds lines. */
 async function appendClarifications(appDir: string, lines: string[]): Promise<void> {
   if (lines.length === 0) return;
-  const file = path.join(appDir, "PRD.md");
+  const file = path.join(appDir, CLARIFIED_FILE);
   let existing = "";
   try {
     existing = await readFile(file, "utf8");
@@ -155,6 +157,22 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   return r as Exclude<R, Paused>;
 }
 
+const readOrNull = (file: string) => readFile(file).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? null : Promise.reject(e)));
+
+/**
+ * The spec stage's own Clarifications go into the app repo as a commit of their own, before the
+ * seal, so the agent's first turn neither carries nor lists them. Only that file is committed;
+ * nothing else the human has staged or not. No repo, or an unborn HEAD (the build loop's first
+ * commit then takes the whole tree): nothing to do. Git runs with Holdback's safe options.
+ */
+async function commitClarifications(p: Project, before: Buffer | null): Promise<void> {
+  const now = await readOrNull(path.join(p.appDir, CLARIFIED_FILE));
+  if (now === null || (before !== null && now.equals(before))) return;
+  const gitOpts = await holdbackGitOptions(p.home);
+  if (!(await isRepoRoot(p.appDir, gitOpts)) || (await headSha(p.appDir, gitOpts)) === null) return;
+  await commitPaths(p.appDir, "spec: clarifications", [CLARIFIED_FILE], gitOpts);
+}
+
 export type SpecDeps = {
   /** Kane's balance, read around the ingest and each design (`credits` events); leave out to log none. */
   balance?: BalanceReader;
@@ -172,6 +190,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first);
 
   checkSpecPaths(p);
+  const clarifiedBefore = await readOrNull(path.join(p.appDir, CLARIFIED_FILE));
 
   // 1. copy the spec into the verifier store (kept outside the app repo)
   for (const rel of p.config.spec) {
@@ -237,7 +256,8 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
     await review(cwd, approvedSet);
   }
 
-  // 6. point the tests at the app, then seal (a fresh seal is the only thing that lifts a tamper)
+  // 6. point the tests at the app, commit Holdback's own spec edit, then seal (a fresh seal is the only thing that lifts a tamper)
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
+  await commitClarifications(p, clarifiedBefore);
   await reseal(p, log);
 }

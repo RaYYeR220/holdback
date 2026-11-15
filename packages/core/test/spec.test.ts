@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,6 +101,43 @@ describe("runSpecStage", () => {
     expect(ingest).toMatchObject({ source: "spec", delta: 7.5, perRunSum: expect.closeTo(perRun(["spec.ingested", "spec.paused", "spec.answered"]), 4) });
     expect(design).toMatchObject({ source: "design", delta: 22.5, perRunSum: expect.closeTo(perRun(["design"]), 4) });
     expect(reduce(events).kaneCredits).toBe(30);
+  }, 60_000);
+
+  it("commits its own Clarifications to the app repo before the seal, and nothing else (R34)", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: appDir, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("config", "commit.gpgsign", "false");
+    git("add", "-A");
+    git("commit", "-q", "-m", "spec");
+    // the human's own work in progress stays theirs: one staged file, one untracked
+    writeFileSync(join(appDir, "staged.txt"), "staged\n");
+    git("add", "staged.txt");
+    writeFileSync(join(appDir, "notes.txt"), "mine\n");
+    // a repo hook never runs on Holdback's commit
+    writeFileSync(join(appDir, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(appDir, ".git", "hooks", "pre-commit"), 0o755);
+    const p = await loadProject(appDir);
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+
+    expect(git("log", "--format=%s")).toBe("spec: clarifications\nspec");
+    expect(git("log", "-1", "--format=%B")).toBe("spec: clarifications");
+    expect(git("show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
+    expect(git("show", "HEAD:PRD.md")).toContain("## Clarifications");
+    // PRD.md is clean now; the human's files are as they were
+    expect(git("status", "--porcelain")).toBe("A  staged.txt\n?? notes.txt");
+    const events = await readEvents(p.ledgerFile);
+    expect(events.filter((e) => e.t === "seal")).toHaveLength(1);
+  }, 60_000);
+
+  it("leaves an unborn HEAD alone: the build loop's first commit takes the whole tree", async () => {
+    const appDir = setup("# PRD\n");
+    execFileSync("git", ["init", "-q"], { cwd: appDir });
+    const p = await loadProject(appDir);
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+    expect(spawnSync("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: appDir }).status).not.toBe(0);
   }, 60_000);
 
   it("ScriptedHumanIO answers by text/id and throws on unknown questions", async () => {

@@ -153,6 +153,7 @@ export {
   isRepoRoot,
   headSha,
   commitAll,
+  commitPaths,
   ensureHead,
   excludeFromGit,
   gitPath,
