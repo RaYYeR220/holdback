@@ -127,7 +127,7 @@
   <rect class="card" x="20" y="446" width="310" height="38" rx="10"/>
   <text class="o" x="36" y="470">caught → criterion proved</text>
   <rect class="card" x="20" y="494" width="310" height="38" rx="10"/>
-  <text class="o" x="36" y="518">missed → vacuous; Kane re-designs</text>
+  <text class="o" x="36" y="518">missed → vacuous; Kane evolves</text>
 
   <line class="e dash" x1="905" y1="326" x2="905" y2="444" marker-end="url(#d)"/>
   <text class="lbl" x="897" y="424" text-anchor="end">gate opens</text>

@@ -16,7 +16,7 @@ Solid arrows ran in the first live run, whose ledger is in [`apps/dashboard/fixt
 2. **Kane designs the checks.** Kane CLI's assurance commands read the spec and ask you about what is ambiguous. Then they design acceptance criteria, each citing the spec line it comes from, and browser tests for them. You approve. Holdback keeps the tests in a verifier folder outside your repo (`~/.holdback/<id>/verifier/`) and seals them with sha256 hashes.
 3. **The agent works only from bug reports.** Each turn, Claude Code gets a brief of the criteria still owed. When a Kane run fails, the brief carries Kane's bug report: the criterion, the spec line, the step Kane ran, what it saw, its diagnosis and a screenshot. It never carries the test file.
 4. **"Done" is held back.** After every turn, Holdback starts the app and Kane runs the sealed tests in a real browser. The gate opens only when every criterion passes.
-5. **A planted bug tests the tests.** For each passing criterion, a breaker on a different model writes the smallest patch that should break it, in a throwaway git worktree. Kane replays that criterion's tests with healing off. If Kane catches the bug, the criterion is proved. If it misses, the criterion is vacuous and Kane re-designs its tests for your approval.
+5. **A planted bug tests the tests.** For each passing criterion, a breaker on a different model writes the smallest patch that should break it, in a throwaway git worktree. Kane replays that criterion's tests with healing off. If Kane catches the bug, the criterion is proved. If it misses, the criterion is vacuous, and Holdback tells Kane (never the agent) what slipped through: Kane evolves the use case's tests, every criterion of the use case is owed again, and the next pass plants the same bug, which the new tests must now catch.
 6. **Spec edits reopen the work.** Edit the spec and Kane plans the change (`holdback drift`, or automatically in `run` and `watch`). You approve, and the new or changed criteria are owed again.
 7. **Tampering fails closed.** If something Holdback sealed changes behind its back, the gate stays shut until you look and run `holdback reseal`. That covers the tests, the spec, the config, Kane's recordings, the ledger, and `.git/config` keys that make git run code.
 
@@ -74,7 +74,7 @@ After every Edit or Write, Kane checks the app in the background and wakes the a
 
 Your app has to read those variables, as the pantry spec's stack notes ask. Pick a date the spec's rules allow (for the pantry, a Tuesday, Thursday or Saturday).
 
-**Your app's data.** Every time Holdback starts your app for Kane (each turn's checks, a re-run, the hooks' check, a planted bug, a bisect probe, the closing replay), it sets `DATA_DIR` to a new, empty folder under `~/.holdback/<id>/data/`, over anything `start.env` says. Keep your app's state there: then rows one Kane run writes (a booking, a sign-up) never meet the next run, and a replay of the same steps meets the same empty app. The newest few folders stay for debugging.
+**Your app's data.** Every time Holdback starts your app for Kane (each turn's checks, a re-run, the hooks' check, a planted bug, a bisect probe, the closing replay), it sets `DATA_DIR` to a new, empty folder under `~/.holdback/<id>/data/`, over anything `start.env` says. Keep your app's state there: then rows one Kane run writes (a booking, a sign-up) never meet the next run, and a replay of the same steps meets the same empty app. The newest few folders stay for debugging. The agent's own check that the app boots gets a scratch `DATA_DIR` outside the repo too: a new temporary folder for each headless turn, and in interactive mode a folder in your user cache (`%LOCALAPPDATA%\holdback\agent-data\<id>` on Windows, else `~/.cache/holdback/agent-data/<id>`) that `init --agent claude` sets in `.claude/settings.json`, unless you set a `DATA_DIR` there yourself. If your app still writes a `data/` folder in the repo when you start it by hand, put it in `.gitignore`: falsify refuses to plant bugs while the work tree has uncommitted changes.
 
 ## Requirements
 
@@ -131,9 +131,9 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | `holdback run [--max-turns <n>] [--no-falsify] [--answers <file> \| --dashboard] [--kane-cap <n>]` | Builds until Kane proves every criterion, then falsifies the passing ones, and builds again while falsify leaves criteria owed. Runs drift first when the spec changed. Checks `VENICE_API_KEY` before it builds, unless `--no-falsify`. | 0, 1, 2, 3, 130 |
 | `holdback drift [--answers <file> \| --dashboard] [--kane-cap <n>]` | Applies a spec edit made after the last seal: shows the diff from the sealed spec, then Kane re-plans with you. | 0, 1, 2, 3 |
 | `holdback watch [--max-turns <n>] [--no-falsify] [--answers <file>] [--kane-cap <n>]` | Watches the spec; on every edit runs drift, then the run loop, until Ctrl-C. An edit made while it builds stops the build and goes through drift on the next pass. | 1, 2, 3, 130 |
-| `holdback status [--json]` | Every criterion and whether the gate is open. | 0, 1, 2 |
+| `holdback status [--json]` | Every criterion and whether the gate is open, why a criterion is vacuous or needs the spec, and each time Kane evolved a use case (minted and retired tests, and what it was told slipped through; the coding agent never sees that part). | 0, 1, 2 |
 | `holdback owed` | What the coding agent is told is still owed. | 0, 1, 2 |
-| `holdback reseal [--yes]` | Accepts the files on disk as the new sealed state, which lifts a tamper. It refuses when only the spec changed (that is drift), and after a tamper it keeps a changed spec's old seal, so drift still re-plans it. | 0, 1, 2 |
+| `holdback reseal [--yes]` | Accepts the files on disk as the new sealed state, which lifts a tamper. It refuses when only the spec changed (that is drift), and after a tamper it keeps a changed spec's old seal, so drift still re-plans it and the change stays of unverified origin. | 0, 1, 2 |
 | `holdback clean` | Removes leftover mutant and bisect worktrees, waiting for a check in flight. Never delete them by hand: they link into your app's `node_modules`. | 0, 1, 2 |
 | `holdback serve [--port <n>] [--static <dir>]` | The local dashboard on 127.0.0.1 (default port 4317): ledger, gate, live events, and answering Kane from the browser. | 0, 1 |
 | `holdback hook <guard\|post-edit\|stop\|prompt>` | The Claude Code hook entry point that `init --agent claude` installs. | hook protocol |
@@ -146,6 +146,8 @@ Editing the spec after the seal is drift, not a tamper: Kane re-plans the criter
 
 Holdback cannot tell who edited the spec, so it fails closed. A change counts as yours only when no agent turn has started since the last seal or drift; otherwise its origin is unverified. Then `run` stops instead of re-planning it, and `drift` and `watch` show you the diff from the sealed spec and go ahead only on a yes typed in the terminal (an answers file never gives it). If the guard saw the agent try to write the spec since the last seal, the change is a tamper. The coding agent cannot edit the spec: its Edit and Write are denied by rule, and the guard denies shell writes onto it.
 
+Only a drift you approve in the terminal settles an unverified change. `holdback reseal` after a tamper keeps the spec's old seal and records the change as unverified, so an answers file still cannot approve it. Drift re-plans and seals exactly the spec bytes whose diff it showed you, plus the Clarifications Holdback appends: if the spec changes again while Kane re-plans it, nothing is sealed, the change is recorded as unverified and drift stops with exit 3, leaving the newer edit in place for you to review. A line in Holdback's log of the agent's spec write attempts that cannot be read counts as an attempt only for the stretch of time it was written in; a seal after it leaves it behind.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success. For `run`: the gate is open and every criterion is proved or passing. |
@@ -153,6 +155,10 @@ Holdback cannot tell who edited the spec, so it fails closed. A change counts as
 | 2 | Tamper: something sealed changed. Nothing counts until you run `holdback reseal`. |
 | 3 | `run` finished but the gate is not fully green: criteria are still owed, vacuous or need the spec, or Kane could not finish checking a test. Also: the spec changed while it ran (run `holdback drift`), or the Kane credit cap was reached (any command). |
 | 130 | Interrupted. One Ctrl-C stops after the current step; a second quits at once. |
+
+### Planted bugs that get through
+
+When a planted bug survives every test of a criterion, Holdback runs `kane-cli maintain evolve <use case> --because "<what slipped through>"` in the verifier and answers Kane's own re-design question. The reason is the breaker's account of its bug in a user's terms: the inputs, what the page should show and what it showed. Kane sees it; the coding agent never does. Kane's new tests replace the use case's old ones (it retires them all, even when asked to keep them), Holdback seals them with Kane as their author (if the evolve added, changed or removed any other sealed file of the verifier, such as a variable or another use case's test, that is a tamper and nothing is sealed), and every criterion of the use case is owed again: the build loop runs the new tests and, when they pass, falsify plants the same bug again. It must now be caught, or the criterion stays vacuous. If the new set leaves a criterion of the use case without a test, one follow-up evolve asks Kane to cover it again; still uncovered, it needs the spec. An evolve that adds no test leaves the criterion vacuous with that reason, and is not retried. Kane evolves a use case at most twice per `holdback run`, under the Kane credit cap, at about 11 credits each (live, on the pantry spec).
 
 ## Honest limits
 
@@ -162,6 +168,7 @@ Holdback cannot tell who edited the spec, so it fails closed. A change counts as
 - In interactive mode, Bash edits to git-ignored files are not noticed until the agent's next Edit or Write.
 - Kane CLI is a cloud service. Test runs, screenshots and the pages Kane saw are uploaded to LambdaTest Test Manager.
 - Authoring is slow and billed per step, and a failing test re-authors on every run.
+- Kane's evolve after a surviving bug replaces every test of the use case. A criterion the new tests no longer cover gets one follow-up evolve, then needs the spec, so a stronger test for one criterion can cost coverage of another.
 - Holdback has run live on Windows only so far.
 - Figures marked pending are not claimed yet.
 

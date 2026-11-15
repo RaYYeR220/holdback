@@ -30,9 +30,11 @@ The fake Kane replays real Kane CLI 0.10.4 output. Home paths, temp folders and 
 | `packages/core/test/fixtures/kane/11-heal-replay-t1.ndjson` | The first live run: a replay that failed, healed itself and passed |
 | `packages/core/test/fixtures/kane/12-env-failure-t3.ndjson` | The first live run: an authoring run broken off by an `environment_issue` |
 | `packages/core/test/fixtures/kane/13-design-force-nothing-to-change.ndjson` | `kane-cli design tests --use-case uc-1 --force` on a copy of the first live run's verifier (2026-11-15): Kane kept the design and reported `nothing_to_change` |
+| `packages/core/test/fixtures/kane/14-evolve-paused.ndjson`, `15-evolve-complete.ndjson`, `18-evolve-told-to-keep.ndjson`, `tests/nine-person-household-earning-9-000-uses-the-9-467-limit_test.md` | `kane-cli maintain evolve uc-1 --because "…"` on a copy of the pantry verifier (2026-11-15): Kane's re-design question, then the evolve answered with `--answer evolve:uc-1=1`, the one told to keep every old test, and the test Kane minted |
+| `packages/core/test/fixtures/kane/19-design-resume-finished-session.ndjson`, `20-design-message-without-resume.ndjson` | The same session: `design tests --resume` of a finished session, and `--message` without `--resume` |
 | `apps/dashboard/fixtures/ledger.jsonl`, `config.json`, `artifacts/` | The first live run's ledger, config and the 3 screenshots it names, sanitized by `apps/dashboard/scripts/sanitize-ledger.mjs` (home paths, share links and Kane's evidence packs removed) |
 
-One fixture is written for the tests, not recorded: `noise.txt`, a plain-text line mixed into NDJSON, to check that Holdback keeps Kane's raw stdout.
+Three fixtures are written for the tests, not recorded: `noise.txt`, a plain-text line mixed into NDJSON, to check that Holdback keeps Kane's raw stdout; `16-evolve-nothing-to-change.ndjson`, an evolve that finds nothing to change; and `17-evolve-cover-again.ndjson`, a follow-up evolve that covers criteria again. The two evolve fakes follow the event shapes of the recorded evolve.
 
 `context-commits/000001-*.json` records the same source id (`sha256:0da9b627…`) as the first live run's `spec.ingested` event: both ingested the same spec.
 

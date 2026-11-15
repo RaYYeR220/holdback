@@ -54,4 +54,25 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 - **What it means:** the cost of a design follows its total step count, which no flag bounds.
 - **Suggestion:** a step limit for design, or the step count in the design output so a caller can ask for a split.
 
+## 9. `design tests --force` on an unchanged spec designs nothing new
+
+- **Seen:** forced on a use case whose spec had not changed, Kane kept every criterion, scenario and test, with the same ids and content hashes, reported `nothing_to_change` and billed 11.03 credits (`packages/core/test/fixtures/kane/13-design-force-nothing-to-change.ndjson`). In the same session, `--strength 3-wise` (13.5 credits) and `--phase scenarios` (5.7 credits) also ended in `nothing_to_change`, without a new scenario.
+- **What it means:** a caller that knows a test is too weak (a planted bug got past it) cannot get a stronger one by re-designing: the design takes its direction only from the sources.
+- **Holdback now:** never forces a re-design after a surviving bug; it asks Kane to evolve the use case with the reason (finding 11).
+- **Suggestion:** say in `design tests --help` that `--force` re-runs the design on the same sources, and that it may change nothing.
+
+## 10. A finished design session cannot be resumed, and a fresh one takes no message
+
+- **Seen:** `design tests --resume <sid>`, with the `sid` of the `session_complete` event or the `session` of `run_start`, ends in `error SESSION_MISSING` and `done` `refused`, exit 2, at no cost (`packages/core/test/fixtures/kane/19-design-resume-finished-session.ndjson`). `--message` without `--resume` is refused: "--message only rides a resume … a fresh run takes its direction from the sources" (`20-design-message-without-resume.ndjson`).
+- **What it means:** only a session paused on a question can be steered; there is no way to send a reason to a design once it has finished.
+- **Holdback now:** steers through `maintain evolve --because`, which takes a reason on a fresh run.
+- **Suggestion:** let `--message` start a fresh design of a use case, or document `maintain evolve --because` as the way to steer one.
+
+## 11. `maintain evolve --because` mints targeted tests but retires every old test of the use case
+
+- **Seen:** told what slipped through (a household of 9 checked against the 8-person limit, with the inputs and the expected result), `kane-cli maintain evolve uc-1 --because "…" --mode agent` paused on its own question (`evolve_paused`, `evolve:uc-1`, exit 3), and the same command with `--answer evolve:uc-1=1` minted one scenario and one test that catch it, for about 11.4 credits (`14-evolve-paused.ndjson`, `15-evolve-complete.ndjson`, and the test in `tests/nine-person-household-earning-9-000-uses-the-9-467-limit_test.md`). Its `evolve_diff` superseded all three old pairs (`retained: []`), and its `moves` left three criteria without a test. Asked in the reason to keep every existing scenario and test and add one, it did the same (`18-evolve-told-to-keep.ndjson`). The old test files stay on disk, unchanged, but are no longer live.
+- **What it means:** an evolve is a re-design of the whole use case, not an addition: a caller that keeps running the old tests runs retired ones, and coverage of the other criteria can drop.
+- **Holdback now:** takes Kane's new set as the use case's only tests, checks which criteria it left without a test (from the test files' `@verifies`), asks Kane once more to cover them, and marks any still uncovered as needing the spec.
+- **Suggestion:** honour an explicit keep in the reason, or offer an additive mode (`--keep-existing`), and say in the `evolve_paused` rationale that every pair is superseded.
+
 Not filed upstream yet.

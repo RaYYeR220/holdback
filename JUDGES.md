@@ -102,6 +102,14 @@ Screenshot: kane-evidence/turn-1/t-1-step-2.png
 
 The agent sees the criterion, the spec, what Kane did and saw, and Kane's diagnosis. It never sees the test file.
 
+When Kane misses a planted bug, the criterion is vacuous and Holdback asks Kane to evolve its use case, telling it what slipped through. Captured live on a copy of the pantry verifier (`packages/core/test/fixtures/kane/14-evolve-paused.ndjson`, `15-evolve-complete.ndjson`):
+
+```text
+kane-cli maintain evolve uc-1 --because "A version of the app where household size 9 is checked against the 8-person limit passed every test. ... household of 9, income 9000 (between 8591 and 9467), no SNAP, must be Eligible with limit 9467." --mode agent
+```
+
+Kane paused on its own re-design question, which Holdback answers with `--answer evolve:uc-1=1`, then minted t-4: "Nine-person household earning $9,000 uses the $9,467 limit". Its new set replaced all three old tests of the use case and left three criteria without a test; Holdback asks once more for those, seals the new tests with Kane as their author, owes every criterion of the use case again, and plants the same bug once the new tests pass: it must now be caught. The coding agent never sees the reason. [FINDINGS.md](FINDINGS.md) finding 11 has the details; the evolve inside `holdback run` is built and unit-tested, not run live yet.
+
 ## 6. Run it yourself
 
 You need Node 24, pnpm 9, git, Kane CLI 0.10.4 or later (logged in, with credits), and Claude Code. `VENICE_API_KEY` is optional; without it, run `holdback run --no-falsify`. The [README](README.md#quick-start) has the install.
