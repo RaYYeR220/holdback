@@ -8,6 +8,7 @@ import type { PendingQuestion } from "./kane/assurance.js";
 import type { ApprovalItem, HumanIO } from "./loop/human.js";
 import { EVIDENCE_DIR } from "./loop/build.js";
 import type { Project } from "./project.js";
+import { readEvents } from "./ledger/store.js";
 import { snapshot } from "./snapshot.js";
 
 export const DEFAULT_PORT = 4317;
@@ -98,8 +99,6 @@ export type ServeOptions = {
   staticDir?: string;
   /** Pending prompts live here; defaults to a new one. */
   human?: DashboardHumanIO;
-  /** Kane's sessions folder (tests point it elsewhere). */
-  sessionsDir?: string;
   /** How often the ledger file is polled for new lines. */
   pollMs?: number;
 };
@@ -113,16 +112,17 @@ export type Served = {
   close(): Promise<void>;
 };
 
-const TYPES: Record<string, string> = {
+/** What `/api/artifact` serves: screenshots only. */
+const IMAGE_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
-  ".json": "application/json; charset=utf-8",
-  ".txt": "text/plain; charset=utf-8",
 };
 const STATIC_TYPES: Record<string, string> = {
-  ...TYPES,
+  ...IMAGE_TYPES,
+  ".json": "application/json; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8",
@@ -133,6 +133,10 @@ const STATIC_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
+/** `~/x` (as Kane may print a path) under the user's home. */
+const expandHome = (f: string) => f.replace(/^~(?=[\\/]|$)/, os.homedir());
+/** Windows paths compare without case. */
+const sameCase = (f: string) => (process.platform === "win32" ? f.toLowerCase() : f);
 const outside = (rel: string) => rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
 const within = (root: string, file: string) => !outside(path.relative(root, file));
 
@@ -177,7 +181,6 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
   const token = randomBytes(24).toString("hex");
   const human = opts.human ?? new DashboardHumanIO();
   const pollMs = opts.pollMs ?? 500;
-  const sessionsDir = opts.sessionsDir ?? path.join(os.homedir(), ".testmuai", "kaneai", "sessions");
   const streams = new Set<ServerResponse>();
   let port = 0;
 
@@ -213,6 +216,44 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
     }
     if (!realRoots.some((r) => within(r, real))) return json(res, 403, { error: "outside the allowed folders" });
     const type = types[path.extname(real).toLowerCase()];
+    if (!type) return json(res, 415, { error: "unsupported file type" });
+    const st = await stat(real);
+    if (!st.isFile()) return json(res, 404, { error: "not found" });
+    const body = await readFile(real);
+    res.writeHead(200, { "content-type": type, "content-length": body.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    res.end(body);
+  }
+
+  /**
+   * `/api/artifact` (I9): an exact-file allowlist, after realpath. A file is served only when a run
+   * in this project's ledger names it as its screenshot (a build run's or a mutant's), or when it is
+   * under `<appDir>/kane-evidence/`; and only an image. 404 only for an allowed file that is gone.
+   */
+  async function sendArtifact(res: ServerResponse, file: string): Promise<void> {
+    const named = new Set<string>();
+    for (const e of await readEvents(p.ledgerFile)) {
+      if (e.t !== "run" || !e.result.screenshot) continue;
+      const shot = path.resolve(expandHome(e.result.screenshot));
+      named.add(sameCase(shot));
+      try {
+        named.add(sameCase(await realpath(shot)));
+      } catch {
+        /* gone: only its own path is on the list */
+      }
+    }
+    let real: string;
+    try {
+      real = await realpath(file);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw e;
+      // never say whether a file nobody named exists
+      return named.has(sameCase(file)) ? json(res, 404, { error: "not found" }) : json(res, 403, { error: "not an artifact of this project" });
+    }
+    const evidence = await realpath(path.join(p.appDir, EVIDENCE_DIR)).catch(() => null);
+    const allowed = named.has(sameCase(real)) || (evidence !== null && within(evidence, real));
+    if (!allowed) return json(res, 403, { error: "not an artifact of this project" });
+    const type = IMAGE_TYPES[path.extname(real).toLowerCase()];
     if (!type) return json(res, 415, { error: "unsupported file type" });
     const st = await stat(real);
     if (!st.isFile()) return json(res, 404, { error: "not found" });
@@ -375,8 +416,8 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
     if (route === "/api/artifact") {
       const q = url.searchParams.get("path");
       if (!q) return json(res, 400, { error: "path is required" });
-      if (!path.isAbsolute(q)) return json(res, 400, { error: "path must be absolute" });
-      return await sendFile(res, [sessionsDir, path.join(p.appDir, EVIDENCE_DIR)], path.resolve(q), TYPES);
+      if (!path.isAbsolute(expandHome(q))) return json(res, 400, { error: "path must be absolute" });
+      return await sendArtifact(res, path.resolve(expandHome(q)));
     }
     if (route.startsWith("/api/")) return json(res, 404, { error: "not found" });
     if (opts.staticDir) {

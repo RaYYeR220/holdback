@@ -39,7 +39,7 @@ async function start(setup?: (p: Awaited<ReturnType<typeof loadProject>>) => Pro
   mkdirSync(app, { recursive: true });
   const p = await loadProject(app);
   await setup?.(p);
-  srv = await serve(p, { port: 0, sessionsDir: sessions, pollMs: 25 });
+  srv = await serve(p, { port: 0, pollMs: 25 });
   return { p, s: srv, base: `http://127.0.0.1:${srv.port}` };
 }
 const post = (base: string, path: string, body: unknown, token?: string) =>
@@ -98,13 +98,31 @@ describe("server", () => {
   });
 
   describe("artifact", () => {
-    it("serves a file under the sessions dir with its content type", async () => {
+    /** A run whose screenshot Kane left at `shot` (a build run, or a mutant's). */
+    const shotRun = (shot: string, kind: "build" | "falsify" = "build"): LedgerEvent => ({
+      at: "2026-11-15T00:00:00.000Z",
+      t: "run",
+      kind,
+      ...(kind === "build" ? { turn: 1 } : { mutantId: "m-ac-1-1" }),
+      result: { testFile: "t1.md", testId: "t-1", status: "failed", steps: [], criteriaPassed: [], criteriaFailed: ["ac-1"], credits: 0, replayDecisions: 0, authorDecisions: 0, healTriggered: false, durationS: 1, screenshot: shot },
+    });
+
+    it("serves exactly the screenshots the ledger names, a mutant's too, with their content type (I9)", async () => {
       writeFileSync(join(sessions, "a.png"), "PNG");
-      const { base } = await start();
-      const r = await fetch(`${base}/api/artifact?path=${encodeURIComponent(join(sessions, "a.png"))}`);
+      writeFileSync(join(sessions, "m.png"), "MUT");
+      writeFileSync(join(sessions, "other.png"), "NO");
+      const { base } = await start(async (p) => {
+        await appendEvent(p.ledgerFile, shotRun(join(sessions, "a.png")));
+        await appendEvent(p.ledgerFile, shotRun(join(sessions, "m.png"), "falsify"));
+      });
+      const get = (f: string) => fetch(`${base}/api/artifact?path=${encodeURIComponent(f)}`);
+      const r = await get(join(sessions, "a.png"));
       expect(r.status).toBe(200);
       expect(r.headers.get("content-type")).toBe("image/png");
       expect(await r.text()).toBe("PNG");
+      expect(await (await get(join(sessions, "m.png"))).text()).toBe("MUT");
+      // the same folder, but no run names it
+      expect((await get(join(sessions, "other.png"))).status).toBe(403);
     });
 
     it("serves kane-evidence under the app dir; relative paths are refused", async () => {
@@ -117,20 +135,24 @@ describe("server", () => {
       expect((await fetch(`${base}/api/artifact?path=${encodeURIComponent("kane-evidence/turn-1/t-step-1.png")}`)).status).toBe(400);
     });
 
-    it("403 outside the roots, incl. a ..x sibling, traversal and a junction", async () => {
-      const sibling = join(tmp, "sessions..x");
-      mkdirSync(sibling);
-      writeFileSync(join(sibling, "s.png"), "no");
+    it("403 for anything else: a sibling, traversal, a junction, a file the ledger names that is no image; 404 for a named one that is gone", async () => {
       const outside = join(tmp, "outside");
       mkdirSync(outside);
       writeFileSync(join(outside, "secret.txt"), "no");
-      symlinkSync(outside, join(sessions, "link"), "junction");
-      const { base } = await start();
-      const get = (p: string) => fetch(`${base}/api/artifact?path=${encodeURIComponent(p)}`);
-      expect((await get(join(sibling, "s.png"))).status).toBe(403);
-      expect((await get(join(sessions, "..", "outside", "secret.txt"))).status).toBe(403);
-      expect((await get(join(sessions, "link", "secret.txt"))).status).toBe(403);
-      expect((await get(join(tmp, "outside", "nope.txt"))).status).toBe(403);
+      writeFileSync(join(outside, "secret.png"), "no");
+      writeFileSync(join(sessions, "notes.txt"), "no");
+      const { base, p } = await start(async (p) => {
+        await appendEvent(p.ledgerFile, shotRun(join(sessions, "notes.txt")));
+        await appendEvent(p.ledgerFile, shotRun(join(sessions, "missing.png")));
+        mkdirSync(join(p.appDir, "kane-evidence"), { recursive: true });
+      });
+      symlinkSync(outside, join(p.appDir, "kane-evidence", "link"), "junction");
+      const get = (f: string) => fetch(`${base}/api/artifact?path=${encodeURIComponent(f)}`);
+      expect((await get(join(outside, "secret.png"))).status).toBe(403);
+      expect((await get(join(p.appDir, "kane-evidence", "..", "..", "outside", "secret.png"))).status).toBe(403);
+      expect((await get(join(p.appDir, "kane-evidence", "link", "secret.png"))).status).toBe(403);
+      expect((await get(join(sessions, "notes.txt"))).status).toBe(415);
+      expect((await get(join(outside, "nope.png"))).status).toBe(403);
       expect((await get(join(sessions, "missing.png"))).status).toBe(404);
       expect((await fetch(`${base}/api/artifact`)).status).toBe(400);
     });
@@ -276,7 +298,7 @@ describe("server", () => {
       setup?.(dir);
       const app = join(tmp, "app");
       mkdirSync(app, { recursive: true });
-      srv = await serve(await loadProject(app), { port: 0, staticDir: dir, sessionsDir: sessions });
+      srv = await serve(await loadProject(app), { port: 0, staticDir: dir });
       return `http://127.0.0.1:${srv.port}`;
     }
     const rawStatus = (base: string, p: string) =>

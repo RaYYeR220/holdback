@@ -36,7 +36,8 @@ export function readToken(hash: string): string | null {
 
 /**
  * Where the page loads a screenshot the ledger names. Live: an absolute path through
- * /api/artifact (the server allows only Kane's sessions and the evidence folder). Replay: only
+ * /api/artifact (the server serves only screenshots this project's ledger names, and the app's
+ * kane-evidence folder). Replay: only
  * `artifacts/<file>` next to the page; anything else in a recorded ledger is not shown.
  */
 export function artifactUrl(mode: Mode, p: string | undefined, token: string | null): string | null {
