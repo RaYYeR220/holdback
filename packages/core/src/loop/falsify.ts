@@ -726,10 +726,14 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     list: Survivor[],
   ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
     evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
-    // this use case's tests as sealed, by id: the ones Kane may retire
-    const sealedFileOf = testFileMap(events, p.verifierDir);
-    const ucTests = new Set(Object.values(reduce(events).acs).filter((a) => a.useCase === uc).flatMap((a) => a.tests));
     const rel = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
+    // every sealed test as the ledger last designed it (file, verified criteria), and this use case's
+    // criteria and tests: what Kane may retire
+    const sealedTests = new Map<string, { file: string; verifies: string[] }>();
+    for (const e of events) if (e.t === "design") for (const t of e.tests) if (t.file) sealedTests.set(t.id, { file: rel(t.file), verifies: t.verifies });
+    const state = reduce(events);
+    const ucAcs = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).map((a) => a.id));
+    const ucTests = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).flatMap((a) => a.tests));
     return meter.batch("evolve", async () => {
       const copy = await copySealed(p);
       kaneWindow = true; // Kane writes into the verifier while it evolves
@@ -743,14 +747,31 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         if (r.status === "error") throw new EvolveFailed(`Kane's evolve of ${uc} failed: ${r.message}`);
         const g = await deps.kane.readGraph(cwd);
         const minted = r.minted.map((m) => m.test);
-        const fileOf = new Map(g.tests.filter((t) => t.file).map((t) => [t.id, path.relative(p.verifierDir, path.resolve(p.verifierDir, t.file)).split(path.sep).join("/")]));
+        const fileOf = new Map(g.tests.filter((t) => t.file).map((t) => [t.id, rel(t.file)]));
         const missing = minted.filter((t) => !fileOf.has(t));
         if (missing.length > 0) throw new EvolveFailed(`Kane minted ${missing.join(", ")} but no test file of it is in the verifier`);
         // the seal hashes whatever is on disk: Kane may write the tests it minted and change or remove
         // the tests of this use case it retired; any other sealed entry it added, changed or removed
         // (a variable, another use case's test, an unknown file) is never sealed: a tamper
         const retired = r.superseded.map((s) => s.test).filter((t) => t !== "");
-        const allowed = new Set([...minted.map((t) => fileOf.get(t)!), ...retired.filter((t) => ucTests.has(t) && sealedFileOf.has(t)).map((t) => rel(sealedFileOf.get(t)!))]);
+        const allowed = new Set<string>();
+        // a minted test: a new file, verifying criteria of this use case only
+        const graphUcAcs = new Set(g.acs.filter((a) => a.useCase === uc).map((a) => a.id));
+        for (const id of minted) {
+          const t = g.tests.find((x) => x.id === id)!;
+          const f = fileOf.get(id)!;
+          if (!copy.verifier.has(f) && t.verifies.length > 0 && t.verifies.every((v) => graphUcAcs.has(v))) allowed.add(f);
+        }
+        // a retired test: one of this use case's, verifying its criteria only, no longer live, its file
+        // gone or referenced by no live test, and shared with no other sealed test
+        for (const id of retired) {
+          const was = sealedTests.get(id);
+          if (!was || !ucTests.has(id) || !was.verifies.every((v) => ucAcs.has(v))) continue;
+          if (g.tests.some((t) => t.id === id && t.verifies.length > 0)) continue;
+          if (g.tests.some((t) => t.id !== id && t.file && rel(t.file) === was.file)) continue;
+          if ([...sealedTests].some(([other, o]) => other !== id && o.file === was.file)) continue;
+          allowed.add(was.file);
+        }
         const stray = (await verifierDiffersFrom(p, copy)).filter((f) => !allowed.has(f));
         if (stray.length > 0) throw new EvolveStray(stray);
         // a criterion never leaves the gate silently: the use case keeps every one it had

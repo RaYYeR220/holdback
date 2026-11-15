@@ -194,7 +194,12 @@ const SLIP: Record<string, Slip> = {
 };
 
 /** What Kane's evolve does to the verifier in a fake: write a minted test, retire live ones. */
-type EvolveKit = { mint: (id: string, verifies: string[]) => void; retire: (...ids: string[]) => void };
+type EvolveKit = {
+  mint: (id: string, verifies: string[], file?: string) => void;
+  retire: (...ids: string[]) => void;
+  /** A live test in Kane's graph that points at an existing file. */
+  alias: (id: string, file: string, verifies: string[]) => void;
+};
 
 type Plan = {
   /** Patch the breaker returns for an AC on its Nth call (0-based). */
@@ -249,11 +254,12 @@ function fakes(plan: Plan) {
   // Kane's live tests: what its graph shows (an evolve's new set replaces the use case's old one)
   let live: TestNode[] = testNodes();
   const kit: EvolveKit = {
-    mint: (id, verifies) => {
-      writeFileSync(testFile(id), `---\nassurance:\n  id: ${id}\n---\n# ${id}\n\n## Step 1 @verifies ${verifies.join(", ")}\n\nCheck it.\n`);
-      live = [...live.filter((t) => t.id !== id), { id, title: `minted ${id}`, file: testFile(id), verifies }];
+    mint: (id, verifies, file = testFile(id)) => {
+      writeFileSync(file, `---\nassurance:\n  id: ${id}\n---\n# ${id}\n\n## Step 1 @verifies ${verifies.join(", ")}\n\nCheck it.\n`);
+      live = [...live.filter((t) => t.id !== id), { id, title: `minted ${id}`, file, verifies }];
     },
     retire: (...ids) => void (live = live.filter((t) => !ids.includes(t.id))),
+    alias: (id, file, verifies) => void (live = [...live, { id, title: `live ${id}`, file, verifies }]),
   };
   const graph = (): Graph => ({ useCases: [], acs: [AC1, AC3, AC9], tests: live, gaps: [] });
   const deps: FalsifyDeps = {
@@ -678,11 +684,11 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
   });
 
-  /** Kane's evolve touches a sealed verifier entry outside its own use case's tests: a tamper, never sealed. */
-  async function strayed(touch: () => void, paths: string[], before?: () => Promise<void>) {
+  /** Kane's evolve touches a sealed verifier entry outside what it may: a tamper, never sealed. */
+  async function strayed(plan: Partial<Plan>, paths: string[], before?: () => Promise<void>) {
     await setup(before ? { before } : {});
     const sealsBefore = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
-    const { deps, io } = fakes({ mutantRun: survives3, onEvolve: touch });
+    const { deps, io } = fakes({ mutantRun: survives3, ...plan });
     const r = await runFalsify(p, deps, io, log);
     expect(r.reason).toBe("tamper");
     const all = await readEvents(p.ledgerFile);
@@ -698,26 +704,116 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const sealEv = all.findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
   }
+  const T9 = () => join(p.verifierDir, ".testmuai", "tests", "t9_test.md");
+  /** Another use case, uc-2, with a sealed test t-9 in `file` (default t9_test.md). */
+  const otherUseCase = (file?: () => string) => async () => {
+    const f = file ?? T9;
+    if (!existsSync(f())) writeFileSync(f(), "---\nassurance:\n  id: t-9\n---\n# t-9\n");
+    await log({ at, t: "design", useCase: "uc-2", acs: [AC9], tests: [{ id: "t-9", title: "nine", file: f(), verifies: ["ac-9"] }], gaps: [], credits: 0 });
+    await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+  };
 
   it("a variables file Kane's evolve changed is a tamper: nothing sealed", async () => {
-    await strayed(() => writeFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), JSON.stringify({ start_url: { value: "http://evil.example/" } })), [".testmuai/variables/assurance.json"]);
+    await strayed({ onEvolve: () => writeFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), JSON.stringify({ start_url: { value: "http://evil.example/" } })) }, [".testmuai/variables/assurance.json"]);
   });
 
   it("another use case's test Kane's evolve removed is a tamper: nothing sealed", async () => {
-    const T9 = () => join(p.verifierDir, ".testmuai", "tests", "t9_test.md");
-    await strayed(
-      () => rmSync(T9()),
-      [".testmuai/tests/t9_test.md"],
-      async () => {
-        writeFileSync(T9(), "---\nassurance:\n  id: t-9\n---\n# t-9\n");
-        await log({ at, t: "design", useCase: "uc-2", acs: [AC9], tests: [{ id: "t-9", title: "nine", file: T9(), verifies: ["ac-9"] }], gaps: [], credits: 0 });
-        await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
-      },
-    );
+    await strayed({ onEvolve: () => rmSync(T9()) }, [".testmuai/tests/t9_test.md"], otherUseCase());
   });
 
   it("an extra test file Kane's evolve wrote but did not mint is a tamper: nothing sealed", async () => {
-    await strayed(() => writeFileSync(join(p.verifierDir, ".testmuai", "tests", "extra_test.md"), "---\nassurance:\n  id: t-77\n---\n# extra\n"), [".testmuai/tests/extra_test.md"]);
+    await strayed({ onEvolve: () => writeFileSync(join(p.verifierDir, ".testmuai", "tests", "extra_test.md"), "---\nassurance:\n  id: t-77\n---\n# extra\n") }, [".testmuai/tests/extra_test.md"]);
+  });
+
+  describe("what Kane's evolve may touch: its minted tests and the tests of the use case it retired, nothing else", () => {
+    /** The default evolve: t-4 minted for uc-1, t-1 and t-3 reported superseded. */
+    const evolveWith = (shape: (kit: EvolveKit) => void) => ({ evolve: (_n: number, kit: EvolveKit) => (shape(kit), EVOLVED) });
+
+    it("a retired test Kane still keeps live (it still verifies criteria) may not change", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-3"); // t-1 stays live, though reported superseded
+            appendFileSync(T1, "\nchanged\n");
+          }),
+        },
+        [".testmuai/tests/t1_test.md"],
+      );
+    });
+
+    it("a retired test's file that a live test still points at may not change", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3");
+            kit.alias("t-8", T1, ["ac-1"]);
+            appendFileSync(T1, "\nchanged\n");
+          }),
+        },
+        [".testmuai/tests/t1_test.md"],
+      );
+    });
+
+    it("a retired test's file that another sealed test shares may not change", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3");
+            rmSync(T3);
+          }),
+        },
+        [".testmuai/tests/t3_test.md"],
+        otherUseCase(() => T3),
+      );
+    });
+
+    it("a retired test that also verified another use case's criterion may not change", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"]);
+            kit.retire("t-1", "t-3");
+            rmSync(T3);
+          }),
+        },
+        [".testmuai/tests/t3_test.md"],
+        async () => {
+          // uc-1 as designed: t-3 also verified uc-2's ac-9
+          const tests = [testNodes()[0]!, { ...testNodes()[1]!, verifies: ["ac-3", "ac-9"] }];
+          await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests, gaps: [], credits: 0 });
+          await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+          await greenTurn(2);
+        },
+      );
+    });
+
+    it("a minted test may not overwrite a sealed file: another use case's test", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3"], T9());
+            kit.retire("t-1", "t-3");
+          }),
+        },
+        [".testmuai/tests/t9_test.md"],
+        otherUseCase(),
+      );
+    });
+
+    it("a minted test may verify criteria of this use case only", async () => {
+      await strayed(
+        {
+          ...evolveWith((kit) => {
+            kit.mint("t-4", ["ac-1", "ac-3", "ac-9"]);
+            kit.retire("t-1", "t-3");
+          }),
+        },
+        [".testmuai/tests/t4_test.md"],
+      );
+    });
   });
 
   it("rolls Kane's evolve back when it reports a minted test the verifier has no file of", async () => {
