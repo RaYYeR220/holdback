@@ -1,0 +1,2 @@
+{"type":"error","v":1,"verb":"design","message":"error: SESSION_MISSING: no session design-20261115T192539-a5f94ccc","code":"SESSION_MISSING","final":false}
+{"type":"done","v":1,"verb":"design","status":"refused","exit_code":2}

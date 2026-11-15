@@ -355,6 +355,29 @@ describe("maintain evolve (R40)", () => {
     expect(await evolve(cwd, "uc-1", BECAUSE)).toMatchObject({ status: "error", message: "out of credits", code: "E_NOCREDIT" });
   });
 
+  it("live: told to keep every existing test and add one, Kane's evolve still retires every old test of the use case", async () => {
+    sequence(fx("14-evolve-paused.ndjson"), fx("18-evolve-told-to-keep.ndjson"));
+    const r = await evolve(cwd, "uc-1", "Keep every existing scenario and test exactly as is; ADD one new scenario and test");
+    expect(r).toMatchObject({
+      status: "complete",
+      minted: [{ scenario: "sc-4", test: "t-4" }],
+      superseded: [
+        { scenario: "sc-1", test: "t-1" },
+        { scenario: "sc-2", test: "t-2" },
+        { scenario: "sc-3", test: "t-3" },
+      ],
+      retained: [],
+    });
+  });
+
+  it("live: a finished design session cannot be resumed (SESSION_MISSING), and a fresh one takes no steering message", async () => {
+    useFixture(fx("19-design-resume-finished-session.ndjson"));
+    const resumed = await resumeSession(cwd, { status: "paused", verb: "design", sid: "design-x", resume: "kane-cli design tests --resume design-x --mode agent", questions: [], credits: 0 }, {});
+    expect(resumed).toMatchObject({ status: "refused", code: "SESSION_MISSING", message: expect.stringContaining("no session") });
+    useFixture(fx("20-design-message-without-resume.ndjson"));
+    expect(await designTests(cwd, "uc-1", {})).toMatchObject({ status: "refused", message: expect.stringContaining("--message only rides a resume") });
+  });
+
   it("never answers a question other than its own re-design gate", async () => {
     const other = textFixture(
       '{"type":"evolve_paused","v":1,"verb":"evolve","pending_questions":[{"id":"q-scope","header":"Scope?","text":"Also re-design uc-2?","risk":"high","options":[{"label":"yes"},{"label":"no"}],"recommended_index":0,"allow_free_text":false}]}\n' +

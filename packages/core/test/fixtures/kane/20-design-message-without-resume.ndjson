@@ -1,0 +1,2 @@
+{"type":"error","v":1,"verb":"design","message":"design: --message only rides a resume — pair it with --resume <sid> (a fresh run takes its direction from the sources)"}
+{"type":"done","v":1,"verb":"design","status":"refused","exit_code":2}
