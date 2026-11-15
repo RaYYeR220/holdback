@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { guardDecision, writeAgentSettings, posixAbs } from "../src/agent/guard.js";
+import { guardDecision, guardPayload, writeAgentSettings, posixAbs } from "../src/agent/guard.js";
 
 const ctx = {
   home: "C:\\Users\\x\\.holdback\\abc",
@@ -42,6 +42,65 @@ describe("guardDecision", () => {
   it("gives a reason on deny", () => {
     const d = guardDecision({ tool_name: "Bash", tool_input: { command: "kane-cli x" } }, ctx);
     expect(d.allow === false && d.reason.length > 0).toBe(true);
+  });
+});
+
+describe("guardDecision hardening", () => {
+  const sh = (command: string, tool = "Bash") => denied(tool, { command });
+  it("rejects a tool_input that is not a plain object", () => {
+    for (const bad of ["ls", ["ls"], null, undefined, 3])
+      expect(guardDecision({ tool_name: "Bash", tool_input: bad as never }, ctx).allow).toBe(false);
+  });
+  it("applies shell rules to PowerShell and to any command field", () => {
+    expect(sh("kane-cli testmd run x", "PowerShell")).toBe(true);
+    expect(sh("git commit -m x", "PowerShell")).toBe(true);
+    expect(denied("Mcp", { command: "git push" })).toBe(true);
+    expect(denied("Mcp", { args: { command: "kane-cli x" } })).toBe(true);
+    expect(sh("npm test", "PowerShell")).toBe(false);
+  });
+  it("denies Kane's own store", () => {
+    expect(sh("cat .testmuai/sessions/1.log")).toBe(true);
+    expect(denied("Read", { file_path: "/somewhere/.TestMuai/x" })).toBe(true);
+  });
+  it("denies shell references to the user home", () => {
+    for (const c of [
+      "cat ~/.hold*/x", "ls ~", "ls $HOME", "ls ${HOME}/x", "dir %USERPROFILE%", "type %HOME%\\x",
+      "Get-ChildItem $env:USERPROFILE", "Get-ChildItem $env:HOME", "echo USERPROFILE", "echo $HOMEPATH", "cd \"~\"",
+    ])
+      expect(sh(c), c).toBe(true);
+    expect(sh("Get-ChildItem $env:USERPROFILE", "PowerShell")).toBe(true);
+  });
+  it("does not trip on ordinary tildes", () => {
+    expect(sh("npm i left-pad@~1.2.0")).toBe(false);
+    expect(sh("echo a~b")).toBe(false);
+    expect(denied("Write", { file_path: "README.md", content: "see ~/.config for details" })).toBe(false);
+  });
+  it("denies git outside the read-only allowlist", () => {
+    for (const c of [
+      "git -C . commit", "git -c k=v push", "git --no-pager stash", "npm test && git commit -am x",
+      "git add .", "git checkout -b x", "git switch main", "git restore f", "git merge x", "git clean -fd",
+      "git branch -D x", "git branch newname", "git tag v1", "git config user.name x", "git -c alias.s=!rm status",
+      "echo hi; git reset --hard", "ls | git apply p", "x\ngit rebase main", "(git commit -m x)", "$(git push)",
+      "/usr/bin/git commit", "git.exe commit", "git --git-dir x --work-tree y commit", "git -p stash",
+    ])
+      expect(sh(c), c).toBe(true);
+  });
+  it("allows read-only git", () => {
+    for (const c of [
+      "git status", "git diff HEAD~1", "git log --oneline", "git show HEAD", "git ls-files", "git blame f",
+      "git rev-parse HEAD", "git branch", "git branch --list", "git branch -a", "git -C . status",
+      "git --no-pager log -5", "cd x && git diff && npm test",
+    ])
+      expect(sh(c), c).toBe(false);
+  });
+});
+
+describe("guardPayload", () => {
+  it("scans all payload strings and rejects bad shapes", () => {
+    expect(guardPayload({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: ctx.verifierDir }, ctx).allow).toBe(false);
+    expect(guardPayload({ tool_name: "Bash" }, ctx).allow).toBe(false);
+    expect(guardPayload("x", ctx).allow).toBe(false);
+    expect(guardPayload({ tool_name: "Bash", tool_input: { command: "ls" } }, ctx).allow).toBe(true);
   });
 });
 

@@ -24,9 +24,13 @@ export interface ClaudeTurnResult {
   isError?: boolean;
   subtype?: string;
   permissionDenials?: unknown[];
+  /** Last ~4 KB of the process's stderr. */
+  stderrTail: string;
   durationMs: number;
   timedOut: boolean;
 }
+
+const STDERR_TAIL_BYTES = 4096;
 
 /** Absolute path of the agent contract shipped next to this module (src/ in dev, dist/ when built). */
 export function contractPath(): string {
@@ -42,8 +46,9 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
   const bin = process.env.HOLDBACK_CLAUDE_BIN ?? "claude";
   const isScript = /\.(mjs|js)$/i.test(bin);
   const args = [
+    // No prompt argument: `claude -p` reads the prompt from stdin. Multi-line argv is
+    // mangled when `claude` resolves to an npm .cmd shim on Windows.
     "-p",
-    opts.prompt,
     "--output-format",
     "stream-json",
     "--verbose",
@@ -63,6 +68,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
   return new Promise((resolve, reject) => {
     const started = Date.now();
     let buf = "";
+    let stderrTail = "";
     let result: Record<string, unknown> | undefined;
     let timedOut = false;
     let settled = false;
@@ -71,8 +77,12 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
     const child = spawn(cmd, cmdArgs, {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    child.stdin?.on("error", () => {
+      /* child exited before reading the prompt */
+    });
+    child.stdin?.end(opts.prompt);
 
     const handleLine = (line: string) => {
       const t = line.trim();
@@ -94,7 +104,10 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
         buf = buf.slice(i + 1);
       }
     });
-    child.stderr?.resume();
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_BYTES);
+    });
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -125,6 +138,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
         isError: typeof r?.is_error === "boolean" ? r.is_error : undefined,
         subtype: typeof r?.subtype === "string" ? r.subtype : undefined,
         permissionDenials: Array.isArray(r?.permission_denials) ? (r.permission_denials as unknown[]) : undefined,
+        stderrTail,
         durationMs: Date.now() - started,
         timedOut,
       });

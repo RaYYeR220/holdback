@@ -2,13 +2,14 @@
 // PreToolUse hook entry point:
 //   node guard-main.js --home <home> --verifier <verifierDir>
 // Reads the hook JSON on stdin. Exit 0 = allow; exit 2 + reason on stderr = deny.
-// Unparseable input is denied (fail closed).
+// Any failure (bad args, bad stdin, crash) is a deny: exit 1 would let the call through.
 import { appendFileSync } from "node:fs";
-import { guardDecision } from "./guard.js";
+import { guardPayload } from "./guard.js";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  const v = i >= 0 ? process.argv[i + 1] : undefined;
+  return v && !v.startsWith("--") ? v : undefined;
 }
 
 function log(line: string): void {
@@ -22,9 +23,21 @@ function log(line: string): void {
 }
 
 function deny(reason: string): never {
-  process.stderr.write(reason + "\n");
+  try {
+    process.stderr.write(reason + "\n");
+  } catch {
+    /* still exit 2 */
+  }
   process.exit(2);
 }
+
+function crash(e: unknown): never {
+  log("deny guard-error");
+  return deny(`guard error: ${e instanceof Error ? e.message : String(e)}`);
+}
+
+process.on("uncaughtException", crash);
+process.on("unhandledRejection", crash);
 
 async function readStdin(): Promise<string> {
   let s = "";
@@ -33,23 +46,25 @@ async function readStdin(): Promise<string> {
   return s;
 }
 
-const home = arg("--home");
-const verifierDir = arg("--verifier");
-if (!home || !verifierDir) deny("Holdback guard misconfigured: --home and --verifier are required.");
+async function main(): Promise<void> {
+  const home = arg("--home");
+  const verifierDir = arg("--verifier");
+  if (!home || !verifierDir) deny("guard error: --home and --verifier are required.");
+  // Test hook: proves a crash inside the guard still denies.
+  if (process.env.HOLDBACK_GUARD_SELFTEST_THROW) throw new Error("selftest");
 
-const raw = await readStdin();
-let input: { tool_name?: unknown; tool_input?: unknown };
-try {
-  input = JSON.parse(raw);
-  if (typeof input !== "object" || input === null || typeof input.tool_name !== "string") throw new Error("bad shape");
-} catch {
-  log("deny unparseable");
-  deny("Holdback guard could not parse the tool call, so it was blocked.");
+  const raw = await readStdin();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    log("deny unparseable");
+    deny("Holdback guard could not parse the tool call, so it was blocked.");
+  }
+  const d = guardPayload(payload, { home, verifierDir });
+  log(`${d.allow ? "allow" : "deny"} ${(payload as { tool_name?: string })?.tool_name ?? "?"}`);
+  if (!d.allow) deny(d.reason);
+  process.exit(0);
 }
 
-const toolInput =
-  typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
-const d = guardDecision({ tool_name: input.tool_name as string, tool_input: toolInput }, { home: home!, verifierDir: verifierDir! });
-log(`${d.allow ? "allow" : "deny"} ${input.tool_name}`);
-if (!d.allow) deny(d.reason);
-process.exit(0);
+main().catch(crash);
