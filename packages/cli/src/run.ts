@@ -53,7 +53,8 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
     case "error":
       return { code: EXIT.error, why: f.error ?? "falsify failed" };
     case "drift":
-      return { code: EXIT.unfinished, why: driftStop(f.error) };
+      // the spec moved while Kane evolved the tests: nothing was sealed, and its origin is unverified (N-I2)
+      return { code: EXIT.unfinished, why: f.specChange?.duringAgentTurn ? unverifiedDrift(f.specChange.files) : driftStop(f.error) };
     case "kane-budget":
       return { code: EXIT.unfinished, why: f.error ?? "Kane credit cap reached" };
     default:
@@ -157,6 +158,8 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
     }
 
     const buildDeps = scrubAgentEnv(ctx.deps.buildDeps);
+    // R40: Kane evolves a use case at most twice in a run, whichever falsify pass asks
+    const evolves = new Map<string, number>();
     let stop: Stop | undefined;
     for (let round = 1; ; round++) {
       if (round > MAX_ROUNDS) {
@@ -172,13 +175,13 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       }
       if (o.falsify === false) break;
       ctx.out("Gate open: falsifying the passing criteria with planted bugs");
-      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err, ...capped });
+      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err, evolves, ...capped });
       falsified = f;
       stop = falsifyStop(f);
-      if (f.reason === "drift") on.drifted?.(false);
+      if (f.reason === "drift") on.drifted?.(f.specChange?.duringAgentTurn === true);
       if (stop) break;
       if (f.redesigned.length > 0) {
-        ctx.out(`Falsify re-opened ${f.redesigned.join(", ")}: building again`);
+        ctx.out(`Kane evolved the tests of ${f.redesigned.join(", ")} after a planted bug got past them: building again`);
         continue;
       }
       // the closing replay against the real build can leave criteria owed or regressed: that is the

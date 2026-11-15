@@ -198,6 +198,35 @@ describe("status and owed", () => {
     expect(doc.gate).toMatchObject({ open: false, owed: ["ac-2"], tampered: false });
   });
 
+  it("status shows Kane's evolve as a loop event (minted, retired, the because) and why a criterion is vacuous or needs the spec; the agent never sees the because (R40)", async () => {
+    await greenFixture();
+    const because = "A planted bug got past every test of this use case. ac-2 (\"criterion ac-2\"): a household of 9 is held to the 8-person limit.";
+    await log({ at, t: "mutant", id: "m-ac-2-1", ac: "ac-2", patch: "p", model: "m", usd: 0, verdict: "survived" });
+    await log({ at, t: "falsify.evolved", uc: "uc-1", because, minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39, mutants: ["m-ac-2-1"] });
+    await log({
+      at,
+      t: "design",
+      useCase: "uc-1",
+      acs: ["ac-1", "ac-2"].map((id) => ({ id, text: `criterion ${id}`, useCase: "uc-1", cites: [], trust: "derived" })),
+      tests: [{ id: "t-4", title: "four", file: ".testmuai/tests/t1_test.md", verifies: ["ac-2"] }],
+      gaps: [],
+      credits: 0,
+      notes: { "ac-1": "Kane's evolved tests no longer cover it" },
+    });
+    const human = await cli(["status"]);
+    expect(human.out).toMatch(/ac-1\s+needs-spec\s+Kane's evolved tests no longer cover it/);
+    expect(human.out).toContain("Kane evolved uc-1 after a planted bug got past its tests: minted t-4; retired t-1, t-2 (11.39 credits)");
+    expect(human.out).toContain(`Because: ${because}`);
+    const doc = JSON.parse((await cli(["status", "--json"])).out);
+    expect(doc.evolved).toEqual([{ uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39, because }]);
+
+    const agent = await cli(["status"], { env: { CLAUDECODE: "1" } });
+    expect(agent.out).toContain("Kane evolved uc-1 after a planted bug got past its tests: minted t-4; retired t-1, t-2");
+    expect(agent.out).not.toContain("household of 9");
+    const agentDoc = JSON.parse((await cli(["status", "--json"], { env: { CLAUDECODE: "1" } })).out);
+    expect(agentDoc.evolved).toEqual([{ uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39 }]);
+  });
+
   it("status keeps the gate closed while every criterion passes but a test's latest run proved nothing (R34)", async () => {
     await greenFixture();
     await log({ at, t: "run", kind: "build", turn: 3, result: result("t-1", "failed", { status: "error", reason: "timeout", inconclusive: "timeout" }) });
@@ -688,13 +717,26 @@ describe("run", () => {
     expect((await cli(["run", "--max-turns", "lots"], s.deps)).code).toBe(1);
   });
 
-  it("goes back to the build loop while falsify re-opens criteria", async () => {
+  it("goes back to the build loop while falsify re-opens criteria, with one count of Kane's evolves for the whole run (R40)", async () => {
     await greenFixture();
     const s = stages({ falsify: [{ ...falsifyOk, redesigned: ["uc-1"] }, falsifyOk] });
     const r = await cli(["run"], s.deps);
     expect(r.code).toBe(0);
     expect(s.calls).toEqual(["build", "falsify", "build", "falsify"]);
-    expect(r.out).toContain("building again");
+    expect(r.out).toContain("Kane evolved the tests of uc-1 after a planted bug got past them: building again");
+    // the bound of two evolves per use case holds across the run's falsify passes
+    const [first, second] = s.seen.falsify as { evolves?: Map<string, number> }[];
+    expect(first!.evolves).toBeInstanceOf(Map);
+    expect(second!.evolves).toBe(first!.evolves);
+  });
+
+  it("stops with exit 3 and the unverified-change message when the spec moved while Kane evolved the tests (N-I2)", async () => {
+    await greenFixture();
+    const s = stages({ falsify: [{ ...falsifyOk, reason: "drift", error: "the spec changed", specChange: { files: ["PRD.md"], duringAgentTurn: true } }] });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("SPEC CHANGED — origin unverified (PRD.md)");
+    expect(s.calls).toEqual(["build", "falsify"]);
   });
 
   it("goes back to the build loop when falsify's closing replay leaves a criterion owed or regressed (I5)", async () => {
