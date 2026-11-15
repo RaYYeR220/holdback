@@ -46,3 +46,13 @@ export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
 export { seal, checkSeal } from "./seal.js";
 export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
+export {
+  guardDecision,
+  writeAgentSettings,
+  posixAbs,
+  type GuardInput,
+  type GuardContext,
+  type GuardDecision,
+  type AgentSettingsOptions,
+} from "./agent/guard.js";
+export { runClaudeTurn, contractPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
