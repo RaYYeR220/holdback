@@ -1,12 +1,10 @@
 // Usage: node scripts/sanitize.mjs <srcDir> <destDir>
 // Copies *.ndjson files, stripping the local home path and share URLs.
+// The home path is read at run time (os.homedir()), never written into this file.
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-const HOME_JSON = "C:\\\\Users\\\\user"; // as it appears inside JSON strings
-const HOME_FWD = "C:/Users/user";
-const HOME_RAW = "C:\\Users\\user";
 
 const SEP = "(?:\\\\\\\\|\\\\|/)"; // JSON-escaped backslash, backslash or slash
 const TMP_RE = new RegExp(
@@ -14,14 +12,29 @@ const TMP_RE = new RegExp(
   "gi",
 );
 
-export function sanitize(text) {
-  return text
-    .replaceAll(HOME_JSON, "~")
-    .replaceAll(HOME_FWD, "~")
-    .replaceAll(HOME_RAW, "~")
-    // Session temp dirs (incl. tool scratchpad ids) collapse to <tmp>, any slash/escape style.
-    .replace(TMP_RE, (m) => "<tmp>" + (m.endsWith("\\\\") ? "\\\\" : m.slice(-1)))
-    .replace(/https:\/\/test-manager\.lambdatest\.com\/[^"\s]*/g, "<share-url>");
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The forms `home` takes in Kane's output: as it is, with forward slashes, and with its backslashes
+ * escaped as inside a JSON string. Longest first, so the JSON form is replaced before the raw one.
+ */
+export function homeForms(home) {
+  const raw = home.replace(/[\\/]+$/, "");
+  if (!raw) return [];
+  const forms = new Set([raw.replace(/\\/g, "\\\\"), raw, raw.replace(/\\/g, "/")]);
+  return [...forms].sort((a, b) => b.length - a.length);
+}
+
+/** Replaces `home` (default: this user's home) with `~`, temp dirs with `<tmp>` and Test Manager links with `<share-url>`. */
+export function sanitize(text, home = os.homedir()) {
+  let out = text;
+  for (const form of homeForms(home)) out = out.replace(new RegExp(escapeRe(form), "g"), "~");
+  return (
+    out
+      // Session temp dirs (incl. tool scratchpad ids) collapse to <tmp>, any slash/escape style.
+      .replace(TMP_RE, (m) => "<tmp>" + (m.endsWith("\\\\") ? "\\\\" : m.slice(-1)))
+      .replace(/https:\/\/test-manager\.lambdatest\.com\/[^"\s]*/g, "<share-url>")
+  );
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
