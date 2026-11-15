@@ -25,6 +25,17 @@ export class AppStartError extends Error {
   }
 }
 
+/**
+ * Another program already listens on the port: nothing was started. Not an AppStartError, since
+ * the app's code is not at fault, so it is never briefed to the coding agent as one to fix.
+ */
+export class PortInUse extends Error {
+  constructor(public readonly port: number) {
+    super(`port ${port} is already in use by another program: stop it, or set start.port in holdback.config.json to a free port`);
+    this.name = "PortInUse";
+  }
+}
+
 const MAX_LOG_LINES = 400;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -68,9 +79,12 @@ async function probe(url: string): Promise<boolean> {
 /**
  * Start `cmd` through a shell with PORT set, wait until it answers HTTP on
  * `readyPath`, and return handles to stop it (whole process tree) and read logs.
+ * Throws `PortInUse`, before starting anything, when the port already accepts connections.
  */
 export async function startApp(opts: StartAppOptions): Promise<RunningApp> {
   const timeoutMs = opts.timeoutMs ?? 60000;
+  // a server already on the port would answer the readiness probe (and Kane) in the app's place
+  if (await portAccepts(opts.port)) throw new PortInUse(opts.port);
   const lines: string[] = [];
   let partial = "";
   const push = (chunk: string) => {

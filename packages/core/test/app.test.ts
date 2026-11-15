@@ -1,8 +1,10 @@
-import { createConnection } from "node:net";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AppStartError, freePort, startApp } from "../src/app.js";
+import { AppStartError, freePort, PortInUse, startApp } from "../src/app.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const server = join(here, "fixtures", "tiny-server.mjs");
@@ -45,5 +47,29 @@ describe("app process manager", () => {
     }).catch((e) => e);
     expect(err).toBeInstanceOf(AppStartError);
     expect(Date.now() - t).toBeLessThan(10000);
+  }, 30000);
+
+  it("refuses a port another program already listens on, without starting the command", async () => {
+    // live smoke: another dev server held the configured port. The app died on EADDRINUSE and the
+    // agent would have been briefed to "fix" it (or, had the probe won the race, Kane would have
+    // tested the other server)
+    const port = await freePort();
+    const other = createServer((s) => s.end("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"));
+    await new Promise<void>((r) => other.listen(port, "0.0.0.0", () => r()));
+    const dir = mkdtempSync(join(tmpdir(), "hb-port-"));
+    try {
+      const marker = join(dir, "started");
+      const err = await startApp({
+        cwd: here, cmd: nodeCmd(`-e "require('fs').writeFileSync(process.argv[1],'x');setInterval(()=>{},1000)" "${marker}"`), port, readyPath: "/", timeoutMs: 3000,
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(PortInUse);
+      expect(err).not.toBeInstanceOf(AppStartError); // not the app's fault: never briefed to the agent as a start failure
+      expect((err as Error).message).toContain(`port ${port} is already in use`);
+      await new Promise((r) => setTimeout(r, 500));
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await new Promise((r) => other.close(() => r(undefined)));
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 30000);
 });

@@ -48,7 +48,7 @@ export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
 export { seal, checkSeal, appSealKey, isAppKeyOf, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
-export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
+export { startApp, freePort, AppStartError, PortInUse, type StartAppOptions, type RunningApp } from "./app.js";
 export {
   guardDecision,
   guardPayload,

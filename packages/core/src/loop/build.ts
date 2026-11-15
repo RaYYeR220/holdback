@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
 import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
-import { AppStartError, startApp, type RunningApp } from "../app.js";
+import { AppStartError, PortInUse, startApp, type RunningApp } from "../app.js";
 import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { runTests, type TestRunResult } from "../kane/testmd.js";
 import { gate } from "../ledger/gate.js";
@@ -291,7 +291,10 @@ export class VerifySession {
     return { state };
   }
 
-  /** Starts the app for a Kane batch on `port`. Returns why it did not start (log tail and reason), or undefined. */
+  /**
+   * Starts the app for a Kane batch on `port`. Returns why it did not start (log tail and reason), or
+   * undefined. Throws `PortInUse`: another program on the port is for the human, not the agent, to fix.
+   */
   async startApp(port: number): Promise<string | undefined> {
     const { p } = this;
     try {
@@ -304,6 +307,7 @@ export class VerifySession {
       });
       return undefined;
     } catch (e) {
+      if (e instanceof PortInUse) throw e;
       return startFailureText(e);
     }
   }

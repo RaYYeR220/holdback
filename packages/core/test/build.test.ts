@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ClaudeTurnOptions, ClaudeTurnResult } from "../src/agent/claude.js";
 import { posixAbs } from "../src/agent/guard.js";
-import { AppStartError } from "../src/app.js";
+import { AppStartError, PortInUse } from "../src/app.js";
 import type { AcNode, TestNode } from "../src/kane/assurance.js";
 import type { TestRunResult } from "../src/kane/testmd.js";
 import { gate } from "../src/ledger/gate.js";
@@ -271,6 +271,19 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(brief.startsWith("# Holdback — The app does not start\n")).toBe(true);
     expect(brief).toContain("Error: Cannot find module 'express'\napp exited before becoming ready\n");
     expect(brief).not.toContain("## ac-");
+  });
+
+  it("stops with an error naming the port when another program holds it, instead of briefing the agent", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_turn, files) => files.map(pass) });
+    deps.app = async (o) => {
+      throw new PortInUse(o.port);
+    };
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 1, reason: "error" });
+    expect(r.error).toContain("port 3100 is already in use");
+    expect(calls.claude).toHaveLength(1);
+    expect(calls.tests).toHaveLength(0);
   });
 
   it("stops with tamper when the agent's turn changed a sealed test file, before Kane runs", async () => {
