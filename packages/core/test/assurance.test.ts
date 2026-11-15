@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   balance,
-  coverGaps,
   designTests,
   extractResume,
   ingest,
@@ -177,22 +176,14 @@ describe("balance", () => {
   });
 });
 
-describe("coverGaps", () => {
-  it("flattens pending rows into gaps", async () => {
-    useFixture(fx("cover-gaps.json"));
-    const g = await coverGaps(cwd);
-    expect(g.map((x) => x.id)).toEqual(["ac-3", "ac-4", "ac-5", "ac-1", "ac-2"]);
-    expect(g[0]).toMatchObject({ kind: "execution-failed", acs: ["ac-3"] });
-    expect(g[0]!.title.length).toBeGreaterThan(0);
-    expect(argvs()[0]).toEqual(["cover", "gaps", "--json"]);
-  });
-});
-
 describe("readGraph", () => {
   const seed = () => {
     mkdirSync(join(cwd, ".context"), { recursive: true });
     cpSync(fx("context-commits"), join(cwd, ".context", "commits"), { recursive: true });
-    cpSync(fx("tests"), join(cwd, ".testmuai", "tests"), { recursive: true });
+    // one file per test id, as Kane leaves them (the fixture folder holds two runs' worth)
+    mkdirSync(join(cwd, ".testmuai", "tests"), { recursive: true });
+    for (const f of ["snap-household-qualifies-despite-above-limit-income_test.md", "nine-person-household-qualifies-at-9-467_test.md", "non-snap-household-above-2-461-is-not-eligible_test.md"])
+      cpSync(join(fx("tests"), f), join(cwd, ".testmuai", "tests", f));
   };
 
   it("maps nodes, test files, verifies and citations", async () => {
@@ -217,6 +208,13 @@ describe("readGraph", () => {
     expect(t3.file.replaceAll("\\", "/")).toMatch(/\.testmuai\/tests\/non-snap-.*_test\.md$/);
     expect(g.gaps.map((x) => x.id)).toEqual(["gap-1", "gap-2", "gap-3", "gap-4"]);
     expect(argvs()[0]).toEqual(["context", "view", "--json"]);
+  });
+
+  it("refuses two test files that claim one test id: a stale file must never shadow a re-designed one (M5)", async () => {
+    seed();
+    cpSync(join(fx("tests"), "inclusive-limits-and-published-household-size-schedule_test.md"), join(cwd, ".testmuai", "tests", "inclusive-limits-and-published-household-size-schedule_test.md"));
+    useFixture(fx("context-view.json"));
+    await expect(readGraph(cwd)).rejects.toThrow(/two test files claim t-3: .*inclusive-limits.*non-snap-household/);
   });
 
   it("never throws when the context store is missing: cites are empty", async () => {

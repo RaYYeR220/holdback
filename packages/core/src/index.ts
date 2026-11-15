@@ -12,7 +12,6 @@ export {
   readGraph,
   listNodes,
   type ListedNode,
-  coverGaps,
   reconcile,
   balance,
   sumCredits,
@@ -74,7 +73,6 @@ export { CliHumanIO, ScriptedHumanIO, parseHumanScript, type HumanScript } from 
 export {
   runSpecStage,
   reseal,
-  resealAppFiles,
   appSealFiles,
   drivePaused,
   latestSpecChange,
@@ -183,7 +181,6 @@ export {
   EMPTY_HOOKS_DIR,
   changedFiles,
   worktreeTree,
-  checkout,
   worktreeAdd,
   worktreeRemove,
   type GitResult,

@@ -158,10 +158,6 @@ export async function changedFiles(cwd: string, from: string, to: string, opts: 
   return out.split("\0").filter((f) => f.length > 0);
 }
 
-export async function checkout(cwd: string, ref: string, opts: GitOptions = {}): Promise<void> {
-  await gitOk(cwd, ["checkout", "-q", ref, "--"], opts);
-}
-
 /** Detached worktree of `ref` at `dir`. */
 export async function worktreeAdd(cwd: string, dir: string, ref: string, opts: GitOptions = {}): Promise<void> {
   await gitOk(cwd, ["worktree", "add", "--detach", dir, ref], opts);

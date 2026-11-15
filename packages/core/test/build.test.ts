@@ -13,7 +13,7 @@ import { gate } from "../src/ledger/gate.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
-import { changedFiles, checkout, commitAll, ensureHead, git as runGit, headSha, isRepoRoot, worktreeAdd, worktreeRemove } from "../src/git.js";
+import { changedFiles, commitAll, ensureHead, git as runGit, headSha, isRepoRoot, worktreeAdd, worktreeRemove } from "../src/git.js";
 import { runBuildLoop, type BuildDeps } from "../src/loop/build.js";
 import { appSealFiles, reseal } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -1515,7 +1515,7 @@ describe("git helpers", { timeout: 60_000 }, () => {
     expect(probe.stdout.trim()).toBe("lazy=1");
   });
 
-  it("commit, diff, checkout and worktrees over a scratch repo", async () => {
+  it("commit, diff and worktrees over a scratch repo", async () => {
     const repo = join(root, "repo");
     mkdirSync(join(repo, "sub"), { recursive: true });
     git(repo, "init", "-q");
@@ -1545,9 +1545,5 @@ describe("git helpers", { timeout: 60_000 }, () => {
     expect(git(wt, "rev-parse", "--short", "HEAD")).toBe(first);
     await worktreeRemove(repo, wt);
     expect(git(repo, "worktree", "list").split("\n")).toHaveLength(1);
-
-    await checkout(repo, first);
-    expect(git(repo, "rev-parse", "--short", "HEAD")).toBe(first);
-    await expect(checkout(repo, "no-such-ref")).rejects.toThrow(/git checkout/);
   });
 });

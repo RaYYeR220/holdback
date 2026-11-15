@@ -19,6 +19,7 @@ import { kaneCapCredits, type Project } from "../project.js";
 import { checkRecordings, checkSeal } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { bisectRegression, BisectTampered, blameOf, lastGoodTurn } from "./bisect.js";
+import { logMarkedTamper, recordTamperIn } from "./session.js";
 import { buildBrief, byAcId, type AcFailure } from "./brief.js";
 import { appSealFiles, classifySpecChange, driftHint, isSpecKey, specFileOf } from "./spec.js";
 
@@ -233,13 +234,7 @@ export class VerifySession {
    * be written must not keep the event out of the ledger either.
    */
   async recordTamper(detail: string): Promise<void> {
-    let logged = detail;
-    try {
-      await markTampered(this.p, detail);
-    } catch (e) {
-      logged = `${detail} (tamper marker not written: ${errText(e)})`;
-    }
-    await this.emit({ t: "tamper", detail: logged });
+    await recordTamperIn(this.p, (e) => this.emit(e), detail);
   }
 
   async stopApp(): Promise<void> {
@@ -332,13 +327,7 @@ export class VerifySession {
     const { p } = this;
     const marker = await tamperMarker(p);
     if (marker !== null) {
-      // a tamper only the marker knows (the ledger could not take it) goes into the ledger once, so
-      // whatever seal comes next drops the results from before it; later starts find it there
-      try {
-        if (!reduce(parseEvents((await readLedger(p.ledgerFile)).toString("utf8"))).tampered) await this.log({ at: this.at(), t: "tamper", detail: marker });
-      } catch {
-        /* best effort: the marker blocks either way */
-      }
+      await logMarkedTamper(p, this.log, marker);
       return { reason: "tamper", error: RESEAL_HINT };
     }
     await mkdir(this.gitOpts.hooksDir!, { recursive: true });

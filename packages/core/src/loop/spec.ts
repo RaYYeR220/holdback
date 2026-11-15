@@ -240,17 +240,6 @@ export async function specDiff(p: Project, manifest: Record<string, string>, rel
 }
 
 /**
- * Re-hash the sealed app files (call after any later Holdback append to the
- * spec, e.g. more Clarifications) and return the updated manifest.
- */
-export async function resealAppFiles(p: Project, manifest: Record<string, string>): Promise<Record<string, string>> {
-  const fresh = await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) });
-  const out = { ...manifest };
-  for (const [k, v] of Object.entries(fresh)) if (k.startsWith("app:")) out[k] = v;
-  return out;
-}
-
-/**
  * Every human re-seal goes through here (the spec stage, and a re-seal after a tamper or drift).
  * `log` must append to `p.ledgerFile`.
  * 1. A tamper known only to the `TAMPERED` marker (the ledger could not take it) is logged first, so

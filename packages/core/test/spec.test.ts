@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
-import { checkSpecPaths, mapIngestedFiles, resealAppFiles, runSpecStage } from "../src/loop/spec.js";
+import { checkSpecPaths, mapIngestedFiles, runSpecStage } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { gate } from "../src/ledger/gate.js";
@@ -349,7 +349,5 @@ describe("runSpecStage", () => {
     writeFileSync(join(appDir, "PRD.md"), "tampered");
     writeFileSync(join(appDir, "holdback.config.json"), "{}");
     expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual(["app:PRD.md", "app:holdback.config.json"]);
-    const re = await resealAppFiles(p, manifest);
-    expect(await checkSeal(p.verifierDir, re, p.appDir)).toEqual([]);
   }, 60_000);
 });

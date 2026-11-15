@@ -17,6 +17,7 @@ import { kaneCapCredits, type Project } from "../project.js";
 import { checkSeal, tier1Entries, type SealEntry } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { byAcId } from "./brief.js";
+import { logMarkedTamper, recordTamperIn } from "./session.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
 import { appSealFiles, clarifiedFile, classifySpecChange, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specFileOf, type Warn } from "./spec.js";
@@ -316,15 +317,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   /** Each Kane batch (a mutant's replay, the closing replay, a re-design) is metered by Kane's balance. */
   const capCredits = kaneCapCredits(p.config, opts.kaneCap);
   const meter = new KaneMeter(deps.balance, emit, capCredits === undefined ? undefined : { credits: capCredits, spent: () => reduce(events).kaneCredits });
-  const recordTamper = async (detail: string) => {
-    let logged = detail;
-    try {
-      await markTampered(p, detail);
-    } catch (e) {
-      logged = `${detail} (tamper marker not written: ${errText(e)})`;
-    }
-    await emit({ t: "tamper", detail: logged });
-  };
+  const recordTamper = (detail: string) => recordTamperIn(p, emit, detail);
   const stopApp = async () => {
     const a = running;
     running = undefined;
@@ -665,11 +658,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     await dropStaleMutants(); // touches nothing sealed
     const marker = await tamperMarker(p);
     if (marker !== null) {
-      try {
-        if (!reduce(parseEvents((await readLedger(p.ledgerFile)).toString("utf8"))).tampered) await log({ at: at(), t: "tamper", detail: marker });
-      } catch {
-        /* best effort: the marker blocks either way */
-      }
+      await logMarkedTamper(p, log, marker);
       return result("tamper", RESEAL_HINT);
     }
     if (!(await isRepoRoot(p.appDir, gitOpts))) return result("error", `the app dir must be the root of a git repository: ${p.appDir}`);

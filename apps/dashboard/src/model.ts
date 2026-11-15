@@ -179,8 +179,6 @@ function observe(e: RunEvent, at?: string): Observation {
     ...(r.failedStepText && r.status !== "passed" ? { stepText: r.failedStepText } : {}),
     ...(r.status !== "passed" && v?.observed ? { observed: v.observed } : {}),
     ...(r.status !== "passed" && (v?.oneLiner || r.reason) ? { note: v?.oneLiner ?? r.reason } : {}),
-    // a healed pass keeps the verdict (and screenshot) of the attempt that failed before the heal
-    ...(r.status === "passed" && r.healTriggered && v?.oneLiner ? { note: `Before the heal${r.failedStep ? ` (step ${r.failedStep})` : ""}: ${v.oneLiner}` } : {}),
     ...(v?.bugTitle && r.status !== "passed" ? { title: v.bugTitle } : {}),
     ...(r.screenshot ? { screenshot: r.screenshot } : {}),
     healed: r.healTriggered,

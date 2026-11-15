@@ -305,24 +305,6 @@ export async function balance(): Promise<number> {
   return Number(m[1]);
 }
 
-// ---------------------------------------------------------------- cover gaps
-
-export async function coverGaps(cwd: string): Promise<GapNode[]> {
-  const r = await runKane(["cover", "gaps", "--json"], { cwd, timeoutMs: READ_TIMEOUT_MS });
-  const doc = parseJsonDoc(r.stdout);
-  if (r.exitCode !== 0 || !isObj(doc)) {
-    throw new Error(`cover gaps failed (exit ${r.exitCode}): ${(r.stderr || r.stdout).trim()}`);
-  }
-  const gaps: GapNode[] = [];
-  for (const uc of arr(doc.usecases).filter(isObj)) {
-    for (const p of arr(uc.pending).filter(isObj)) {
-      const id = str(p.ref) || str(p.id);
-      gaps.push({ id, title: str(p.title), kind: str(p.kind), acs: [str(p.id) || id] });
-    }
-  }
-  return gaps;
-}
-
 /** Parse a whole-stdout JSON document, tolerating leading non-JSON notice lines. */
 function parseJsonDoc(stdout: string): unknown {
   const lines = stdout.split("\n");
@@ -426,22 +408,34 @@ function rankCites(candidates: Derives[], acText: string): AcNode["cites"] {
 
 type TestFile = { file: string; verifies: string[] };
 
-/** Map assurance test id -> file + @verifies tags by scanning `.testmuai/tests`. */
+/**
+ * Map assurance test id -> file + @verifies tags by scanning `.testmuai/tests`. Two files that claim
+ * one id are refused (M5): a stale file must never shadow a re-designed one, whichever is read last.
+ */
 function readTestFiles(cwd: string): Map<string, TestFile> {
   const out = new Map<string, TestFile>();
+  const dir = join(cwd, ".testmuai", "tests");
+  let names: string[];
   try {
-    const dir = join(cwd, ".testmuai", "tests");
-    for (const name of readdirSync(dir).filter((n) => n.endsWith("_test.md"))) {
-      const file = join(dir, name);
-      const parsed = parseTestMd(readFileSync(file, "utf8"));
-      const id = parsed.id;
-      if (!id) continue;
-      const verifies: string[] = [];
-      for (const st of parsed.steps) for (const ac of st.verifies) if (!verifies.includes(ac)) verifies.push(ac);
-      out.set(id, { file, verifies });
-    }
+    names = readdirSync(dir).filter((n) => n.endsWith("_test.md")).sort();
   } catch {
-    /* no tests folder yet */
+    return out; // no tests folder yet
+  }
+  for (const name of names) {
+    const file = join(dir, name);
+    let parsed: ReturnType<typeof parseTestMd>;
+    try {
+      parsed = parseTestMd(readFileSync(file, "utf8"));
+    } catch {
+      continue; // unreadable: Kane reports it when it runs
+    }
+    const id = parsed.id;
+    if (!id) continue;
+    const seen = out.get(id);
+    if (seen) throw new Error(`two test files claim ${id}: ${seen.file.split(/[\\/]/).pop()} and ${name}; remove the stale one from ${dir}, then run the stage again`);
+    const verifies: string[] = [];
+    for (const st of parsed.steps) for (const ac of st.verifies) if (!verifies.includes(ac)) verifies.push(ac);
+    out.set(id, { file, verifies });
   }
   return out;
 }
