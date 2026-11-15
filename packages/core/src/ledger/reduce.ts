@@ -9,6 +9,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
     breakerUsd: 0,
     runs: 0,
     mutants: { killed: 0, survived: 0, invalid: 0 },
+    tampered: false,
   };
   // latest build result per (ac, test): true = passed, false = failed
   const latest = new Map<string, Map<string, boolean>>();
@@ -20,6 +21,13 @@ export function reduce(events: LedgerEvent[]): LedgerState {
 
   for (const e of events) {
     switch (e.t) {
+      // fail closed: a tamper blocks the gate until a fresh seal (spec stage or a human re-seal)
+      case "tamper":
+        state.tampered = true;
+        break;
+      case "seal":
+        state.tampered = false;
+        break;
       case "design": {
         state.credits += e.credits;
         for (const ac of e.acs) latest.delete(ac.id); // AC may move between use cases: drop stale results

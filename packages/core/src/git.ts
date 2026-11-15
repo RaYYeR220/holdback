@@ -4,10 +4,16 @@ import spawn from "cross-spawn";
 
 export type GitResult = { code: number; stdout: string; stderr: string };
 
-/** Run `git <args>` in `cwd`. */
+/**
+ * Config overrides on every git call Holdback makes: no fsmonitor hook and no signing program,
+ * so nothing configured inside the (agent-writable) repo runs as part of Holdback's own commands.
+ */
+const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"];
+
+/** Run `git <args>` in `cwd` (with the safety overrides above). */
 export function git(cwd: string, args: string[]): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, {
+    const child = spawn("git", [...SAFE_CONFIG, ...args], {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -75,9 +81,14 @@ export async function ensureHead(cwd: string, message: string, opts: CommitOptio
   return (await gitOk(cwd, ["rev-parse", "--short", "HEAD"])).trim();
 }
 
+/** Absolute path of a file inside the repo's git dir, e.g. `config` or `info/exclude`. */
+export async function gitPath(cwd: string, name: string): Promise<string> {
+  return path.resolve(cwd, (await gitOk(cwd, ["rev-parse", "--git-path", name])).trim());
+}
+
 /** Add `pattern` to the repo's local `info/exclude` (never committed) unless it is already listed. */
 export async function excludeFromGit(cwd: string, pattern: string): Promise<void> {
-  const file = path.resolve(cwd, (await gitOk(cwd, ["rev-parse", "--git-path", "info/exclude"])).trim());
+  const file = await gitPath(cwd, "info/exclude");
   let text = "";
   try {
     text = await readFile(file, "utf8");

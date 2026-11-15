@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadProject, seal, checkSeal } from "../src/index.js";
+import { loadProject, seal, checkSeal, sealRecordings, checkRecordings } from "../src/index.js";
 
 let tmp: string;
 let prevHome: string | undefined;
@@ -142,21 +142,52 @@ describe("seal", () => {
     expect((await seal(v))[".testmuai/tests/link_test.md"]).toMatch(/^symlink:/);
   });
 
-  it("seals only *_test.md under tests and ignores Kane's output-* recording folders", async () => {
+  it("tier 1 seals every file under tests except Kane's output-* recording folders", async () => {
     const v = await verifier();
     const tests = path.join(v, ".testmuai", "tests");
     await writeFile(path.join(tests, "notes.txt"), "not a test");
     const m = await seal(v);
-    expect(Object.keys(m)).not.toContain(".testmuai/tests/notes.txt");
-    // a Kane run writes its recording next to the test
-    await mkdir(path.join(tests, "output-a"), { recursive: true });
+    expect(Object.keys(m)).toContain(".testmuai/tests/notes.txt");
+    // a Kane run writes its recording next to the test: not tier 1
+    await mkdir(path.join(tests, "output-a", "deep"), { recursive: true });
     await writeFile(path.join(tests, "output-a", "recording.json"), "{}");
-    await writeFile(path.join(tests, "output-a", "copy_test.md"), "Kane's own copy");
-    await writeFile(path.join(tests, "notes.txt"), "changed");
+    await writeFile(path.join(tests, "output-a", "deep", "copy_test.md"), "Kane's own copy");
     expect(await checkSeal(v, m)).toEqual([]);
-    // a new test file anywhere else is reported
+    // any other planted or changed file is reported, test or not
+    await writeFile(path.join(tests, "notes.txt"), "changed");
     await writeFile(path.join(tests, "sub", "planted_test.md"), "x");
-    expect(await checkSeal(v, m)).toEqual([".testmuai/tests/sub/planted_test.md"]);
+    await writeFile(path.join(tests, "sub", "helper.js"), "x");
+    expect(await checkSeal(v, m)).toEqual([
+      ".testmuai/tests/notes.txt",
+      ".testmuai/tests/sub/helper.js",
+      ".testmuai/tests/sub/planted_test.md",
+    ]);
+  });
+
+  it("tier 2 hashes only the output-* recordings and reports changes to them", async () => {
+    const v = await verifier();
+    const tests = path.join(v, ".testmuai", "tests");
+    await mkdir(path.join(tests, "output-a", "deep"), { recursive: true });
+    await mkdir(path.join(tests, "sub", "output-b"), { recursive: true });
+    await writeFile(path.join(tests, "output-a", "recording.json"), "{}");
+    await writeFile(path.join(tests, "output-a", "deep", "step.json"), "1");
+    await writeFile(path.join(tests, "sub", "output-b", "r.json"), "2");
+    const snap = await sealRecordings(v);
+    expect(Object.keys(snap)).toEqual([
+      ".testmuai/tests/output-a/deep/step.json",
+      ".testmuai/tests/output-a/recording.json",
+      ".testmuai/tests/sub/output-b/r.json",
+    ]);
+    expect(await checkRecordings(v, snap)).toEqual([]);
+    await writeFile(path.join(tests, "output-a", "recording.json"), '{"forged":true}');
+    await rm(path.join(tests, "sub", "output-b", "r.json"));
+    await writeFile(path.join(tests, "output-a", "new.json"), "x");
+    await writeFile(path.join(tests, "a_test.md"), "tier 1, not tier 2");
+    expect(await checkRecordings(v, snap)).toEqual([
+      ".testmuai/tests/output-a/new.json",
+      ".testmuai/tests/output-a/recording.json",
+      ".testmuai/tests/sub/output-b/r.json",
+    ]);
   });
 
   it("missing folders give an empty manifest without throwing", async () => {

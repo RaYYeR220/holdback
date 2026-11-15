@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { posixAbs } from "../src/agent/guard.js";
 import { AppStartError } from "../src/app.js";
 import type { AcNode, TestNode } from "../src/kane/assurance.js";
 import type { TestRunResult } from "../src/kane/testmd.js";
+import { gate } from "../src/ledger/gate.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
@@ -364,7 +365,34 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       },
     });
     expect(await runBuildLoop(p, deps, log)).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
-    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "seal")).toHaveLength(1);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.filter((e) => e.t === "seal")).toHaveLength(1);
+    // Kane's own recordings are snapshotted after each turn's batches (tier 2)
+    const snaps = all.filter((e): e is Extract<LedgerEvent, { t: "recordings" }> => e.t === "recordings");
+    expect(snaps.map((s) => Object.keys(s.manifest))).toEqual([
+      [".testmuai/tests/output-t3_test/recording-1.json"],
+      [".testmuai/tests/output-t3_test/recording-1.json", ".testmuai/tests/output-t3_test/recording-2.json"],
+    ]);
+  });
+
+  it("flags an agent edit to one of Kane's recordings before the next Kane batch", async () => {
+    await setup();
+    const rec = join(dirname(T3), "output-t3_test", "recording.json");
+    const { deps, calls } = fakes({
+      edit: (turn) => {
+        if (turn === 2) writeFileSync(rec, '{"steps":"replay says pass"}');
+      },
+      kane: (turn, files) => {
+        mkdirSync(dirname(rec), { recursive: true });
+        if (turn === 1) writeFileSync(rec, '{"steps":"recorded"}');
+        return files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f)));
+      },
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 2, reason: "tamper" });
+    expect(calls.tests.map((t) => t.turn)).toEqual([1]);
+    const tamper = (await loopEvents()).at(-1)!;
+    expect(tamper.t === "tamper" && tamper.detail).toContain(".testmuai/tests/output-t3_test/recording.json");
   });
 
   it("flags an agent edit to a test on a turn the app did not start, at the next check", async () => {
@@ -402,6 +430,10 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     const ev = await loopEvents();
     const tamper = ev[ev.length - 1]!;
     expect(tamper.t === "tamper" && tamper.detail).toContain(".testmuai/variables/assurance.json");
+    // the batch that ran against the changed variable logged nothing but the tamper
+    expect(ev.filter((e) => e.t === "run" && e.turn === 2)).toEqual([]);
+    expect(ev.slice(-3).map((e) => e.t)).toEqual(["turn.start", "turn.end", "tamper"]);
+    expect(gate(reduce(await readEvents(p.ledgerFile)))).toMatchObject({ allowStop: false, tampered: true });
   });
 
   it("stops with tamper when the ledger is edited outside Holdback", async () => {
@@ -421,6 +453,75 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(last).toMatchObject({ t: "tamper", detail: "ledger modified outside Holdback" });
   });
 
+  const forgeGreen = () => {
+    for (const f of [T1, T3]) appendFileSync(p.ledgerFile, JSON.stringify({ at, t: "run", kind: "build", turn: 1, result: pass(f) }) + "\n");
+  };
+
+  it("a forged ledger is tamper even when the agent then dies without a result", async () => {
+    await setup();
+    const { deps } = fakes({
+      claude: () => {
+        forgeGreen();
+        return Promise.resolve({ exitCode: 1, resultText: "", durationMs: 5, timedOut: false, stderrTail: "boom" });
+      },
+      kane: (_t, files) => files.map(pass),
+    });
+    expect(await runBuildLoop(p, deps, log)).toMatchObject({ allowStop: false, reason: "tamper" });
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper", detail: "ledger modified outside Holdback" });
+    expect(gate(reduce(await readEvents(p.ledgerFile))).allowStop).toBe(false);
+  });
+
+  it("a forged ledger is tamper even when the turn then fails with an error (planted index.lock)", async () => {
+    await setup();
+    const lock = () => writeFileSync(join(appDir, ".git", "index.lock"), "");
+    const plain = fakes({ edit: lock, kane: (_t, files) => files.map(pass) });
+    const r1 = await runBuildLoop(p, plain.deps, log);
+    expect(r1).toMatchObject({ reason: "error" });
+    expect(r1.error).toMatch(/index\.lock/);
+    rmSync(join(appDir, ".git", "index.lock"));
+
+    const forged = fakes({
+      edit: () => {
+        lock();
+        forgeGreen();
+      },
+      kane: (_t, files) => files.map(pass),
+    });
+    expect(await runBuildLoop(p, forged.deps, log)).toMatchObject({ allowStop: false, reason: "tamper" });
+    expect(forged.calls.tests).toHaveLength(0);
+  });
+
+  it("refuses to build while a tamper is on record with no fresh seal after it", async () => {
+    await setup();
+    await log({ at, t: "tamper", detail: "sealed files changed: .testmuai/tests/t3_test.md" });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 0, reason: "tamper" });
+    expect(r.error).toMatch(/re-seal/);
+    expect(calls.claude).toHaveLength(0);
+    // a fresh seal (spec stage / human re-seal) clears it
+    await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+    const again = fakes({ kane: (_t, files) => files.map(pass) });
+    expect(await runBuildLoop(p, again.deps, log)).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
+  });
+
+  it("errors when a test it would run is not in the seal", async () => {
+    await setup();
+    const elsewhere = join(root, "elsewhere", "t3_test.md");
+    mkdirSync(dirname(elsewhere), { recursive: true });
+    copyFileSync(T3, elsewhere);
+    const tests: TestNode[] = [
+      { id: "t-1", title: "t-1", file: T1, verifies: ["ac-1"] },
+      { id: "t-3", title: "t-3", file: elsewhere, verifies: ["ac-3"] },
+    ];
+    await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests, gaps: [], credits: 0 });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 0, reason: "error" });
+    expect(r.error).toMatch(/test file not sealed/);
+    expect(calls.claude).toHaveLength(0);
+  });
+
   it("copies a failure screenshot into kane-evidence/, briefs its relative path, and never commits it", async () => {
     await setup();
     const shot = join(root, "kane-session", "screenshots", "step_008.png");
@@ -437,7 +538,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(r).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
     expect(readFileSync(join(appDir, "kane-evidence", "turn-1", "t-3-step-2.png"), "utf8")).toBe("PNG-BYTES");
     expect(calls.claude[1]!.prompt).toContain("\nScreenshot: kane-evidence/turn-1/t-3-step-2.png\n");
-    expect(readFileSync(join(appDir, ".git", "info", "exclude"), "utf8")).toContain("kane-evidence/\n");
+    expect(readFileSync(join(appDir, ".git", "info", "exclude"), "utf8")).toContain("\n/kane-evidence\n");
     expect(git(appDir, "ls-files")).not.toContain("kane-evidence");
     // the ledger keeps Kane's own path
     const failed = (await loopEvents()).find((e) => e.t === "run" && e.result.status === "failed");
@@ -454,20 +555,60 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.claude[1]!.prompt).not.toContain("Screenshot:");
   });
 
-  it("commits without the app repo's own hooks", async () => {
+  it("never writes a screenshot through a link planted at kane-evidence", async () => {
+    await setup();
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(appDir, "kane-evidence"), "junction");
+    const shot = join(root, "step_008.png");
+    writeFileSync(shot, "PNG");
+    const { deps, calls } = fakes({
+      kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? { ...fail(f), screenshot: shot } : pass(f))),
+    });
+    expect(await runBuildLoop(p, deps, log)).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
+    expect(readdirSync(outside)).toEqual([]);
+    expect(calls.claude[1]!.prompt).not.toContain("Screenshot:");
+  });
+
+  it("runs none of the repo's hooks, fsmonitor or signing program in its own git commands", async () => {
     await setup();
     const hooks = join(appDir, ".git", "hooks");
     mkdirSync(hooks, { recursive: true });
-    writeFileSync(join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n");
-    writeFileSync(join(hooks, "commit-msg"), "#!/bin/sh\nexit 1\n");
-    writeFileSync(join(hooks, "post-commit"), "#!/bin/sh\ntouch hook-ran\n");
+    const hook = (name: string, body: string) => writeFileSync(join(hooks, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    hook("pre-commit", "exit 1");
+    hook("commit-msg", "exit 1");
+    hook("post-commit", "touch hook-ran");
     // the hooks are live for an ordinary commit
     expect(() => git(appDir, "commit", "-q", "--allow-empty", "-m", "x")).toThrow();
+    // an fsmonitor hook and a signing program configured before the loop (so trusted as found)
+    const marker = join(root, "fsmonitor-ran").replace(/\\/g, "/");
+    const fsmon = join(root, "fsmon.cjs").replace(/\\/g, "/");
+    writeFileSync(fsmon, `require("fs").writeFileSync(${JSON.stringify(marker)}, "x"); process.stdout.write("\\0");\n`);
+    git(appDir, "config", "core.fsmonitor", `node "${fsmon}"`);
+    git(appDir, "status", "--short"); // the fsmonitor hook is live for an ordinary command
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    git(appDir, "config", "commit.gpgsign", "true");
+    git(appDir, "config", "gpg.program", join(root, "no-such-gpg").replace(/\\/g, "/"));
+
     const { deps } = fakes({ kane: (_t, files) => files.map(pass) });
     expect(await runBuildLoop(p, deps, log)).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
-    expect(git(appDir, "log", "--format=%s").split("\n")).toEqual(["holdback turn 1: 2 owed", "holdback: initial commit"]);
+    expect(existsSync(marker)).toBe(false);
     expect(existsSync(join(appDir, "hook-ran"))).toBe(false);
     expect(readdirSync(join(p.home, "empty-hooks"))).toEqual([]);
+    expect(git(appDir, "-c", "core.fsmonitor=false", "log", "--format=%s").split("\n")).toEqual(["holdback turn 1: 2 owed", "holdback: initial commit"]);
+  });
+
+  it("stops with tamper when the agent changes the repo's git config", async () => {
+    await setup();
+    const { deps, calls } = fakes({
+      edit: () => appendFileSync(join(appDir, ".git", "config"), '[filter "x"]\n\tclean = node evil.js\n'),
+      kane: (_t, files) => files.map(pass),
+    });
+    expect(await runBuildLoop(p, deps, log)).toMatchObject({ allowStop: false, turns: 1, reason: "tamper" });
+    expect(calls.tests).toHaveLength(0);
+    const tamper = (await loopEvents()).at(-1)!;
+    expect(tamper.t === "tamper" && tamper.detail).toContain(".git/config");
   });
 
   it("caps the global turn number, and a human override extends it", async () => {

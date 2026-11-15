@@ -46,7 +46,7 @@ export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
-export { seal, checkSeal, type AppSeal } from "./seal.js";
+export { seal, checkSeal, sealRecordings, checkRecordings, type AppSeal } from "./seal.js";
 export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
 export {
   guardDecision,
@@ -80,6 +80,7 @@ export {
   commitAll,
   ensureHead,
   excludeFromGit,
+  gitPath,
   changedFiles,
   checkout,
   worktreeAdd,

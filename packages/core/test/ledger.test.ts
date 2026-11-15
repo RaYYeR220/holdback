@@ -328,8 +328,8 @@ describe("aggregates", () => {
   it("empty ledger -> zero state; unrelated events ignored", () => {
     const s = reduce([
       { t: "spec.approved", at, refs: [] },
-      { t: "tamper", at, detail: "x" },
       { t: "regression", at, ac: "ac-1", turn: 1 },
+      { t: "recordings", at, manifest: { ".testmuai/tests/output-a/r.json": "h" } },
     ]);
     expect(s).toEqual({
       acs: {},
@@ -338,7 +338,17 @@ describe("aggregates", () => {
       breakerUsd: 0,
       runs: 0,
       mutants: { killed: 0, survived: 0, invalid: 0 },
+      tampered: false,
     });
+  });
+
+  it("a tamper stays on record until a later seal", () => {
+    const seal: LedgerEvent = { t: "seal", at, manifest: {} };
+    const tamper: LedgerEvent = { t: "tamper", at, detail: "x" };
+    expect(reduce([seal, tamper]).tampered).toBe(true);
+    expect(reduce([seal, tamper, { t: "recordings", at, manifest: {} }, run(result("t-1", [], []))]).tampered).toBe(true);
+    expect(reduce([seal, tamper, seal]).tampered).toBe(false);
+    expect(reduce([tamper, seal, tamper]).tampered).toBe(true);
   });
 
   it("reduce does not mutate input events", () => {
@@ -361,6 +371,17 @@ describe("gate", () => {
     ["no ACs -> allow", [], true],
   ] as [string, LedgerEvent[], boolean][])("%s", (_n, evs, allow) => {
     expect(gate(reduce(evs)).allowStop).toBe(allow);
+  });
+
+  it("stays shut after a tamper, even with every AC green, until a fresh seal", () => {
+    const tamper: LedgerEvent = { t: "tamper", at, detail: "sealed files changed: x" };
+    const g = gate(reduce([...green, tamper]));
+    expect(g).toMatchObject({ allowStop: false, tampered: true, owed: [], regressed: [] });
+    // more green runs do not clear it
+    expect(gate(reduce([...green, tamper, run(result("t-1", ["ac-1"], []))])).allowStop).toBe(false);
+    const resealed = gate(reduce([...green, tamper, { t: "seal", at, manifest: {} }]));
+    expect(resealed).toMatchObject({ allowStop: true, tampered: false });
+    expect(gate(reduce(green)).tampered).toBe(false);
   });
 
   it("buckets ACs by status", () => {

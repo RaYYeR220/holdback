@@ -34,6 +34,8 @@ export type LedgerEvent = { at: string } & (
   | { t: "drift"; rows: { kind: string; ref: string; why: string }[]; applied: boolean }
   | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string }
   | { t: "tamper"; detail: string }
+  /** Hashes of Kane's own `output-*` run recordings, taken after a Kane batch with the app stopped. */
+  | { t: "recordings"; manifest: Record<string, string> }
 );
 
 export type AcStatus = "owed" | "passing" | "proved" | "vacuous" | "regressed" | "needs-spec";
@@ -63,4 +65,6 @@ export type LedgerState = {
   breakerUsd: number;
   runs: number;
   mutants: { killed: number; survived: number; invalid: number };
+  /** A `tamper` event with no later `seal`: nothing verified since can be trusted until a human re-seals. */
+  tampered: boolean;
 };
