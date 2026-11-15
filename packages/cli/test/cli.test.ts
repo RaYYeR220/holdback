@@ -316,6 +316,56 @@ describe("spec", () => {
     expect(io.closed).toBe(1);
   });
 
+  it("--dashboard answers through the in-process server: a pending approval shows in /api/state and a POST resolves the stage", async () => {
+    await fixture({ seal: false });
+    let approved: string[] | undefined;
+    const out: string[] = [];
+    const run = main(["spec", "--dashboard", "--port", "0"], {
+      cwd: appDir,
+      out: (l) => out.push(l),
+      err: () => {},
+      deps: {
+        env: {},
+        runSpecStage: async (_p, io, logFn) => {
+          approved = await io.approve([{ ref: "ac-1", title: "t", kind: "ac" }, { ref: "ac-2", title: "u", kind: "ac" }]);
+          await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+        },
+      },
+    });
+    let m: RegExpExecArray | null = null;
+    for (let i = 0; i < 200 && !m; i++) {
+      for (const l of out) m ??= /http:\/\/127\.0\.0\.1:(\d+)\/#token=([0-9a-f]+)/.exec(l);
+      if (!m) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(m).not.toBeNull();
+    const base = `http://127.0.0.1:${m![1]}`;
+    const headers = { "x-holdback-token": m![2]! };
+    let state: { pending: { kind: string }[] } = { pending: [] };
+    for (let i = 0; i < 200 && state.pending.length === 0; i++) {
+      state = (await (await fetch(`${base}/api/state`, { headers })).json()) as typeof state;
+      if (state.pending.length === 0) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(state.pending[0]?.kind).toBe("approve");
+    const res = await fetch(`${base}/api/approve`, { method: "POST", headers, body: JSON.stringify({ refs: ["ac-2"] }) });
+    expect(res.status).toBe(200);
+    expect(await run).toBe(0);
+    expect(approved).toEqual(["ac-2"]);
+  });
+
+  it("--dashboard and --answers together are refused", async () => {
+    await fixture({ seal: false });
+    const r = await cli(["spec", "--dashboard", "--answers", "x.json"], { runSpecStage: notCalled("spec") });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("alternatives");
+  });
+
+  it("serve rejects a --port that is not all digits", async () => {
+    await fixture();
+    const r = await cli(["serve", "--port", "12abc"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("--port");
+  });
+
   it("exits 1 when the stage ends without a seal, and does not claim one", async () => {
     await fixture({ seal: false });
     const r = await cli(["spec"], { humanIO: () => fakeIO() as never, runSpecStage: async () => {} });

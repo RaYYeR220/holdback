@@ -2,10 +2,10 @@ import { loadProject } from "@holdback/core";
 import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, withCheckLock, type Ctx } from "./context.js";
 
 /** After a spec edit: Kane plans what changed, the human approves, the new criteria are owed. */
-export async function driftCmd(ctx: Ctx, o: { answers?: string } = {}): Promise<number> {
+export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: boolean; port?: string } = {}): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback drift")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = await openHumanIO(ctx, p, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers, o);
   try {
     let r!: Awaited<ReturnType<typeof ctx.deps.runDrift>>;
     const locked = await withCheckLock(ctx, p, async () => {

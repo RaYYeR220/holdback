@@ -65,6 +65,8 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
     .command("spec")
     .description("Have Kane design acceptance criteria from the spec, then approve and seal them")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
+    .option("--dashboard", "ask in the browser dashboard (started here) instead of the terminal")
+    .option("--port <n>", "with --dashboard: port to listen on (default 4317)")
     .action(act((o) => specCmd(ctx, o)));
 
   program
@@ -73,12 +75,16 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
     .option("--max-turns <n>", "highest turn number allowed (turns are numbered across runs)")
     .option("--no-falsify", "skip the planted-bug pass")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
+    .option("--dashboard", "ask in the browser dashboard (started here) instead of the terminal")
+    .option("--port <n>", "with --dashboard: port to listen on (default 4317)")
     .action(act((o) => runCmd(ctx, o)));
 
   program
     .command("drift")
     .description("Apply a spec edit made after the last seal")
     .option("--answers <file>", "scripted answers and approvals (JSON) instead of asking in the terminal")
+    .option("--dashboard", "ask in the browser dashboard (started here) instead of the terminal")
+    .option("--port <n>", "with --dashboard: port to listen on (default 4317)")
     .action(act((o) => driftCmd(ctx, o)));
 
   program

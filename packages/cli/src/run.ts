@@ -8,6 +8,10 @@ export type RunOptions = {
   falsify?: boolean;
   /** Scripted answers and approvals (drift and falsify re-designs) instead of the terminal. */
   answers?: string;
+  /** Answer in the browser dashboard (started in this process) instead of the terminal. */
+  dashboard?: boolean;
+  /** Dashboard port. */
+  port?: string;
 };
 
 /** A falsify pass can send use cases back to the build loop; this many rounds is far more than it ever needs. */
@@ -152,7 +156,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
 export async function runCmd(ctx: Ctx, o: RunOptions): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback run")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = await openHumanIO(ctx, p, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers, o);
   const sig = ctx.signals();
   try {
     return await runPipeline(ctx, p, io, sig.signal, o);

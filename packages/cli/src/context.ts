@@ -5,17 +5,12 @@ import {
   acquireCheckLock,
   appendEvent,
   balance,
-  checkSeal,
   CliHumanIO,
   ScriptedHumanIO,
+  DEFAULT_PORT,
   defaultBuildDeps,
   defaultFalsifyDeps,
   forAgent,
-  gate,
-  isAppKeyOf,
-  lastSeal,
-  readEvents,
-  reduce,
   reseal,
   runBuildLoop,
   runDrift,
@@ -35,7 +30,6 @@ import {
   type FalsifyDeps,
   type HumanIO,
   type LedgerEvent,
-  type LedgerState,
   type Project,
 } from "@holdback/core";
 import { defaultHookDeps, type HookDeps } from "./hooks.js";
@@ -163,7 +157,11 @@ export function defaultCtx(): Ctx {
  * here, once; later approvals (a falsify re-design mid-run) answer from that snapshot. A file
  * inside the app folder is refused, links resolved: the coding agent can edit anything there.
  */
-export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefined): Promise<ClosableIO> {
+export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefined, dash?: DashboardOptions): Promise<ClosableIO> {
+  if (dash?.dashboard) {
+    if (answers !== undefined) throw new Error("--dashboard and --answers are alternatives: pick one");
+    return await openDashboard(ctx, p, dash.port);
+  }
   if (answers === undefined) return await ctx.deps.humanIO();
   const file = path.resolve(ctx.cwd, answers);
   let real: string;
@@ -178,6 +176,37 @@ export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefi
     throw new Error(`the answers file must be outside the app folder, where the coding agent cannot edit it: ${file}`);
   }
   return await ctx.deps.humanIO(real);
+}
+
+export type DashboardOptions = { dashboard?: boolean; port?: string };
+
+/** Parses `--port`: digits only, 0 to 65535. */
+export function parsePort(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isInteger(n) || n > 65535) throw new Error(`--port must be a number from 0 to 65535, got ${raw}`);
+  return n;
+}
+
+/** The URL the human opens: the token rides in the fragment, which is never sent to a server or logged. */
+export const dashboardUrl = (srv: { host: string; port: number; token: string }, withStatic = true) =>
+  `http://${srv.host}:${srv.port}/${withStatic ? `#token=${srv.token}` : ""}`;
+
+/**
+ * Starts the dashboard server in this process and answers through it: the questions and
+ * approvals a command raises wait in the browser (the URL, with the token, goes to the human's
+ * terminal only). Closing the IO stops the server and fails any prompt still waiting.
+ */
+async function openDashboard(ctx: Ctx, p: Project, portRaw: string | undefined): Promise<ClosableIO> {
+  const port = parsePort(portRaw, DEFAULT_PORT);
+  const srv = await ctx.deps.serve(p, { port });
+  ctx.out(`Answer in the dashboard: ${dashboardUrl(srv)}`);
+  ctx.out(`API token (header x-holdback-token): ${srv.token}`);
+  return {
+    answer: (qs) => srv.human.answer(qs),
+    approve: (items) => srv.human.approve(items),
+    close: () => void srv.close(),
+  };
 }
 
 /** The ledger's only writer for the CLI: exactly one JSON line per event, which the loops' integrity check relies on. */

@@ -14,6 +14,7 @@ export const DEFAULT_PORT = 4317;
 const HOST = "127.0.0.1";
 const MAX_BODY = 1_000_000;
 const HEARTBEAT_MS = 15_000;
+const HEAD_BYTES = 64;
 
 /** What the dashboard shows the human while a run waits for them. */
 export type PendingPrompt =
@@ -21,8 +22,8 @@ export type PendingPrompt =
   | { sid: string; kind: "approve"; items: ApprovalItem[] };
 
 type Waiter =
-  | { prompt: Extract<PendingPrompt, { kind: "answer" }>; resolve: (a: Record<string, string>) => void }
-  | { prompt: Extract<PendingPrompt, { kind: "approve" }>; resolve: (r: string[]) => void };
+  | { prompt: Extract<PendingPrompt, { kind: "answer" }>; resolve: (a: Record<string, string>) => void; reject: (e: Error) => void }
+  | { prompt: Extract<PendingPrompt, { kind: "approve" }>; resolve: (r: string[]) => void; reject: (e: Error) => void };
 
 export class PromptRejected extends Error {
   constructor(readonly status: number, message: string) {
@@ -37,19 +38,24 @@ export class PromptRejected extends Error {
 export class DashboardHumanIO implements HumanIO {
   private waiters: Waiter[] = [];
 
+  /** The dashboard is going away: nobody can answer any more, so every waiting run fails instead of hanging. */
+  rejectAll(reason: string): void {
+    for (const w of this.waiters.splice(0)) w.reject(new Error(reason));
+  }
+
   pending(): PendingPrompt[] {
     return this.waiters.map((w) => w.prompt);
   }
 
   answer(qs: PendingQuestion[]): Promise<Record<string, string>> {
-    return new Promise((resolve) => {
-      this.waiters.push({ prompt: { sid: randomBytes(8).toString("hex"), kind: "answer", questions: qs }, resolve });
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ prompt: { sid: randomBytes(8).toString("hex"), kind: "answer", questions: qs }, resolve, reject });
     });
   }
 
   approve(items: ApprovalItem[]): Promise<string[]> {
-    return new Promise((resolve) => {
-      this.waiters.push({ prompt: { sid: randomBytes(8).toString("hex"), kind: "approve", items }, resolve });
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ prompt: { sid: randomBytes(8).toString("hex"), kind: "approve", items }, resolve, reject });
     });
   }
 
@@ -155,12 +161,11 @@ function configSummary(p: Project) {
   const c = p.config;
   return {
     spec: c.spec,
-    specUrls: c.specUrls.length,
     start: { port: c.start.port, readyPath: c.start.readyPath },
-    agent: { kind: c.agent.kind, model: c.agent.model ?? null, maxTurnsPerCall: c.agent.maxTurnsPerCall },
-    kane: c.kane,
-    breaker: c.breaker,
-    loop: c.loop,
+    agent: { model: c.agent.model ?? null },
+    kane: { parallel: c.kane.parallel, timeoutS: c.kane.timeoutS, designMax: c.kane.designMax },
+    breaker: { model: c.breaker.model, capUsd: c.breaker.capUsd },
+    loop: { maxTurns: c.loop.maxTurns },
   };
 }
 
@@ -176,8 +181,9 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
   const streams = new Set<ServerResponse>();
   let port = 0;
 
-  const tokenOk = (req: IncomingMessage): boolean => {
-    const got = Buffer.from(String(req.headers["x-holdback-token"] ?? ""));
+  const tokenOk = (req: IncomingMessage, url: URL): boolean => {
+    // the header, or ?token= for EventSource and <img>, which cannot set headers
+    const got = Buffer.from(String(req.headers["x-holdback-token"] ?? url.searchParams.get("token") ?? ""));
     const want = Buffer.from(token);
     return got.length === want.length && timingSafeEqual(got, want);
   };
@@ -244,18 +250,14 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
   }
 
   async function events(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // open before any header goes out: an unreadable ledger is a 500, not an empty stream
-    let fh: FileHandle | undefined;
-    try {
-      fh = await open(p.ledgerFile, "r");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
+    // read once before any header goes out: an unreadable ledger is a 500, not an empty stream
+    let offset = 0;
+    let carry: Buffer = Buffer.alloc(0);
+    let head: Buffer = Buffer.alloc(0); // the first bytes already streamed: a replaced file no longer starts with them
+    const first = await readFrom(0);
     res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive" });
     res.write(": holdback\n\n");
     streams.add(res);
-    let offset = 0;
-    let carry = "";
     let closed = false;
     let busy = false;
     const finish = () => {
@@ -264,38 +266,33 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
       clearInterval(poll);
       clearInterval(beat);
       streams.delete(res);
-      void fh?.close().catch(() => {});
       res.end();
+    };
+    const emit = (buf: Buffer) => {
+      if (head.length < HEAD_BYTES) head = Buffer.concat([head, buf]).subarray(0, HEAD_BYTES);
+      offset += buf.length;
+      const all = Buffer.concat([carry, buf]);
+      const cut = all.lastIndexOf(0x0a);
+      carry = cut < 0 ? all : all.subarray(cut + 1);
+      if (cut < 0) return;
+      // decode only complete lines: a multibyte character split across polls is never cut
+      for (const line of all.subarray(0, cut).toString("utf8").split("\n")) {
+        const l = line.trim();
+        if (l) res.write(`event: ledger\ndata: ${l}\n\n`);
+      }
     };
     const tick = async () => {
       if (closed || busy) return;
       busy = true;
       try {
-        if (!fh) {
-          try {
-            fh = await open(p.ledgerFile, "r");
-          } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
-            throw e;
-          }
-        }
-        const size = (await fh.stat()).size;
-        if (size < offset) {
-          offset = 0; // truncated or replaced: start over
-          carry = "";
-        }
-        if (size === offset) return;
-        const buf = Buffer.alloc(size - offset);
-        const { bytesRead } = await fh.read(buf, 0, buf.length, offset);
-        offset += bytesRead;
-        const text = carry + buf.subarray(0, bytesRead).toString("utf8");
-        const cut = text.lastIndexOf("\n");
-        carry = cut < 0 ? text : text.slice(cut + 1);
-        if (cut < 0) return;
-        for (const line of text.slice(0, cut).split("\n")) {
-          const l = line.trim();
-          if (l) res.write(`event: ledger\ndata: ${l}\n\n`);
-        }
+        const got = await readFrom(offset, head);
+        if (got.reset) {
+          offset = 0;
+          carry = Buffer.alloc(0);
+          head = Buffer.alloc(0);
+          res.write("event: reset\ndata: {}\n\n");
+          emit(await readFrom(0).then((r) => r.bytes));
+        } else if (got.bytes.length > 0) emit(got.bytes);
       } catch (e) {
         if (!closed) res.write(`event: error\ndata: ${JSON.stringify({ error: e instanceof Error ? e.message : String(e) })}\n\n`);
         finish();
@@ -303,10 +300,39 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
         busy = false;
       }
     };
+    emit(first.bytes);
     const poll = setInterval(() => void tick(), pollMs);
     const beat = setInterval(() => res.write(": heartbeat\n\n"), HEARTBEAT_MS);
+    res.on("close", finish);
     req.on("close", finish);
-    void tick();
+  }
+
+  /**
+   * Bytes of the ledger from `offset`, opened fresh by path each time. `reset` when the file is now
+   * shorter than `offset` or no longer starts with the `head` bytes already streamed (replaced).
+   */
+  async function readFrom(offset: number, head: Buffer = Buffer.alloc(0)): Promise<{ bytes: Buffer; reset: boolean }> {
+    let fh: FileHandle;
+    try {
+      fh = await open(p.ledgerFile, "r");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return { bytes: Buffer.alloc(0), reset: offset > 0 };
+      throw e;
+    }
+    try {
+      const size = (await fh.stat()).size;
+      if (size < offset) return { bytes: Buffer.alloc(0), reset: true };
+      if (head.length > 0) {
+        const h = Buffer.alloc(head.length);
+        const { bytesRead } = await fh.read(h, 0, h.length, 0);
+        if (bytesRead < head.length || !h.equals(head)) return { bytes: Buffer.alloc(0), reset: true };
+      }
+      const buf = Buffer.alloc(size - offset);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, offset);
+      return { bytes: buf.subarray(0, bytesRead), reset: false };
+    } finally {
+      await fh.close();
+    }
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -316,8 +342,10 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
     const host = (req.headers.host ?? "").replace(/:\d+$/, "").toLowerCase();
     if (host !== "127.0.0.1" && host !== "localhost" && host !== "[::1]") return json(res, 403, { error: "bad host" });
 
+    // every API route needs the per-process token: the coding agent shares this machine and must not read the ledger
+    if (route.startsWith("/api/") && !tokenOk(req, url)) return json(res, 403, { error: "missing or wrong x-holdback-token" });
+
     if (req.method === "POST") {
-      if (!tokenOk(req)) return json(res, 403, { error: "missing or wrong x-holdback-token" });
       if (route !== "/api/answer" && route !== "/api/approve") return json(res, 404, { error: "not found" });
       // a 409 for "nothing pending" comes before the body is looked at
       const pending = human.pending();
@@ -346,7 +374,8 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
     if (route === "/api/artifact") {
       const q = url.searchParams.get("path");
       if (!q) return json(res, 400, { error: "path is required" });
-      return await sendFile(res, [sessionsDir, path.join(p.appDir, EVIDENCE_DIR)], path.resolve(p.appDir, q), TYPES);
+      if (!path.isAbsolute(q)) return json(res, 400, { error: "path must be absolute" });
+      return await sendFile(res, [sessionsDir, path.join(p.appDir, EVIDENCE_DIR)], path.resolve(q), TYPES);
     }
     if (route.startsWith("/api/")) return json(res, 404, { error: "not found" });
     if (opts.staticDir) {
@@ -387,6 +416,7 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
     human,
     close: () =>
       new Promise<void>((resolve) => {
+        human.rejectAll("the dashboard server closed");
         for (const s of streams) s.end();
         server.close(() => resolve());
         server.closeAllConnections();

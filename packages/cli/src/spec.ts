@@ -1,13 +1,13 @@
 import { loadProject } from "@holdback/core";
 import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
 
-export type SpecOptions = { answers?: string };
+export type SpecOptions = { answers?: string; dashboard?: boolean; port?: string };
 
 /** Kane designs acceptance criteria from the spec; the human answers and approves; then the seal. */
 export async function specCmd(ctx: Ctx, o: SpecOptions = {}): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback spec")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
-  const io = await openHumanIO(ctx, p, o.answers);
+  const io = await openHumanIO(ctx, p, o.answers, o);
   try {
     const locked = await withCheckLock(ctx, p, async () => {
       await ctx.deps.runSpecStage(p, io, ledgerLog(p), { balance: ctx.deps.balance, warn: ctx.err });
