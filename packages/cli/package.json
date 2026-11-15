@@ -2,12 +2,19 @@
   "name": "holdback",
   "version": "0.0.0",
   "type": "module",
-  "bin": { "holdback": "./dist/index.js" },
-  "files": ["dist"],
+  "bin": {
+    "holdback": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "license": "MIT",
-  "dependencies": { "@holdback/core": "workspace:*" },
+  "dependencies": {
+    "@holdback/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
   }
 }
