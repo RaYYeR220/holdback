@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +98,35 @@ describe("runTest", () => {
     process.env.FAKE_KANE_EXIT = "1";
     const r = await runTest(cwd, T3, {});
     expect(r.status).toBe("error");
+    expect(r.reason).toMatch(/exited with code 1/);
+  });
+  it("reads a relative test file against the run cwd, not the process cwd", async () => {
+    use("06-mutant-t3.ndjson");
+    mkdirSync(join(cwd, "tests"));
+    copyFileSync(T3, join(cwd, "tests", "t3_test.md"));
+    const r = await runTest(cwd, "tests/t3_test.md", {});
+    expect(r.testFile).toBe("tests/t3_test.md");
+    expect(r.testId).toBe("t-3");
+    expect(r.failedStepText).toMatch(/^On the/);
+  });
+  it("gives a broken run the first step that did not pass", async () => {
+    const fixture = join(cwd, "broken.ndjson");
+    const ev = (o: Record<string, unknown>) => JSON.stringify({ v: 1, ...o });
+    writeFileSync(
+      fixture,
+      [
+        ev({ type: "test_md_step_end", step_index: 1, status: "passed", duration_s: 3 }),
+        ev({ type: "run_end", status: "error", reason: "element not found" }),
+        ev({ type: "test_md_step_end", step_index: 2, status: "error", duration_s: 9 }),
+        ev({ type: "test_md_done", overall_status: "error" }),
+      ].join("\n") + "\n",
+    );
+    process.env.FAKE_KANE_FIXTURE = fixture;
+    const r = await runTest(cwd, T3, {});
+    expect(r.status).toBe("broken");
+    expect(r.failedStep).toBe(2);
+    expect(r.failedStepText).toMatch(/^On the/);
+    expect(r.reason).toBe("element not found");
   });
 });
 
@@ -107,5 +136,14 @@ describe("runTests", () => {
     const rs = await runTests(cwd, [T3, T1, T3], { parallel: 2 });
     expect(rs.map((r) => r.testFile)).toEqual([T3, T1, T3]);
     expect(rs.map((r) => r.testId)).toEqual(["t-3", "t-1", "t-3"]);
+  });
+  it("turns a thrown run into an error result instead of rejecting the batch", async () => {
+    process.env.HOLDBACK_KANE_BIN = join(cwd, "no-such-kane-binary");
+    const rs = await runTests(cwd, [T3, T1], { parallel: 2 });
+    expect(rs.map((r) => r.status)).toEqual(["error", "error"]);
+    expect(rs.map((r) => r.testFile)).toEqual([T3, T1]);
+    expect(rs.map((r) => r.testId)).toEqual(["t-3", "t-1"]);
+    expect(rs[0]!.reason).toMatch(/ENOENT|not found|no-such-kane-binary/i);
+    expect(rs[0]!.credits).toBe(0);
   });
 });

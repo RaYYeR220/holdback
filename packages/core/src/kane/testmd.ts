@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { runKane } from "./run.js";
 import type { KaneEvent } from "./ndjson.js";
 import { parseTestMd } from "./testmd-parse.js";
@@ -82,25 +83,19 @@ function verdictFrom(events: KaneEvent[]): { verdict?: BugVerdict; screenshot?: 
   return out;
 }
 
-export async function runTest(cwd: string, testFile: string, opts: RunTestOptions = {}): Promise<TestRunResult> {
-  const timeoutS = opts.timeoutS ?? DEFAULT_TIMEOUT_S;
-  const args = ["testmd", "run", testFile, "--agent", "--headless", "--timeout", String(timeoutS)];
-  if (opts.startUrl) args.push("--override-start-url", opts.startUrl);
-  if (opts.noHeal) args.push("--no-adaptive-heal");
-
-  let parsed: ReturnType<typeof parseTestMd> | null = null;
+/** Parse the test file Kane is about to run; a relative path is relative to Kane's cwd. Null when unreadable. */
+function readTestMd(cwd: string, testFile: string): ReturnType<typeof parseTestMd> | null {
   try {
-    parsed = parseTestMd(readFileSync(testFile, "utf8"));
+    return parseTestMd(readFileSync(path.resolve(cwd, testFile), "utf8"));
   } catch {
-    /* unreadable test file: Kane will report it */
+    return null; // unreadable test file: Kane will report it
   }
+}
 
-  const r = await runKane(args, { cwd, timeoutMs: (timeoutS + (opts.graceS ?? 30)) * 1000 });
-  const ev = r.events;
-
-  const result: TestRunResult = {
+function emptyResult(testFile: string, testId: string | null): TestRunResult {
+  return {
     testFile,
-    testId: parsed?.id ?? null,
+    testId,
     status: "error",
     steps: [],
     criteriaPassed: [],
@@ -109,8 +104,23 @@ export async function runTest(cwd: string, testFile: string, opts: RunTestOption
     replayDecisions: 0,
     authorDecisions: 0,
     healTriggered: false,
-    durationS: r.durationMs / 1000,
+    durationS: 0,
   };
+}
+
+export async function runTest(cwd: string, testFile: string, opts: RunTestOptions = {}): Promise<TestRunResult> {
+  const timeoutS = opts.timeoutS ?? DEFAULT_TIMEOUT_S;
+  const args = ["testmd", "run", testFile, "--agent", "--headless", "--timeout", String(timeoutS)];
+  if (opts.startUrl) args.push("--override-start-url", opts.startUrl);
+  if (opts.noHeal) args.push("--no-adaptive-heal");
+
+  const parsed = readTestMd(cwd, testFile);
+
+  const r = await runKane(args, { cwd, timeoutMs: (timeoutS + (opts.graceS ?? 30)) * 1000 });
+  const ev = r.events;
+
+  const result = emptyResult(testFile, parsed?.id ?? null);
+  result.durationS = r.durationMs / 1000;
 
   let credits = 0;
   for (const e of ev) {
@@ -162,6 +172,10 @@ export async function runTest(cwd: string, testFile: string, opts: RunTestOption
     }
   }
 
+  // broken/error runs may end on a step whose status is not "failed": point at the first step that did not pass
+  if (result.failedStep === undefined && result.status !== "passed") {
+    result.failedStep = result.steps.find((s) => s.status !== "passed")?.index;
+  }
   if (result.failedStep !== undefined) {
     const text = parsed?.steps.find((s) => s.n === result.failedStep)?.text;
     if (text) result.failedStepText = text;
@@ -182,7 +196,13 @@ export async function runTests(
     for (;;) {
       const i = next++;
       if (i >= files.length) return;
-      results[i] = await runTest(cwd, files[i]!, rest);
+      const file = files[i]!;
+      try {
+        results[i] = await runTest(cwd, file, rest);
+      } catch (e) {
+        // one run that cannot start (spawn error) must not discard the rest of the batch
+        results[i] = { ...emptyResult(file, readTestMd(cwd, file)?.id ?? null), reason: e instanceof Error ? e.message : String(e) };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, files.length) }, worker));
