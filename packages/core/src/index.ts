@@ -46,7 +46,7 @@ export { appendEvent, readEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
-export { seal, checkSeal } from "./seal.js";
+export { seal, checkSeal, type AppSeal } from "./seal.js";
 export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
 export {
   guardDecision,
@@ -60,4 +60,4 @@ export {
 export { runClaudeTurn, contractPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
-export { runSpecStage } from "./loop/spec.js";
+export { runSpecStage, resealAppFiles, appSealFiles } from "./loop/spec.js";

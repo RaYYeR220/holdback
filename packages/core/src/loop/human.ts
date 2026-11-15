@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
+import { createInterface, type Interface } from "node:readline";
 import type { PendingQuestion } from "../kane/assurance.js";
 
 export type ApprovalItem = { ref: string; title: string; kind: string };
@@ -17,13 +17,41 @@ export class CliHumanIO implements HumanIO {
     private readonly output: NodeJS.WritableStream = process.stdout,
   ) {}
 
+  // One readline for the whole session; lines are queued so piped stdin never loses input.
+  private rl: Interface | null = null;
+  private lines: string[] = [];
+  private waiting: ((l: string | null) => void)[] = [];
+  private ended = false;
+
+  private open(): Interface {
+    if (this.rl) return this.rl;
+    const rl = createInterface({ input: this.input, output: this.output, terminal: false });
+    rl.on("line", (l) => {
+      const w = this.waiting.shift();
+      if (w) w(l);
+      else this.lines.push(l);
+    });
+    rl.on("close", () => {
+      this.ended = true;
+      for (const w of this.waiting.splice(0)) w(null);
+    });
+    return (this.rl = rl);
+  }
+
+  /** Release stdin once the session is over. */
+  close(): void {
+    this.rl?.close();
+  }
+
   private async ask(prompt: string): Promise<string> {
-    const rl = createInterface({ input: this.input, output: this.output });
-    try {
-      return (await rl.question(prompt)).trim();
-    } finally {
-      rl.close();
-    }
+    this.open();
+    this.output.write(prompt);
+    const queued = this.lines.shift();
+    if (queued !== undefined) return queued.trim();
+    if (this.ended) throw new Error("CliHumanIO: input closed before an answer was given");
+    const l = await new Promise<string | null>((res) => this.waiting.push(res));
+    if (l === null) throw new Error("CliHumanIO: input closed before an answer was given");
+    return l.trim();
   }
 
   async answer(qs: PendingQuestion[]): Promise<Record<string, string>> {

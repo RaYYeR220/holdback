@@ -42,6 +42,10 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         }
         break;
       }
+      case "spec.ingested":
+      case "spec.answered":
+        state.credits += typeof e.credits === "number" ? e.credits : 0;
+        break;
       case "turn.start":
         state.turn = Math.max(state.turn, e.n);
         break;

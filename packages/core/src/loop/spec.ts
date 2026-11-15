@@ -21,6 +21,41 @@ type Log = (e: LedgerEvent) => Promise<void>;
 type EventBody = LedgerEvent extends infer E ? (E extends { at: string } ? Omit<E, "at"> : never) : never;
 
 const CLARIFICATIONS = "## Clarifications";
+const CONFIG_FILE = "holdback.config.json";
+
+const oneLine = (t: string): string => t.replace(/\s+/g, " ").trim();
+
+function inside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/** Validate config.spec entries: relative, inside appDir, destination inside verifierDir. */
+function checkSpecPaths(p: Project): void {
+  for (const rel of p.config.spec) {
+    if (typeof rel !== "string" || rel === "" || path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel) || rel.startsWith("/") || rel.startsWith("\\")) {
+      throw new Error(`spec path must be relative to the app dir: ${String(rel)}`);
+    }
+    if (!inside(p.appDir, path.resolve(p.appDir, rel))) throw new Error(`spec path escapes the app dir: ${rel}`);
+    if (!inside(p.verifierDir, path.resolve(p.verifierDir, rel))) throw new Error(`spec path escapes the verifier dir: ${rel}`);
+  }
+}
+
+/** App-dir files the seal covers: the config and every spec file. */
+export function appSealFiles(p: Project): string[] {
+  return [CONFIG_FILE, ...p.config.spec.map((f) => f.split(path.sep).join("/"))];
+}
+
+/**
+ * Re-hash the sealed app files (call after any later Holdback append to the
+ * spec, e.g. more Clarifications) and return the updated manifest.
+ */
+export async function resealAppFiles(p: Project, manifest: Record<string, string>): Promise<Record<string, string>> {
+  const fresh = await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) });
+  const out = { ...manifest };
+  for (const [k, v] of Object.entries(fresh)) if (k.startsWith("app:")) out[k] = v;
+  return out;
+}
 
 /** Append-only: creates the heading once, then only adds lines. */
 async function appendClarifications(appDir: string, lines: string[]): Promise<void> {
@@ -67,15 +102,20 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
       const paused = r as Paused;
       await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions });
       const answers = await io.answer(paused.questions);
-      await emit({ t: "spec.answered", sid: paused.sid, answers });
       await appendClarifications(
         p.appDir,
-        paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${q.text} — A: ${answers[q.id]}`),
+        paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
       );
       r = (paused.verb === "extract" ? await extractResume(cwd, paused.sid, answers) : await resumeSession(cwd, paused, answers)) as R;
+      // credits of a resumed call are logged here, so zero them on the result to avoid double counting in `design`
+      const credits = "credits" in r ? r.credits : 0;
+      await emit({ t: "spec.answered", sid: paused.sid, answers, credits });
+      if ("credits" in r) r = { ...r, credits: 0 };
     }
     return r as Exclude<R, Paused>;
   }
+
+  checkSpecPaths(p);
 
   // 1. copy the spec into the verifier store (kept outside the app repo)
   for (const rel of p.config.spec) {
@@ -88,7 +128,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   // 2. ingest + extraction, answering Kane's questions
   const first = await ingest(cwd, sources);
   if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
-  await emit({ t: "spec.ingested", sources: sources.map((id) => ({ id, cid: "" })) });
+  await emit({ t: "spec.ingested", sources: sources.map((id) => ({ id, cid: "" })), credits: first.status === "complete" ? first.credits : 0 });
   const extracted = await drive<IngestResult>(first);
   if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
 
@@ -96,9 +136,13 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   const ucs = (await listNodes(cwd)).filter((n) => n.label === "usecase" && n.trust === "derived");
   const approvedUcs = ucs.length ? await io.approve(ucs.map((n) => ({ ref: n.id, title: n.title, kind: "usecase" }))) : [];
   const designable = approvedUcs.filter((r) => ucs.some((n) => n.id === r));
+  await emit({
+    t: "spec.approved",
+    refs: designable,
+    rejected: ucs.map((n) => n.id).filter((id) => !designable.includes(id)),
+  });
   if (designable.length === 0) throw new Error("spec stage: no use case approved, nothing to design");
   await review(cwd, designable);
-  await emit({ t: "spec.approved", refs: designable });
 
   // 4. design acceptance criteria + tests per use case
   for (const uc of designable) {
@@ -121,13 +165,13 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   const derived = (await listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label));
   if (derived.length > 0) {
     const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
-    if (approved.length > 0) {
-      await review(cwd, approved);
-      await emit({ t: "spec.approved", refs: approved });
-    }
+    const approvedSet = derived.map((n) => n.id).filter((id) => approved.includes(id));
+    await emit({ t: "spec.approved", refs: approvedSet, rejected: derived.map((n) => n.id).filter((id) => !approvedSet.includes(id)) });
+    if (approvedSet.length === 0) throw new Error("spec stage: no designed test was approved, refusing to seal");
+    await review(cwd, approvedSet);
   }
 
   // 6. point the tests at the app, then seal
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
-  await emit({ t: "seal", manifest: await seal(cwd) });
+  await emit({ t: "seal", manifest: await seal(cwd, { appDir: p.appDir, files: appSealFiles(p) }) });
 }

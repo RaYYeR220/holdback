@@ -24,8 +24,22 @@ async function walk(dir: string, rel: string, out: Entry[]): Promise<void> {
   }
 }
 
-/** sha256 of every file under .testmuai/tests and .testmuai/variables, keyed by `/` relative path. */
-export async function seal(verifierDir: string): Promise<Record<string, string>> {
+/** App-dir files that are sealed too (the app repo is agent-writable). Keyed `app:<rel>`. */
+export type AppSeal = { appDir: string; files: string[] };
+
+const APP_PREFIX = "app:";
+
+async function hashAppFile(appDir: string, rel: string): Promise<string> {
+  try {
+    return createHash("sha256").update(await readFile(path.join(appDir, ...rel.split("/")))).digest("hex");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    throw e;
+  }
+}
+
+/** sha256 of every file under .testmuai/tests and .testmuai/variables, keyed by `/` relative path; plus `app:<rel>` entries when `app` is given. */
+export async function seal(verifierDir: string, app?: AppSeal): Promise<Record<string, string>> {
   const files: Entry[] = [];
   for (const d of SEALED_DIRS) await walk(path.join(verifierDir, ...d.split("/")), d, files);
   files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
@@ -36,6 +50,12 @@ export async function seal(verifierDir: string): Promise<Record<string, string>>
     else if (kind === "special") manifest[rel] = "special";
     else manifest[rel] = createHash("sha256").update(await readFile(abs)).digest("hex");
   }
+  if (app) {
+    for (const f of app.files) {
+      const rel = f.split(path.sep).join("/");
+      manifest[APP_PREFIX + rel] = await hashAppFile(app.appDir, rel);
+    }
+  }
   return manifest;
 }
 
@@ -43,10 +63,15 @@ export async function seal(verifierDir: string): Promise<Record<string, string>>
 export async function checkSeal(
   verifierDir: string,
   manifest: Record<string, string>,
+  appDir?: string,
 ): Promise<string[]> {
   const now = await seal(verifierDir);
   const bad = new Set<string>();
-  for (const [k, h] of Object.entries(manifest)) if (now[k] !== h) bad.add(k);
+  for (const [k, h] of Object.entries(manifest)) {
+    if (k.startsWith(APP_PREFIX)) {
+      if (appDir !== undefined && (await hashAppFile(appDir, k.slice(APP_PREFIX.length))) !== h) bad.add(k);
+    } else if (now[k] !== h) bad.add(k);
+  }
   for (const k of Object.keys(now)) if (!(k in manifest)) bad.add(k);
   return [...bad].sort();
 }

@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
-import { runSpecStage } from "../src/loop/spec.js";
+import { resealAppFiles, runSpecStage } from "../src/loop/spec.js";
+import { checkSeal } from "../src/seal.js";
+import { reduce } from "../src/ledger/reduce.js";
 import { loadProject } from "../src/project.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -83,4 +85,49 @@ describe("runSpecStage", () => {
     await expect(io.answer([q("q9", "mystery?")])).rejects.toThrow("mystery?");
     expect(await io.approve([{ ref: "x", title: "", kind: "" }, { ref: "y", title: "", kind: "" }])).toEqual(["x"]);
   });
+
+  const acceptAll: HumanIO = {
+    answer: async (qs) => Object.fromEntries(qs.map((q) => [q.id, "a\n  b"])),
+    approve: async (items) => items.map((i) => i.ref),
+  };
+
+  it("rejects spec paths that escape the app dir", async () => {
+    for (const bad of ["../x.md", join(root, "abs.md")]) {
+      const appDir = setup("# PRD\n");
+      writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: [bad] }));
+      const p = await loadProject(appDir);
+      await expect(runSpecStage(p, acceptAll, async () => {})).rejects.toThrow(/spec path/);
+    }
+  });
+
+  it("refuses to seal when the design approval is empty, and logs rejections", async () => {
+    const appDir = setup("# PRD\n");
+    const p = await loadProject(appDir);
+    const io: HumanIO = { ...acceptAll, approve: async (items) => (items[0]?.kind === "usecase" ? items.map((i) => i.ref) : []) };
+    await expect(runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/refusing to seal/);
+    const events = await readEvents(p.ledgerFile);
+    expect(events.some((e) => e.t === "seal")).toBe(false);
+    const last = events.filter((e) => e.t === "spec.approved").pop();
+    expect(last).toMatchObject({ refs: [], rejected: ["ac-1", "sc-1", "t-1"] });
+    expect(() => reduce(events)).not.toThrow();
+  }, 60_000);
+
+  it("seals app config + spec, collapses whitespace, and counts credits", async () => {
+    const appDir = setup("# PRD\n");
+    writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: ["PRD.md"] }));
+    const p = await loadProject(appDir);
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+    const events = await readEvents(p.ledgerFile);
+    const manifest = (events.find((e) => e.t === "seal") as { manifest: Record<string, string> }).manifest;
+    expect(Object.keys(manifest)).toEqual(expect.arrayContaining(["app:PRD.md", "app:holdback.config.json"]));
+    expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual([]);
+    expect(readFileSync(join(appDir, "PRD.md"), "utf8")).toContain("— A: a b\n");
+    expect(reduce(events).credits).toBeGreaterThan(0);
+
+    writeFileSync(join(appDir, "PRD.md"), "tampered");
+    writeFileSync(join(appDir, "holdback.config.json"), "{}");
+    expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual(["app:PRD.md", "app:holdback.config.json"]);
+    const re = await resealAppFiles(p, manifest);
+    expect(await checkSeal(p.verifierDir, re, p.appDir)).toEqual([]);
+  }, 60_000);
 });

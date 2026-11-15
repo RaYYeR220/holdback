@@ -4,10 +4,10 @@ import type { BugVerdict, TestRunResult } from "../kane/testmd.js";
 export type RunKind = "build" | "falsify" | "exam" | "bisect";
 
 export type LedgerEvent = { at: string } & (
-  | { t: "spec.ingested"; sources: { id: string; cid: string }[] }
+  | { t: "spec.ingested"; sources: { id: string; cid: string }[]; credits?: number }
   | { t: "spec.paused"; sid: string; questions: PendingQuestion[] }
-  | { t: "spec.answered"; sid: string; answers: Record<string, string> }
-  | { t: "spec.approved"; refs: string[] }
+  | { t: "spec.answered"; sid: string; answers: Record<string, string>; credits?: number }
+  | { t: "spec.approved"; refs: string[]; rejected?: string[] }
   | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number }
   | { t: "seal"; manifest: Record<string, string> }
   | { t: "turn.start"; n: number; owed: string[] }
