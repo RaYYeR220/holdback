@@ -14,7 +14,7 @@ Solid arrows ran in the first live run, whose ledger is in [`apps/dashboard/fixt
 
 1. **You write the spec.** A `PRD.md` in your app's folder. It is the only thing you write.
 2. **Kane designs the checks.** Kane CLI's assurance commands read the spec and ask you about what is ambiguous. Then they design acceptance criteria, each citing the spec line it comes from, and browser tests for them. You approve. Holdback keeps the tests in a verifier folder outside your repo (`~/.holdback/<id>/verifier/`) and seals them with sha256 hashes.
-3. **The agent works only from bug reports.** Each turn, Claude Code gets a brief of the criteria still owed. When a Kane run fails, the brief carries Kane's bug report: the criterion, the spec line, the step Kane ran, what it saw, its diagnosis and a screenshot. It never carries the test.
+3. **The agent works only from bug reports.** Each turn, Claude Code gets a brief of the criteria still owed. When a Kane run fails, the brief carries Kane's bug report: the criterion, the spec line, the step Kane ran, what it saw, its diagnosis and a screenshot. It never carries the test file.
 4. **"Done" is held back.** After every turn, Holdback starts the app and Kane runs the sealed tests in a real browser. The gate opens only when every criterion passes.
 5. **A planted bug tests the tests.** For each passing criterion, a breaker on a different model writes the smallest patch that should break it, in a throwaway git worktree. Kane replays that criterion's tests with healing off. If Kane catches the bug, the criterion is proved. If it misses, the criterion is vacuous and Kane re-designs its tests for your approval.
 6. **Spec edits reopen the work.** Edit the spec and Kane plans the change (`holdback drift`, or automatically in `run` and `watch`). You approve, and the new or changed criteria are owed again.
@@ -47,8 +47,8 @@ Then, in your app's folder (a git repository with a `PRD.md`):
 
 ```sh
 holdback init       # writes holdback.config.json and the verifier folder
-holdback spec       # Kane asks, designs and you approve; Holdback seals the criteria
-holdback run        # Claude Code builds until Kane proves every criterion, then falsify
+holdback spec       # Kane asks and designs, you approve, Holdback seals
+holdback run        # Claude Code builds until every criterion passes, then planted bugs
 ```
 
 `holdback status` shows every criterion and the gate at any time.
