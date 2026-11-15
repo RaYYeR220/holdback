@@ -10,7 +10,8 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@holdback/core": "workspace:*"
+    "@holdback/core": "workspace:*",
+    "commander": "^12"
   },
   "scripts": {
     "build": "tsc -b",

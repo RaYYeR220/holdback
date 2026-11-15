@@ -63,13 +63,14 @@ export { runClaudeTurn, contractPath, guardMainPath, type ClaudeTurnOptions, typ
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
 export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls } from "./loop/spec.js";
-export { runDrift, watchSpec, defaultDriftKane, type DriftKane } from "./loop/drift.js";
+export { runDrift, watchSpec, defaultDriftKane, type DriftKane, type DriftResult } from "./loop/drift.js";
 export { buildBrief, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";
 export { bisectRegression, BisectTampered, blameOf, lastGoodTurn, probeVerdict, type BisectDeps } from "./loop/bisect.js";
 export {
   runBuildLoop,
   defaultBuildDeps,
   evidencePath,
+  lastSeal,
   EVIDENCE_DIR,
   type BuildDeps,
   type BuildOptions,

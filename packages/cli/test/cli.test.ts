@@ -1,0 +1,618 @@
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  appendEvent,
+  appSealFiles,
+  loadProject,
+  seal,
+  type BuildResult,
+  type DriftResult,
+  type FalsifyResult,
+  type LedgerEvent,
+  type Project,
+  type TestRunResult,
+} from "@holdback/core";
+import { EXIT, installSignals, main, scrubAgentEnv, type Deps } from "../src/index.js";
+
+const at = "2026-11-15T00:00:00.000Z";
+const saved = { ...process.env };
+let root: string;
+let appDir: string;
+let p: Project;
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "hb-cli-"));
+  process.env.HOLDBACK_HOME = join(root, "home");
+  appDir = join(root, "app");
+  mkdirSync(appDir);
+});
+afterEach(() => {
+  for (const k of ["HOLDBACK_HOME", "VENICE_API_KEY"]) {
+    if (saved[k] === undefined) delete process.env[k];
+    else process.env[k] = saved[k];
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+const log = (e: LedgerEvent) => appendEvent(p.ledgerFile, e);
+
+const result = (testId: string, status: "passed" | "failed", extra: Partial<TestRunResult> = {}): TestRunResult => ({
+  testFile: `${testId}.md`,
+  testId,
+  status,
+  steps: [],
+  criteriaPassed: [],
+  criteriaFailed: [],
+  credits: 1.5,
+  replayDecisions: 0,
+  authorDecisions: 0,
+  healTriggered: false,
+  durationS: 1,
+  ...extra,
+});
+
+/** An app with a spec, a verifier with one sealed test, and a ledger: ac-1 passing, ac-2 owed with a failure. */
+async function fixture(opts: { seal?: boolean } = {}) {
+  writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\n");
+  writeFileSync(join(appDir, "holdback.config.json"), "{}");
+  p = await loadProject(appDir);
+  const tests = join(p.verifierDir, ".testmuai", "tests");
+  mkdirSync(tests, { recursive: true });
+  writeFileSync(join(tests, "t1_test.md"), "# t1\n");
+  const ac = (id: string) => ({ id, text: `criterion ${id}`, useCase: "uc-1", cites: [], trust: "derived" as const });
+  await log({
+    at,
+    t: "design",
+    useCase: "uc-1",
+    acs: [ac("ac-1"), ac("ac-2")],
+    tests: [
+      { id: "t-1", title: "one", file: ".testmuai/tests/t1_test.md", verifies: ["ac-1"] },
+      { id: "t-2", title: "two", file: ".testmuai/tests/t1_test.md", verifies: ["ac-2"] },
+    ],
+    gaps: [],
+    credits: 12,
+  });
+  if (opts.seal !== false) await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+  await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-2"] });
+  await log({ at, t: "run", kind: "build", turn: 1, result: result("t-1", "passed") });
+  await log({ at, t: "run", kind: "build", turn: 1, result: result("t-2", "failed", { failedStep: 2, verdict: { bugTitle: "Limit off by one" } }) });
+}
+
+type Out = { code: number; out: string; err: string };
+type Fakes = Partial<Deps>;
+
+async function cli(args: string[], deps: Fakes = {}, extra: Record<string, unknown> = {}): Promise<Out> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await main(args, { cwd: appDir, out: (l) => out.push(l), err: (l) => err.push(l), deps, ...extra });
+  return { code, out: out.join("\n"), err: err.join("\n") };
+}
+
+const buildOk: BuildResult = { allowStop: true, turns: 2, reason: "gate-open" };
+const falsifyOk: FalsifyResult = { killed: [], survived: [], invalid: [], redesigned: [], vacuous: [], skipped: [], usd: 0, reason: "done" };
+const notCalled = (name: string) => async () => {
+  throw new Error(`${name} must not be called`);
+};
+
+/** Fake IO that records `close`. */
+function fakeIO() {
+  const io = { closed: 0, answer: async () => ({}), approve: async () => [], close() { io.closed++; } };
+  return io;
+}
+
+describe("init", () => {
+  it("writes holdback.config.json with the defaults, creates the verifier folder and prints its path", async () => {
+    const r = await cli(["init"]);
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(appDir, "holdback.config.json"), "utf8"));
+    expect(cfg.spec).toEqual(["PRD.md"]);
+    expect(cfg.start).toEqual({ cmd: "npm start", port: 3100, readyPath: "/" });
+    expect(cfg.breaker).toEqual({ model: "deepseek-v4-flash", capUsd: 2 });
+    p = await loadProject(appDir);
+    expect(existsSync(p.verifierDir)).toBe(true);
+    expect(r.out).toContain(p.verifierDir);
+  });
+
+  it("takes --spec, --url, --start and --port", async () => {
+    const r = await cli(["init", "--spec", "docs/SPEC.md", "--url", "https://example.com/a", "--url", "https://example.com/b", "--start", "node server.js", "--port", "4100"]);
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(appDir, "holdback.config.json"), "utf8"));
+    expect(cfg.spec).toEqual(["docs/SPEC.md"]);
+    expect(cfg.specUrls).toEqual(["https://example.com/a", "https://example.com/b"]);
+    expect(cfg.start).toMatchObject({ cmd: "node server.js", port: 4100 });
+    expect(r.err).toContain("docs/SPEC.md does not exist yet");
+  });
+
+  it("refuses to overwrite an existing config without --force, and rejects a bad port", async () => {
+    writeFileSync(join(appDir, "holdback.config.json"), '{"start":{"port":1}}');
+    const r = await cli(["init"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("already exists");
+    expect(readFileSync(join(appDir, "holdback.config.json"), "utf8")).toBe('{"start":{"port":1}}');
+    expect((await cli(["init", "--force", "--port", "abc"])).code).toBe(1);
+    expect((await cli(["init", "--force"])).code).toBe(0);
+  });
+});
+
+describe("unknown command", () => {
+  it("exits 1", async () => {
+    const r = await cli(["frobnicate"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("unknown command");
+  });
+});
+
+describe("status and owed", () => {
+  it("status --json prints the reduced state and the gate", async () => {
+    await fixture();
+    const r = await cli(["status", "--json"]);
+    expect(r.code).toBe(0);
+    const doc = JSON.parse(r.out);
+    expect(doc.state.acs["ac-1"].status).toBe("passing");
+    expect(doc.state.acs["ac-2"]).toMatchObject({ status: "owed", lastFailure: { test: "t-2", verdict: { bugTitle: "Limit off by one" } } });
+    expect(doc.state.credits).toBe(15);
+    expect(doc.gate).toMatchObject({ open: false, owed: ["ac-2"], tampered: false });
+  });
+
+  it("status prints a table with each criterion's status, tests and last failure", async () => {
+    await fixture();
+    const r = await cli(["status"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/AC\s+STATUS\s+TESTS\s+LAST FAILURE/);
+    expect(r.out).toMatch(/ac-1\s+passing\s+t-1\s*$/m);
+    expect(r.out).toMatch(/ac-2\s+owed\s+t-2\s+Limit off by one/);
+    expect(r.out).toContain("Gate: closed");
+  });
+
+  it("owed prints the brief for the criteria still owed", async () => {
+    await fixture();
+    const r = await cli(["owed"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("1 criterion still owed");
+    expect(r.out).toContain("## ac-2");
+    expect(r.out).not.toContain("## ac-1");
+  });
+
+  it("fails closed on a ledger it cannot read: non-zero, a message, never an empty gate", async () => {
+    await fixture();
+    // a folder where the ledger file should be: EISDIR, not ENOENT
+    rmSync(p.ledgerFile);
+    mkdirSync(p.ledgerFile);
+    for (const args of [["status"], ["status", "--json"], ["owed"], ["run"]]) {
+      const r = await cli(args, { runBuildLoop: notCalled("build") as never, humanIO: fakeIO as never });
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.err).toMatch(/error: .*(EISDIR|illegal operation)/i);
+      expect(r.out).not.toMatch(/No acceptance criteria/);
+    }
+  });
+
+  it("exits 2 with the tamper explanation when the ledger records a tamper", async () => {
+    await fixture();
+    await log({ at, t: "tamper", detail: "sealed files changed: .testmuai/tests/t1_test.md" });
+    const r = await cli(["status"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("sealed files changed: .testmuai/tests/t1_test.md");
+    expect(r.err).toContain("gate stays closed");
+    expect(r.err).toContain("holdback reseal");
+    expect(r.err).toContain(".git/config");
+    expect((await cli(["status", "--json"])).code).toBe(2);
+  });
+
+  it("exits 2 on a tamper marker with no ledger event, and on a sealed file that changed on disk", async () => {
+    await fixture();
+    writeFileSync(join(p.home, "TAMPERED"), "2026 marker only\n");
+    const marked = await cli(["status"]);
+    expect(marked.code).toBe(2);
+    expect(marked.err).toContain("marker only");
+    rmSync(join(p.home, "TAMPERED"));
+    writeFileSync(join(p.verifierDir, ".testmuai", "tests", "t1_test.md"), "# forged\n");
+    const forged = await cli(["status"]);
+    expect(forged.code).toBe(2);
+    expect(forged.err).toContain(".testmuai/tests/t1_test.md");
+  });
+
+  it("reports an edited spec as drift, not a tamper", async () => {
+    await fixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\nPlus a new rule.\n");
+    const r = await cli(["status"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("spec changed since the last seal");
+  });
+
+  it("says so when nothing has been designed yet", async () => {
+    writeFileSync(join(appDir, "holdback.config.json"), "{}");
+    const r = await cli(["status"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("No acceptance criteria yet");
+    expect(r.out).toContain("Gate: closed");
+    expect(JSON.parse((await cli(["status", "--json"])).out).gate.open).toBe(false);
+  });
+});
+
+describe("spec", () => {
+  it("runs the spec stage with a vouched log, and always closes the human IO", async () => {
+    await fixture({ seal: false });
+    const io = fakeIO();
+    let calls = 0;
+    const r = await cli(["spec"], {
+      humanIO: () => io as never,
+      runSpecStage: async (_p, got, logFn) => {
+        calls++;
+        expect(got).toBe(io);
+        await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+      },
+    });
+    expect(calls).toBe(1);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Sealed 2 acceptance criteria");
+    expect(io.closed).toBe(1);
+  });
+
+  it("closes the human IO when the spec stage fails, and exits 1 with the reason", async () => {
+    await fixture({ seal: false });
+    const io = fakeIO();
+    const r = await cli(["spec"], {
+      humanIO: () => io as never,
+      runSpecStage: async () => {
+        throw new Error("spec ingest failed: Kane is not logged in");
+      },
+    });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("Kane is not logged in");
+    expect(io.closed).toBe(1);
+  });
+});
+
+describe("run", () => {
+  /** Records the order of the stages a run calls. */
+  function stages(plan: { build?: BuildResult[]; falsify?: FalsifyResult[]; drift?: DriftResult; onBuild?: (n: number) => Promise<void> | void } = {}) {
+    const calls: string[] = [];
+    const seen = { build: [] as { opts: unknown; deps: unknown }[], falsify: [] as unknown[], log: undefined as undefined | ((e: LedgerEvent) => Promise<void>) };
+    const io = fakeIO();
+    const builds = [...(plan.build ?? [buildOk])];
+    const falsifies = [...(plan.falsify ?? [falsifyOk])];
+    const deps: Fakes = {
+      humanIO: () => io as never,
+      runDrift: async () => {
+        calls.push("drift");
+        return plan.drift ?? { changed: true, applied: true };
+      },
+      runBuildLoop: async (_p, d, logFn, opts) => {
+        calls.push("build");
+        seen.log = logFn;
+        seen.build.push({ opts, deps: d });
+        await plan.onBuild?.(seen.build.length);
+        return builds.shift() ?? buildOk;
+      },
+      runFalsify: async (_p, _d, _io, _log, opts) => {
+        calls.push("falsify");
+        seen.falsify.push(opts);
+        return falsifies.shift() ?? falsifyOk;
+      },
+    };
+    return { calls, seen, io, deps };
+  }
+
+  it("asks for `holdback spec` first when nothing is sealed, and builds nothing", async () => {
+    await fixture({ seal: false });
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("run `holdback spec` first");
+    expect(s.calls).toEqual([]);
+    expect(s.io.closed).toBe(1);
+  });
+
+  it("builds, falsifies, and prints the one-screen summary", async () => {
+    await fixture();
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(0);
+    expect(s.calls).toEqual(["build", "falsify"]);
+    expect(r.out).toMatch(/Gate: closed/); // the fake loops changed nothing in the ledger
+    expect(r.out).toContain("Criteria: 1 owed, 1 passing, 0 proved, 0 vacuous, 0 needs-spec");
+    expect(r.out).toContain("Turns this run: 2");
+    expect(r.out).toContain("Kane credits: 15");
+    expect(r.out).toContain("Breaker spend: $0.0000 of $2");
+    expect(s.io.closed).toBe(1);
+  });
+
+  it("skips falsify with --no-falsify and passes --max-turns on", async () => {
+    await fixture();
+    const s = stages();
+    const r = await cli(["run", "--no-falsify", "--max-turns", "7"], s.deps);
+    expect(r.code).toBe(0);
+    expect(s.calls).toEqual(["build"]);
+    expect(s.seen.build[0]!.opts).toMatchObject({ maxTurnsOverride: 7 });
+    expect((await cli(["run", "--max-turns", "lots"], s.deps)).code).toBe(1);
+  });
+
+  it("goes back to the build loop while falsify re-opens criteria", async () => {
+    await fixture();
+    const s = stages({ falsify: [{ ...falsifyOk, redesigned: ["uc-1"] }, falsifyOk] });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(0);
+    expect(s.calls).toEqual(["build", "falsify", "build", "falsify"]);
+    expect(r.out).toContain("building again");
+  });
+
+  it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {
+    await fixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("spec changed since the last seal — running drift");
+    expect(s.calls).toEqual(["drift", "build", "falsify"]);
+  });
+
+  it("does not run drift when the spec still matches the seal", async () => {
+    await fixture();
+    const s = stages();
+    await cli(["run"], s.deps);
+    expect(s.calls).not.toContain("drift");
+  });
+
+  it("stops with drift's reason, never starting the build loop, when drift applied nothing", async () => {
+    await fixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    const s = stages({ drift: { changed: true, applied: false, reason: "the human declined the plan" } });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("the human declined the plan");
+    expect(s.calls).toEqual(["drift"]);
+    expect(s.io.closed).toBe(1);
+  });
+
+  it("stops on a tamper with the explanation and exit 2, without falsifying", async () => {
+    await fixture();
+    const s = stages({
+      build: [{ allowStop: false, turns: 1, reason: "tamper" }],
+      onBuild: () => appendEvent(p.ledgerFile, { at, t: "tamper", detail: "sealed files changed: PRD.md" }),
+    });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(2);
+    expect(s.calls).toEqual(["build"]);
+    expect(r.err).toContain("sealed files changed: PRD.md");
+    expect(r.err).toContain("holdback reseal");
+  });
+
+  it("refuses to start while a tamper is on record", async () => {
+    await fixture();
+    await log({ at, t: "tamper", detail: "recordings changed" });
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(2);
+    expect(s.calls).toEqual([]);
+  });
+
+  it("stops on max-turns and on a build error, non-zero, with the reason", async () => {
+    await fixture();
+    const turns = await cli(["run"], stages({ build: [{ allowStop: false, turns: 3, reason: "max-turns" }] }).deps);
+    expect(turns.code).toBe(1);
+    expect(turns.err).toContain("turn limit reached after 3 turns");
+    const fail = await cli(["run"], stages({ build: [{ allowStop: false, turns: 0, reason: "error", error: "claude exited with code 1" }] }).deps);
+    expect(fail.code).toBe(1);
+    expect(fail.err).toContain("claude exited with code 1");
+    const s = stages({ falsify: [{ ...falsifyOk, reason: "error", error: "VENICE_API_KEY is not set" }] });
+    const nokey = await cli(["run"], s.deps);
+    expect(nokey.code).toBe(1);
+    expect(nokey.err).toContain("VENICE_API_KEY is not set");
+  });
+
+  it("reports a falsify budget stop as done, listing what was not attacked", async () => {
+    await fixture();
+    const r = await cli(["run"], stages({ falsify: [{ ...falsifyOk, reason: "budget", skipped: ["ac-1"] }] }).deps);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Not attacked (breaker budget): ac-1");
+  });
+
+  it("passes one AbortSignal to the build loop and falsify, and exits 130 when it fires", async () => {
+    await fixture();
+    const ctl = new AbortController();
+    let disposed = 0;
+    const s = stages({ build: [{ allowStop: false, turns: 1, reason: "aborted" }] });
+    const r = await cli(["run"], s.deps, { signals: () => ({ signal: ctl.signal, dispose: () => disposed++ }) });
+    expect((s.seen.build[0]!.opts as { signal: AbortSignal }).signal).toBe(ctl.signal);
+    expect(r.code).toBe(130);
+    expect(s.calls).toEqual(["build"]);
+    expect(disposed).toBe(1);
+    const s2 = stages();
+    await cli(["run"], s2.deps, { signals: () => ({ signal: ctl.signal, dispose() {} }) });
+    expect((s2.seen.falsify[0] as { signal: AbortSignal }).signal).toBe(ctl.signal);
+  });
+
+  it("closes the human IO and the signal handlers when a stage throws", async () => {
+    await fixture();
+    const io = fakeIO();
+    let disposed = 0;
+    const r = await cli(
+      ["run"],
+      {
+        humanIO: () => io as never,
+        runBuildLoop: async () => {
+          throw new Error("kaboom");
+        },
+      },
+      { signals: () => ({ signal: new AbortController().signal, dispose: () => disposed++ }) },
+    );
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("kaboom");
+    expect(io.closed).toBe(1);
+    expect(disposed).toBe(1);
+  });
+
+  it("hands the build loop deps whose agent turns run without VENICE_API_KEY", async () => {
+    await fixture();
+    process.env.VENICE_API_KEY = "secret";
+    const envs: (NodeJS.ProcessEnv | undefined)[] = [];
+    const s = stages();
+    await cli(["run", "--no-falsify"], {
+      ...s.deps,
+      buildDeps: { claude: async (o) => (envs.push(o.env), { exitCode: 0, resultText: "", durationMs: 1, timedOut: false, stderrTail: "" }), tests: notCalled("tests") as never, app: notCalled("app") as never },
+    });
+    const given = s.seen.build[0]!.deps as { claude: (o: { env?: NodeJS.ProcessEnv }) => Promise<unknown> };
+    await given.claude({ env: { FOO: "1" } });
+    expect(envs[0]).toEqual({ FOO: "1", VENICE_API_KEY: "" });
+    // the breaker still gets it: falsify's key comes from the process environment
+    expect(process.env.VENICE_API_KEY).toBe("secret");
+  });
+
+  it("scrubAgentEnv blanks the key even when no env was given", async () => {
+    const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+    const deps = scrubAgentEnv({ claude: async (o) => (seen.push(o.env), {} as never), tests: notCalled("t") as never, app: notCalled("a") as never });
+    await deps.claude({} as never);
+    expect(seen[0]).toEqual({ VENICE_API_KEY: "" });
+  });
+
+  it("gives the loops a log that appends exactly one JSON line per event to the ledger", async () => {
+    await fixture();
+    const s = stages();
+    await cli(["run", "--no-falsify"], s.deps);
+    const before = readFileSync(p.ledgerFile, "utf8");
+    await s.seen.log!({ at, t: "turn.start", n: 9, owed: ["ac-2"] });
+    const added = readFileSync(p.ledgerFile, "utf8").slice(before.length);
+    expect(added.endsWith("\n")).toBe(true);
+    expect(added.split("\n").filter(Boolean)).toHaveLength(1);
+    expect(JSON.parse(added)).toEqual({ at, t: "turn.start", n: 9, owed: ["ac-2"] });
+  });
+});
+
+describe("installSignals", () => {
+  it("aborts on the first SIGINT and quits hard on the second", () => {
+    const proc = Object.assign(new EventEmitter(), { exited: [] as number[], exit(c: number) { this.exited.push(c); } });
+    const lines: string[] = [];
+    const sig = installSignals(proc, (l) => lines.push(l));
+    expect(sig.signal.aborted).toBe(false);
+    proc.emit("SIGINT");
+    expect(sig.signal.aborted).toBe(true);
+    expect(lines[0]).toContain("Ctrl-C again");
+    expect(proc.exited).toEqual([]);
+    proc.emit("SIGINT");
+    expect(proc.exited).toEqual([130]);
+    sig.dispose();
+    expect(proc.listenerCount("SIGINT")).toBe(0);
+    expect(proc.listenerCount("SIGTERM")).toBe(0);
+  });
+
+  it("treats SIGTERM like the first Ctrl-C", () => {
+    const proc = Object.assign(new EventEmitter(), { exit() {} });
+    const sig = installSignals(proc, () => {});
+    proc.emit("SIGTERM");
+    expect(sig.signal.aborted).toBe(true);
+  });
+});
+
+describe("drift and watch", () => {
+  it("drift reports applied, unchanged and declined, and closes the IO", async () => {
+    await fixture();
+    const io = fakeIO();
+    const ran = async (d: DriftResult) => cli(["drift"], { humanIO: () => io as never, runDrift: async () => d });
+    expect((await ran({ changed: false })).out).toContain("has not changed");
+    expect((await ran({ changed: true, applied: true })).out).toContain("applied and sealed");
+    const declined = await ran({ changed: true, applied: false, reason: "declined" });
+    expect(declined.code).toBe(1);
+    expect(declined.err).toContain("declined");
+    expect(io.closed).toBe(3);
+  });
+
+  it("watch runs the drift-then-build pipeline on each spec edit and stops on abort", async () => {
+    await fixture();
+    const io = fakeIO();
+    const ctl = new AbortController();
+    let onChange: () => void = () => {};
+    let stopped = 0;
+    const calls: string[] = [];
+    const run = cli(
+      ["watch", "--no-falsify"],
+      {
+        humanIO: () => io as never,
+        watchSpec: ((_p, cb) => {
+          onChange = cb;
+          return () => void stopped++;
+        }) as Deps["watchSpec"],
+        runBuildLoop: async () => (calls.push("build"), buildOk),
+      },
+      { signals: () => ({ signal: ctl.signal, dispose() {} }) },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    onChange();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls).toEqual(["build"]);
+    ctl.abort();
+    const r = await run;
+    expect(r.code).toBe(130);
+    expect(stopped).toBe(1);
+    expect(io.closed).toBe(1);
+  });
+});
+
+describe("reseal", () => {
+  it("lists the sealed entries that differ, warns about .git/config, and does nothing without a yes", async () => {
+    await fixture();
+    writeFileSync(join(p.verifierDir, ".testmuai", "tests", "t1_test.md"), "# forged\n");
+    let resealed = 0;
+    const r = await cli(["reseal"], { reseal: (async () => void resealed++) as never, confirm: async () => false });
+    expect(r.code).toBe(1);
+    expect(resealed).toBe(0);
+    expect(r.out).toContain(".testmuai/tests/t1_test.md");
+    expect(r.out).toContain(".git/config");
+    expect(r.err).toContain("Not re-sealed");
+  });
+
+  it("re-seals after an interactive yes, and with --yes", async () => {
+    await fixture();
+    const calls: string[] = [];
+    const reseal = (async (_p: Project, logFn: (e: LedgerEvent) => Promise<void>) => {
+      calls.push("reseal");
+      await logFn({ at, t: "seal", manifest: {} });
+    }) as never;
+    const asked: string[] = [];
+    const yes = await cli(["reseal"], { reseal, confirm: async (q) => (asked.push(q), true) });
+    expect(yes.code).toBe(0);
+    expect(asked).toHaveLength(1);
+    const flag = await cli(["reseal", "--yes"], { reseal, confirm: notCalled("confirm") as never });
+    expect(flag.code).toBe(0);
+    expect(calls).toEqual(["reseal", "reseal"]);
+  });
+
+  it("refuses when nothing is sealed yet", async () => {
+    await fixture({ seal: false });
+    const r = await cli(["reseal", "--yes"], { reseal: notCalled("reseal") as never });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("Nothing is sealed yet");
+  });
+});
+
+describe("clean, serve and help", () => {
+  it("clean sweeps stale worktrees through core", async () => {
+    await fixture();
+    let swept: Project | undefined;
+    const r = await cli(["clean"], { sweepStaleWorktrees: (async (pr: Project) => void (swept = pr)) as never });
+    expect(r.code).toBe(0);
+    expect(swept?.appDir).toBe(p.appDir);
+  });
+
+  it("help warns against deleting mut/ and bisect/ by hand and points to `holdback clean`", async () => {
+    const r = await cli(["--help"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/Never delete the mut\/ or bisect\//);
+    expect(r.out).toContain("`holdback clean`");
+    for (const c of ["init", "spec", "run", "drift", "watch", "status", "owed", "reseal", "clean"]) expect(r.out).toContain(c);
+  });
+
+  it("serve is not available yet", async () => {
+    const r = await cli(["serve"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("not available yet");
+  });
+});
+
+describe("exit codes", () => {
+  it("keeps 2 for tampers only", () => {
+    expect(EXIT).toEqual({ ok: 0, error: 1, tamper: 2, aborted: 130 });
+  });
+});

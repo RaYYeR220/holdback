@@ -1,0 +1,142 @@
+import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
+import { EXIT, explainFailure, ledgerLog, scrubAgentEnv, snapshot, type Ctx } from "./context.js";
+import { tamperMessage } from "./messages.js";
+
+export type RunOptions = {
+  maxTurns?: string | number;
+  /** `--no-falsify` sets this to false. */
+  falsify?: boolean;
+};
+
+/** A falsify pass can send use cases back to the build loop; this many rounds is far more than it ever needs. */
+const MAX_ROUNDS = 4;
+
+/** Where a stopped run ended up, as an exit code (and the line that says why). */
+type Stop = { code: number; why: string };
+
+function buildStop(b: BuildResult): Stop {
+  switch (b.reason) {
+    case "tamper":
+      return { code: EXIT.tamper, why: b.error ?? "" };
+    case "aborted":
+      return { code: EXIT.aborted, why: "stopped" };
+    case "max-turns":
+      return { code: EXIT.error, why: `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}: some criteria are still owed (raise it with --max-turns or loop.maxTurns)` };
+    default:
+      return { code: EXIT.error, why: b.error ?? "the build loop failed" };
+  }
+}
+
+function falsifyStop(f: FalsifyResult): Stop | undefined {
+  switch (f.reason) {
+    case "tamper":
+      return { code: EXIT.tamper, why: f.error ?? "" };
+    case "aborted":
+      return { code: EXIT.aborted, why: "stopped" };
+    case "error":
+      return { code: EXIT.error, why: f.error ?? "falsify failed" };
+    default:
+      return undefined;
+  }
+}
+
+async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyResult | undefined): Promise<void> {
+  const s = await snapshot(p);
+  const count = (...st: string[]) => Object.values(s.state.acs).filter((a) => st.includes(a.status)).length;
+  const regressed = count("regressed");
+  ctx.out("");
+  ctx.out(`Gate: ${s.gate.allowStop ? "open" : "closed"}`);
+  ctx.out(
+    `Criteria: ${count("owed", "regressed")} owed${regressed > 0 ? ` (${regressed} regressed)` : ""}, ${count("passing")} passing, ${count("proved")} proved, ${count("vacuous")} vacuous, ${count("needs-spec")} needs-spec`,
+  );
+  ctx.out(`Turns this run: ${turns} (turn ${s.state.turn} overall)`);
+  ctx.out(`Kane credits: ${s.state.credits}`);
+  ctx.out(`Breaker spend: $${s.state.breakerUsd.toFixed(4)} of $${p.config.breaker.capUsd}`);
+  if (falsified && falsified.skipped.length > 0) ctx.out(`Not attacked (breaker budget): ${falsified.skipped.join(", ")}`);
+  if (count("vacuous") > 0) ctx.out("Vacuous means a planted bug in that criterion's code got past its tests: the criterion proves nothing yet.");
+}
+
+/**
+ * One pass of `holdback run`: drift check, build loop, falsify, and back to the build loop while
+ * falsify re-opens work. Returns the exit code; never throws.
+ */
+export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions): Promise<number> {
+  const log = ledgerLog(p);
+  let turns = 0;
+  let falsified: FalsifyResult | undefined;
+  try {
+    let maxTurnsOverride: number | undefined;
+    if (o.maxTurns !== undefined) {
+      maxTurnsOverride = Number(o.maxTurns);
+      if (!Number.isInteger(maxTurnsOverride) || maxTurnsOverride < 0) {
+        ctx.err(`--max-turns must be a whole number, got ${String(o.maxTurns)}`);
+        return EXIT.error;
+      }
+    }
+
+    const before = await snapshot(p);
+    if (before.tamper !== null) {
+      ctx.err(before.tamper);
+      return EXIT.tamper;
+    }
+    if (!before.manifest) {
+      ctx.err("Nothing is sealed yet: run `holdback spec` first.");
+      return EXIT.error;
+    }
+
+    // the spec was edited after the last seal: Kane re-plans with the human before anything is built
+    if (before.specChanged.length > 0) {
+      ctx.out("spec changed since the last seal — running drift");
+      const d = await ctx.deps.runDrift(p, io, log);
+      if (d.changed && !d.applied) {
+        ctx.err(`Spec change not applied: ${d.reason}`);
+        ctx.err("Nothing was built. Fix or revert the spec edit, then run `holdback drift` or `holdback run` again.");
+        return EXIT.error;
+      }
+    }
+
+    const buildDeps = scrubAgentEnv(ctx.deps.buildDeps);
+    let stop: Stop | undefined;
+    for (let round = 1; ; round++) {
+      if (round > MAX_ROUNDS) {
+        stop = { code: EXIT.error, why: "falsify kept re-opening criteria; stopped after several rounds" };
+        break;
+      }
+      const b = await ctx.deps.runBuildLoop(p, buildDeps, log, { signal, ...(maxTurnsOverride !== undefined ? { maxTurnsOverride } : {}) });
+      turns += b.turns;
+      if (b.reason !== "gate-open") {
+        stop = buildStop(b);
+        break;
+      }
+      if (o.falsify === false) break;
+      ctx.out("Gate open: falsifying the passing criteria with planted bugs");
+      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal });
+      falsified = f;
+      stop = falsifyStop(f);
+      if (stop) break;
+      if (f.redesigned.length === 0) break;
+      ctx.out(`Falsify re-opened ${f.redesigned.join(", ")}: building again`);
+    }
+
+    if (stop?.code === EXIT.tamper) {
+      const after = await snapshot(p);
+      ctx.err(after.tamper ?? tamperMessage(stop.why || "sealed files changed"));
+    } else if (stop) ctx.err(stop.why);
+    await summary(ctx, p, turns, falsified);
+    return stop?.code ?? EXIT.ok;
+  } catch (e) {
+    return await explainFailure(ctx, e, p);
+  }
+}
+
+export async function runCmd(ctx: Ctx, o: RunOptions): Promise<number> {
+  const p = await loadProject(ctx.cwd);
+  const io = ctx.deps.humanIO();
+  const sig = ctx.signals();
+  try {
+    return await runPipeline(ctx, p, io, sig.signal, o);
+  } finally {
+    sig.dispose();
+    io.close();
+  }
+}
