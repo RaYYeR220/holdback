@@ -1,6 +1,6 @@
 # Kane CLI findings
 
-What we learned building Holdback on Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. "The ledger" is the first live run's, `apps/dashboard/fixtures/ledger.jsonl`.
+What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. "The ledger" is the first live run's, `apps/dashboard/fixtures/ledger.jsonl`.
 
 ## 1. `--timeout` bounds each step, not the whole run
 
@@ -11,7 +11,7 @@ What we learned building Holdback on Kane CLI 0.10.4. Each finding has its evide
 ## 2. A failing flow is authored again on every run
 
 - **Seen:** t-2 passed in turn 1 and replayed in turn 2 for 0 credits (4 replay decisions, 0 author decisions). t-3 never passed, so turn 2 authored it again from the start (11 author decisions, 9.60 credits before it broke off). In turn 1, authoring cost 65.31 and 63.20 credits for two 4-step tests (the ledger).
-- **What it means:** an agent loop whose test stays red pays the authoring price, about 16 credits a step, on every turn.
+- **What it means:** an agent loop whose test stays red pays the authoring price on every turn: about 16 credits a step in the first live run.
 - **Holdback now:** logs the credits of every run and batch, so the cost shows in `holdback status`. A test that keeps failing for a reason other than the app stops the run (exit 3) instead of paying for more turns.
 - **Suggestion:** cache the passed prefix of a failing flow, or offer a replay-only mode that fails fast where the recording ends.
 
@@ -31,7 +31,7 @@ What we learned building Holdback on Kane CLI 0.10.4. Each finding has its evide
 ## 5. `--answer q=<label>` is accepted when free text is not allowed
 
 - **Seen:** both questions of the ingest have `allow_free_text: false` (`01-ingest.ndjson`; `allowFreeText: false` in the ledger's `spec.paused`). Holdback answered with an option's label, `Keep unspecified`, and Kane resumed and billed 1.40 credits (`spec.answered`).
-- **What it means:** we cannot tell whether Kane matched the label to an option or took it as free text.
+- **What it means:** the output does not say whether Kane matched the label to an option or took it as free text.
 - **Holdback now:** sends the label of the option chosen.
 - **Suggestion:** document the forms `--answer` takes (index, label, free text), and reject free text where it is not allowed.
 
@@ -48,9 +48,9 @@ What we learned building Holdback on Kane CLI 0.10.4. Each finding has its evide
 - **Holdback now:** reads `kane-cli balance` before and after every Kane batch and logs both figures (`packages/core/src/ledger/credits.ts`). `holdback status` shows the balance figure, with the per-run sum beside it when they differ.
 - **Suggestion:** emit a final credits event when a run is cancelled or killed.
 
-## 8. `design tests --max` bounds how many tests, not how long they are
+## 8. `design tests --max` bounds how many scenarios, not how long their tests are
 
-- **Seen:** with `--max 3` (`kane.designMax` in `apps/dashboard/fixtures/config.json`), Kane designed tests of 4, 4 and 11 steps. The 11-step test is the one that timed out (finding 1).
+- **Seen:** Holdback passes `kane.designMax` as `kane-cli design tests --max`, which caps the scenarios Kane designs per use case, one test each (`packages/core/src/kane/assurance.ts`). With `--max 3` (`apps/dashboard/fixtures/config.json`), Kane designed 3 tests of 4, 4 and 11 steps. The 11-step test is the one that timed out (finding 1).
 - **What it means:** the cost of a design follows its total step count, which no flag bounds.
 - **Suggestion:** a step limit for design, or the step count in the design output so a caller can ask for a split.
 

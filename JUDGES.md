@@ -125,9 +125,11 @@ What Kane cost in the first live run, from the per-run figures in its ledger:
 
 A test that fails is authored again on every run, at the authoring rate. The ingest's own credits are missing from the spec-stage figure: that version of Holdback did not log a paused call's credits. It does now, and it also logs the balance before and after every Kane batch. See [FINDINGS.md](FINDINGS.md).
 
-## 7. Rubric map
+## 7. The hackathon's published criteria → where to look
 
-| Line | What to look at | Evidence |
+Each published criterion, and the files in this repo that bear on it.
+
+| Criterion | What to look at | Evidence |
 | --- | --- | --- |
 | Ships | Install from source, then `init`, `spec`, `run`; a dashboard and a landing page | [README.md](README.md#quick-start), `packages/cli/src/index.ts`, `apps/dashboard/`, `apps/site/`; `pnpm -r build` and `pnpm -r test` |
 | Verified | Kane designed 11 cited criteria and 3 tests from the spec, ran them in a real browser, and caught 2 of 2 planted bugs with its own diagnosis. The exam score: <!-- exam-status:start -->NOT-CLAIMED (pending)<!-- exam-status:end --> | `apps/dashboard/fixtures/ledger.jsonl` (`design`, `run`, `mutant` events), step 5 above, [eval/PREREGISTERED.md](eval/PREREGISTERED.md), [CLAIMS.md](CLAIMS.md) |
