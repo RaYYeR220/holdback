@@ -6,6 +6,11 @@
   "license": "MIT",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "arm": "node cli.ts arm",
+    "score": "node cli.ts score"
+  },
+  "dependencies": {
+    "@holdback/core": "workspace:*"
   }
 }

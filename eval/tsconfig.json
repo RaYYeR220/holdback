@@ -4,7 +4,14 @@
     "composite": false,
     "declaration": false,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true
   },
-  "include": ["*.ts"]
+  "include": [
+    "*.ts",
+    "test/*.ts",
+    "../scripts/*.d.mts"
+  ]
 }
