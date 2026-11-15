@@ -383,11 +383,13 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
           if (r.turn - good < 2) continue;
           kaneWindow = true;
           try {
-            await deps.bisect(p, r.ac, good, r.turn, { tests: deps.tests, app: deps.app, guard: () => tampered(false) }, (e) => emit(e as EventBody));
+            const blamed = await deps.bisect(p, r.ac, good, r.turn, { tests: deps.tests, app: deps.app, guard: () => tampered(false) }, (e) => emit(e as EventBody));
+            if (blamed === null) await emit({ t: "regression", ac: r.ac, turn: r.turn, detail: "bisect inconclusive: no turn could be blamed" });
           } catch (e) {
             if (e instanceof BisectTampered) return done(false, "tamper");
             if (e instanceof LedgerTampered) throw e;
-            // best effort: without a blame the brief just omits the line
+            // best effort: the brief omits the blame line, but the failure is on record
+            await emit({ t: "regression", ac: r.ac, turn: r.turn, detail: `bisect failed: ${errText(e)}` });
           }
         }
       }

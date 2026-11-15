@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import type { TestRunResult } from "../src/kane/testmd.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { bisectRegression, BisectTampered, blameOf, lastGoodTurn, type BisectDeps } from "../src/loop/bisect.js";
+import { sweepStaleWorktrees } from "../src/loop/falsify.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { seal } from "../src/seal.js";
@@ -178,6 +179,47 @@ describe("bisectRegression", { timeout: 60_000 }, () => {
       },
     });
     expect(await bisectRegression(p, "ac-1", 1, 8, deps, log)).toBeNull();
+  });
+
+  it("falls back to the previous commit when the bad turn recorded none", async () => {
+    await setup();
+    await log({ at, t: "turn.start", n: 9, owed: ["ac-1"] });
+    await log({ at, t: "turn.end", n: 9, commit: "", filesChanged: [], durationMs: 1, appUp: true, agentExit: 0 });
+    const { deps } = fakes(6);
+    expect(await bisectRegression(p, "ac-1", 1, 9, deps, log)).toEqual({ turn: 6, commit: commits.get(6) });
+  });
+
+  it("returns null, blaming nothing, when no probe reproduces the failure", async () => {
+    await setup();
+    const { deps } = fakes(99);
+    expect(await bisectRegression(p, "ac-1", 1, 8, deps, log)).toBeNull();
+    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "regression")).toEqual([]);
+  });
+
+  it("checks the guard even when Kane returned the wrong number of results", async () => {
+    await setup();
+    const { deps } = fakes(6, { guard: async () => true, tests: async () => [] });
+    await expect(bisectRegression(p, "ac-1", 1, 8, deps, log)).rejects.toBeInstanceOf(BisectTampered);
+  });
+
+  it("sweeps stale bisect and mut worktrees first, without touching the app's node_modules behind their links", async () => {
+    await setup();
+    mkdirSync(join(appDir, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(appDir, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+    for (const [sub, name] of [["bisect", "ac-1-4-1"], ["mut", "m-ac-1-1"]] as const) {
+      const stale = join(p.home, sub, name);
+      mkdirSync(dirname(stale), { recursive: true });
+      git(appDir, "worktree", "add", "-q", "--detach", stale, "HEAD");
+      symlinkSync(join(appDir, "node_modules"), join(stale, "node_modules"), "junction");
+    }
+    const { deps } = fakes(6);
+    expect(await bisectRegression(p, "ac-1", 1, 8, deps, log)).toEqual({ turn: 6, commit: commits.get(6) });
+    expect(readdirSync(join(p.home, "bisect"))).toEqual([]);
+    expect(readdirSync(join(p.home, "mut"))).toEqual([]);
+    expect(git(appDir, "worktree", "list").split("\n")).toHaveLength(1);
+    expect(readFileSync(join(appDir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
+    await sweepStaleWorktrees(p); // shared entry point: a no-op on a clean home
+    expect(existsSync(join(appDir, "node_modules", "dep"))).toBe(true);
   });
 
   it("throws BisectTampered, logging no probe result, when the guard trips", async () => {

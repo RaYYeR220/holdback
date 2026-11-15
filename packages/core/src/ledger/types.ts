@@ -34,7 +34,7 @@ export type LedgerEvent = { at: string } & (
   /** A falsify-stage re-design that was rolled back (nothing sealed); its Kane credits still count. */
   | { t: "redesign.dropped"; useCases: string[]; detail: string; credits: number }
   | { t: "drift"; rows: { kind: string; ref: string; why: string }[]; applied: boolean; credits?: number }
-  | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string }
+  | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string; detail?: string }
   | { t: "tamper"; detail: string }
   /**
    * Baseline after a Kane batch (app stopped): digest of Kane's own `output-*` run recordings and the

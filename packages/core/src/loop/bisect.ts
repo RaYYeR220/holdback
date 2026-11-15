@@ -11,7 +11,7 @@ import type { Project } from "../project.js";
 import { logRecordings } from "../tamper.js";
 import type { Blame } from "./brief.js";
 import { assertTestsSealed, filesOf, lastSeal, testFileMap } from "./build.js";
-import { dropWorktreeSafely, linkAppNodeModules } from "./falsify.js";
+import { BISECT_DIR, dropWorktreeSafely, linkAppNodeModules, sweepStaleWorktrees } from "./falsify.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 
@@ -35,7 +35,6 @@ export class BisectTampered extends Error {
   }
 }
 
-const BISECT_DIR = "bisect";
 type Verdict = "pass" | "fail" | "error";
 
 /** One probe's reading of its Kane results: the AC failing is a fail; every test passing is a pass; anything else proves nothing. */
@@ -84,6 +83,9 @@ export function blameOf(events: LedgerEvent[]): Map<string, Blame> {
  * with healing off (logged as `run{kind:"bisect"}`, which never changes an AC's status).
  * The first failing turn is blamed and logged as `regression{blamedTurn, blamedCommit}`.
  * A probe that proves nothing (app down, Kane error) is tried once more; a second miss gives null.
+ * The bad commit itself is not re-probed (the build loop just saw it fail), and healing is off,
+ * so a failure that does not reproduce gives no reliable blame: when no probe fails the result is
+ * null, never the last candidate by default.
  */
 export async function bisectRegression(
   p: Project,
@@ -94,6 +96,7 @@ export async function bisectRegression(
   log: Log,
 ): Promise<{ turn: number; commit: string } | null> {
   const gitOpts = await holdbackGitOptions(p.home);
+  await sweepStaleWorktrees(p, gitOpts); // a crashed bisect or falsify pass may have left worktrees that link node_modules
   const events = parseEvents((await readLedger(p.ledgerFile)).toString("utf8"));
   const state = reduce(events);
   const acState = state.acs[ac];
@@ -102,11 +105,19 @@ export async function bisectRegression(
   assertTestsSealed(p.verifierDir, lastSeal(events), files);
   const idOf = new Map([...testFileMap(events, p.verifierDir)].map(([id, f]) => [f, id]));
 
-  // the turns after the good one, up to the bad one; a turn that committed nothing is its predecessor
-  const ends = events.filter((e): e is Extract<LedgerEvent, { t: "turn.end" }> => e.t === "turn.end" && e.n > goodTurn && e.n <= badTurn && e.commit !== "");
-  ends.sort((a, b) => a.n - b.n);
-  if (ends.length === 0 || ends[ends.length - 1]!.n !== badTurn) return null;
-  const cands = ends.filter((e, i) => i === 0 || e.commit !== ends[i - 1]!.commit);
+  // A turn with no commit of its own (empty sha) stands for its predecessor's commit; a turn that
+  // left the same commit as the one before it changed nothing and is not a candidate.
+  const all = events.filter((e): e is Extract<LedgerEvent, { t: "turn.end" }> => e.t === "turn.end" && e.n <= badTurn);
+  all.sort((a, b) => a.n - b.n);
+  if (all[all.length - 1]?.n !== badTurn) return null;
+  const cands: { n: number; commit: string }[] = [];
+  let prev = "";
+  for (const e of all) {
+    const commit = e.commit || prev;
+    if (e.n > goodTurn && commit !== "" && commit !== prev) cands.push({ n: e.n, commit });
+    prev = commit;
+  }
+  if (cands.length === 0) return null;
 
   const at = () => new Date().toISOString();
   let probes = 0;
@@ -138,8 +149,8 @@ export async function bisectRegression(
         await app.stop().catch(() => {});
         app = undefined;
       }
+      if (deps.guard && (await deps.guard())) throw new BisectTampered(); // before anything else reads or logs the results
       if (results.length !== files.length) return "error";
-      if (deps.guard && (await deps.guard())) throw new BisectTampered();
       const attributed = results.map((r, i) => (r.testId == null ? { ...r, testId: idOf.get(files[i]!) ?? null } : r));
       for (const result of attributed) await log({ at: at(), t: "run", kind: "bisect", turn, result });
       return probeVerdict(ac, attributed);
@@ -161,6 +172,7 @@ export async function bisectRegression(
   };
 
   let tampered = false;
+  let sawFail = false;
   try {
     // lo = -1 stands for goodTurn (green); cands[hi] is bad (badTurn's commit at the start)
     let lo = -1;
@@ -170,8 +182,12 @@ export async function bisectRegression(
       const v = await settled(cands[mid]!.commit, cands[mid]!.n);
       if (v === null) return null;
       if (v === "pass") lo = mid;
-      else hi = mid;
+      else {
+        hi = mid;
+        sawFail = true;
+      }
     }
+    if (probes > 0 && !sawFail) return null; // nothing reproduced the failure
     const blamed = cands[hi]!;
     await log({ at: at(), t: "regression", ac, turn: badTurn, blamedTurn: blamed.n, blamedCommit: blamed.commit });
     return { turn: blamed.n, commit: blamed.commit };

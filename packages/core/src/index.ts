@@ -78,6 +78,7 @@ export {
 } from "./loop/build.js";
 export {
   runFalsify,
+  sweepStaleWorktrees,
   defaultFalsifyDeps,
   falsifyVerdict,
   type FalsifyDeps,

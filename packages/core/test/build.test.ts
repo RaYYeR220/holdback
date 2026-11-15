@@ -380,6 +380,20 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(brief).toContain(`Broke in turn 2 (${sha}): files app.js`);
   });
 
+  it("records a bisect that threw or found no blame instead of dropping it", async () => {
+    await setup({ config: { loop: { maxTurns: 3 } } });
+    const { deps } = fakes({ kane: (turn, files) => files.map((f) => (idOf(f) === "t-3" || turn === 3 ? fail(f) : pass(f))) });
+    deps.bisect = async () => {
+      throw new Error("worktree boom");
+    };
+    await runBuildLoop(p, deps, log);
+    const regs = (await loopEvents()).filter((e) => e.t === "regression");
+    expect(regs).toEqual([
+      { at: expect.any(String), t: "regression", ac: "ac-1", turn: 3 },
+      { at: expect.any(String), t: "regression", ac: "ac-1", turn: 3, detail: "bisect failed: worktree boom" },
+    ]);
+  });
+
   it("does not bisect a regression one turn after the AC was green", async () => {
     await setup({ config: { loop: { maxTurns: 2 } } });
     const { deps } = fakes({

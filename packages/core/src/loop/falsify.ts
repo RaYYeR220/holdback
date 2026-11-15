@@ -77,6 +77,8 @@ export type FalsifyResult = {
 };
 
 const MUT_DIR = "mut";
+/** Where regression-bisect probes check out commits. */
+export const BISECT_DIR = "bisect";
 const RESEAL_HINT = "a tamper is on record: re-seal (the spec stage, or a human re-seal) before falsifying";
 const NO_SEAL = "no seal in the ledger: run the spec stage first";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -219,6 +221,24 @@ export async function dropWorktreeSafely(p: Project, dir: string, gitOpts: GitOp
   }
 }
 
+/**
+ * Removes the throwaway worktrees (and mutant patch files) a crashed falsify pass or regression
+ * bisect left under `<home>/mut` and `<home>/bisect`, unlinking each node_modules junction first,
+ * then prunes git's worktree list. Also for `holdback clean`.
+ */
+export async function sweepStaleWorktrees(p: Project, gitOpts?: GitOptions): Promise<void> {
+  const opts = gitOpts ?? (await holdbackGitOptions(p.home));
+  for (const sub of [MUT_DIR, BISECT_DIR]) {
+    const root = path.join(p.home, sub);
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    for (const ent of entries) {
+      if (ent.isDirectory()) await dropWorktreeSafely(p, path.join(root, ent.name), opts);
+      else if (ent.isFile() && ent.name.endsWith(".patch")) await rm(path.join(root, ent.name), { force: true });
+    }
+  }
+  await git(p.appDir, ["worktree", "prune"], opts);
+}
+
 /** Shares the app's dependencies with a worktree through a directory junction (a symlink off Windows). */
 export async function linkAppNodeModules(p: Project, dir: string): Promise<void> {
   const src = path.join(p.appDir, "node_modules");
@@ -299,16 +319,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
 
   const dropWorktree = (dir: string) => dropWorktreeSafely(p, dir, gitOpts);
 
-  /** Mutant worktrees a crashed pass left behind still link the app's node_modules: remove them the safe way. */
-  const dropStaleMutants = async () => {
-    const root = path.join(p.home, MUT_DIR);
-    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
-    for (const ent of entries) {
-      if (ent.isDirectory()) await dropWorktree(path.join(root, ent.name));
-      else if (ent.isFile() && ent.name.endsWith(".patch")) await rm(path.join(root, ent.name), { force: true });
-    }
-    await git(p.appDir, ["worktree", "prune"], gitOpts);
-  };
+  /** Mutant and bisect worktrees a crashed pass left behind still link the app's node_modules: remove them the safe way. */
+  const dropStaleMutants = () => sweepStaleWorktrees(p, gitOpts);
 
   const linkNodeModules = (dir: string) => linkAppNodeModules(p, dir);
 
