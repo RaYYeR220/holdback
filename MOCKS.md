@@ -1,0 +1,48 @@
+# Real and simulated
+
+## The product path has no mocks
+
+`holdback spec`, `run`, `drift`, `watch` and the Claude Code hooks call the real Kane CLI (`kane-cli`), the real Claude Code (`claude`), the real Venice API (the breaker) and git. Nothing in `packages/core/src` or `packages/cli/src` simulates them. `HOLDBACK_KANE_BIN` and `HOLDBACK_CLAUDE_BIN` only choose which binary runs, so the tests can swap in the stand-ins below.
+
+`--answers <file>` stands in for the human, not for a service: Kane still asks, and the file answers and approves.
+
+## Unit tests use stand-ins
+
+`pnpm -r test` makes no Kane, Claude Code or Venice call.
+
+| Stand-in | Used by | What it does |
+| --- | --- | --- |
+| `packages/core/test/fake-kane.mjs` | core tests, through `HOLDBACK_KANE_BIN` | Prints a recorded NDJSON fixture, or one per call from a sequence file; can hang or exit with a given code |
+| `packages/core/test/fake-claude.mjs` | core tests, through `HOLDBACK_CLAUDE_BIN` | Prints a stream-json transcript (success, error, killed or hanging) and records its arguments, stdin and environment |
+| `eval/test/fake-kane-exam.mjs` | `eval/score.test.ts` | Passes, fails or reports an environment failure per exam file |
+| `eval/test/app.mjs` | `eval/score.test.ts` | A stand-in for an arm's app that records the environment it started with |
+| `packages/core/test/fixtures/tiny-server.mjs` | `packages/core/test/app.test.ts` | A minimal HTTP server for the app-start tests |
+| Injected functions | build, check, falsify, drift, bisect and CLI tests | The loop's Kane runs, agent turns and balance reads, passed in as functions |
+| A stubbed `fetch` | `packages/core/test/breaker.test.ts` | The Venice API's replies |
+
+## Recorded fixtures
+
+The fake Kane replays real Kane CLI 0.10.4 output. Home paths, temp folders and Test Manager share links were replaced (`scripts/sanitize.mjs`: `~`, `<tmp>`, `<share-url>`).
+
+| Fixture | Recorded from |
+| --- | --- |
+| `packages/core/test/fixtures/kane/01-ingest.ndjson` to `10-list-derived.ndjson`, `context-commits/`, `context-view.json`, `cover-gaps.json` and `tests/` | Real Kane CLI runs on the same 4-rule spec as the first live run, recorded before Holdback's loop was built: ingest, extraction, design, authoring, replay, a mutant replay, reconcile, listing and coverage |
+| `packages/core/test/fixtures/kane/11-heal-replay-t1.ndjson` | The first live run: a replay that failed, healed itself and passed |
+| `packages/core/test/fixtures/kane/12-env-failure-t3.ndjson` | The first live run: an authoring run broken off by an `environment_issue` |
+| `apps/dashboard/fixtures/ledger.jsonl`, `config.json`, `artifacts/` | The first live run's ledger, config and the 3 screenshots it names, sanitized by `apps/dashboard/scripts/sanitize-ledger.mjs` (home paths, share links and Kane's evidence packs removed) |
+
+One fixture is written for the tests, not recorded: `noise.txt`, a plain-text line mixed into NDJSON, to check that Holdback keeps Kane's raw stdout.
+
+`context-commits/000001-*.json` records the same source id (`sha256:0da9b627…`) as the first live run's `spec.ingested` event: both ingested the same spec.
+
+## The eval is real
+
+Arms A, B and C are real builds: Claude Code alone (A), Claude Code with its own Kane checks (B), and Holdback driving Claude Code (C). Each finished app is scored once by the real Kane CLI on the 22 exam files. Nothing in the eval is simulated. The runner is `eval/run-arm.ts`, the scorer `eval/score.ts`, and the arms' prompts and their sources are in `eval/arms/` (`eval/arms/PROVENANCE.md`). The results are pending until `eval/results/summary.json` exists.
+
+## Pending means not measured
+
+The landing page and the dashboard show "pending" wherever a figure is not measured yet. That is a placeholder, not data:
+
+- the landing page reads every figure from `apps/site/src/data/results.json`, where `null` means pending. Its `firstLiveRun` figures are copied from the first live run's ledger;
+- the dashboard's exam board reads `eval/results/summary.json` at build time and shows pending without it;
+- README.md, JUDGES.md and CLAIMS.md render their pending parts from `eval/results/summary.json` and `docs/demo-run.json` with `pnpm render-readme`.
