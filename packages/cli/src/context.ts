@@ -22,6 +22,9 @@ import {
   runFalsify,
   runSpecStage,
   runTests,
+  serve,
+  snapshot as coreSnapshot,
+  type Snapshot as CoreSnapshot,
   startApp,
   sweepStaleWorktrees,
   tamperMarker,
@@ -47,6 +50,7 @@ export type Signals = { signal: AbortSignal; dispose(): void };
 /** Everything the commands call in `@holdback/core`, so tests can run them without Kane or Claude Code. */
 export type Deps = {
   runSpecStage: typeof runSpecStage;
+  serve: typeof serve;
   runDrift: typeof runDrift;
   runBuildLoop: typeof runBuildLoop;
   runFalsify: typeof runFalsify;
@@ -134,6 +138,7 @@ export function defaultCtx(): Ctx {
     signals: () => installSignals(process, err),
     deps: {
       runSpecStage,
+      serve,
       runDrift,
       runBuildLoop,
       runFalsify,
@@ -178,49 +183,15 @@ export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefi
 /** The ledger's only writer for the CLI: exactly one JSON line per event, which the loops' integrity check relies on. */
 export const ledgerLog = (p: Project) => (e: LedgerEvent) => appendEvent(p.ledgerFile, e);
 
-export type Snapshot = {
-  events: LedgerEvent[];
-  state: LedgerState;
-  gate: ReturnType<typeof gate>;
-  manifest: Record<string, string> | undefined;
-  /** Text of the TAMPERED marker, when one is on record. */
-  marker: string | null;
-  /** Sealed entries that differ from the last seal, spec files apart. */
-  changed: string[];
-  /** The spec files edited since the last seal (`app:<file>` entries): drift, not a tamper. */
-  specChanged: string[];
+export type Snapshot = Omit<CoreSnapshot, "tamperDetail"> & {
   /** What the human is told when the gate is shut by a tamper; null when there is none. */
   tamper: string | null;
 };
 
-/**
- * The ledger as the CLI sees it. A ledger that cannot be read throws: a read error is never "no
- * criteria yet", it is a failure that stops the command.
- */
+/** The core snapshot, with the tamper worded for the human. A ledger that cannot be read throws. */
 export async function snapshot(p: Project): Promise<Snapshot> {
-  const events = await readEvents(p.ledgerFile);
-  const state = reduce(events);
-  const marker = await tamperMarker(p);
-  const manifest = lastSeal(events);
-  const broken = manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
-  const isSpec = (k: string) => p.config.spec.some((f) => isAppKeyOf(k, f));
-  const specChanged = broken.filter(isSpec);
-  const changed = broken.filter((k) => !isSpec(k));
-  const lastTamper = events.findLast((e) => e.t === "tamper");
-  const fromLedger = state.tampered && lastTamper?.t === "tamper" ? lastTamper.detail : null;
-  const fromDisk = changed.length > 0 ? `sealed files changed: ${changed.join(", ")}` : null;
-  const detail = marker ?? fromLedger ?? fromDisk;
-  const tampered = state.tampered || marker !== null || changed.length > 0;
-  return {
-    events,
-    state,
-    gate: gate(state),
-    manifest,
-    marker,
-    changed,
-    specChanged,
-    tamper: tampered ? tamperMessage(detail ?? "the ledger records a tamper") : null,
-  };
+  const { tamperDetail, ...rest } = await coreSnapshot(p);
+  return { ...rest, tamper: tamperDetail === null ? null : tamperMessage(tamperDetail) };
 }
 
 /**

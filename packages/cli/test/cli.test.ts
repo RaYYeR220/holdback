@@ -803,10 +803,42 @@ describe("clean, serve and help", () => {
     for (const c of ["init", "spec", "run", "drift", "watch", "status", "owed", "reseal", "clean"]) expect(r.out).toContain(c);
   });
 
-  it("serve is not available yet", async () => {
-    const r = await cli(["serve"]);
-    expect(r.code).toBe(1);
-    expect(r.err).toContain("not available yet");
+  it("serve starts the core server on 4317 by default, prints the URL and token, and closes on Ctrl-C", async () => {
+    await fixture();
+    const calls: { port: number; staticDir?: string }[] = [];
+    let closed = 0;
+    const serve = (async (_p: Project, o: { port: number; staticDir?: string }) => {
+      calls.push(o);
+      return { host: "127.0.0.1", port: o.port, token: "tok123", human: {}, close: async () => void closed++ };
+    }) as never;
+    const ctl = new AbortController();
+    const signals = () => ({ signal: ctl.signal, dispose() {} });
+    const run = cli(["serve", "--static", "dash"], { serve }, { signals });
+    await new Promise((r) => setTimeout(r, 50));
+    ctl.abort();
+    const r = await run;
+    expect(r.code).toBe(0);
+    expect(calls).toEqual([{ port: 4317, staticDir: join(appDir, "dash") }]);
+    expect(r.out).toContain("http://127.0.0.1:4317/");
+    expect(r.out).toContain("tok123");
+    expect(closed).toBe(1);
+  });
+
+  it("serve takes --port, rejects a bad one, and refuses inside Claude Code", async () => {
+    await fixture();
+    const ctl = new AbortController();
+    ctl.abort();
+    const ports: number[] = [];
+    const serve = (async (_p: Project, o: { port: number }) => (ports.push(o.port), { host: "127.0.0.1", port: o.port, token: "t", human: {}, close: async () => {} })) as never;
+    const signals = () => ({ signal: ctl.signal, dispose() {} });
+    expect((await cli(["serve", "--port", "5000"], { serve }, { signals })).code).toBe(0);
+    expect(ports).toEqual([5000]);
+    const bad = await cli(["serve", "--port", "nope"], { serve }, { signals });
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("--port");
+    const agent = await cli(["serve"], { serve, env: { CLAUDECODE: "1" } }, { signals });
+    expect(agent.code).toBe(1);
+    expect(ports).toEqual([5000]);
   });
 });
 

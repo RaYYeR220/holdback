@@ -121,8 +121,10 @@ export async function main(argv: string[], over: CtxOverrides = {}): Promise<num
 
   program
     .command("serve")
-    .description("Local dashboard (coming soon)")
-    .action(act(() => serveCmd(ctx)));
+    .description("Local dashboard: ledger, gate, live events, and answering Kane from the browser")
+    .option("--port <n>", "port to listen on (127.0.0.1 only)", String(4317))
+    .option("--static <dir>", "serve a dashboard build from this folder")
+    .action(act((o: { port?: string; static?: string }) => serveCmd(ctx, o)));
 
   for (const c of program.commands) c.exitOverride().configureOutput(output);
 
