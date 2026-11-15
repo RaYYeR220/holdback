@@ -59,6 +59,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         break;
       }
       case "spec.ingested":
+      case "spec.paused":
       case "spec.answered":
       case "redesign.dropped":
       case "drift":

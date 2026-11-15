@@ -60,6 +60,8 @@ describe("ingest / extractResume", () => {
     expect(r.sid).toBe("ext-20261115T023959-a05ab3e0-prd");
     expect(r.resume).toContain("--resume");
     expect(r.questions).toHaveLength(2);
+    // the call that paused was billed too (3.63 + 0.86 in its usage events)
+    expect(r.credits).toBe(4.49);
     const q1 = r.questions[0]!;
     expect(q1.id).toBe("q1");
     expect(q1.risk).toBe("med");

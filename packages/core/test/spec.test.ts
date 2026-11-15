@@ -69,6 +69,11 @@ describe("runSpecStage", () => {
     expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.approved", "design", "spec.approved", "tamper", "seal"]);
     expect(events.at(-2)).toMatchObject({ t: "tamper", detail: expect.stringContaining("left over from an earlier build") });
     expect(events[0]).toMatchObject({ t: "spec.ingested", sources: [{ id: "prd", cid: expect.stringMatching(/^sha256:/), status: "created", file: "PRD.md" }] });
+    // live smoke: the ledger was 4.44 credits short of the balance drop: the ingest that paused was never counted
+    expect(events[1]).toMatchObject({ t: "spec.paused", credits: 4.49 });
+    const billed = events.reduce((n, e) => n + ("credits" in e && typeof e.credits === "number" ? e.credits : 0), 0);
+    expect(reduce(events).credits).toBeCloseTo(billed, 6);
+    expect(billed).toBeGreaterThan(4.49 + 1.41);
     expect(asked).toEqual(["q1", "q2"]);
     expect(approvals).toEqual([["uc-1"], ["ac-1", "sc-1", "t-1"]]);
 

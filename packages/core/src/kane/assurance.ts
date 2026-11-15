@@ -23,6 +23,8 @@ export type Paused = {
   sid: string;
   resume: string;
   questions: PendingQuestion[];
+  /** Kane credits the call that paused consumed (it is billed whether or not the session goes on). */
+  credits: number;
 };
 
 export type IngestResult =
@@ -109,6 +111,7 @@ function pausedFrom(events: KaneEvent[]): Paused | null {
     questions: arr(p.pending_questions)
       .map(pendingQuestion)
       .filter((q): q is PendingQuestion => q !== null),
+    credits: sumCredits(events),
   };
 }
 
@@ -171,6 +174,7 @@ export async function extractResume(cwd: string, sid: string, answers: Record<st
     sid,
     resume: `kane-cli context extract --resume ${sid} --mode agent`,
     questions: [],
+    credits: 0,
   };
   return (await resumeSession(cwd, paused, answers)) as IngestResult;
 }

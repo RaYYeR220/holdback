@@ -5,7 +5,7 @@ export type RunKind = "build" | "falsify" | "exam" | "bisect";
 
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }
-  | { t: "spec.paused"; sid: string; questions: PendingQuestion[] }
+  | { t: "spec.paused"; sid: string; questions: PendingQuestion[]; credits?: number }
   | { t: "spec.answered"; sid: string; answers: Record<string, string>; credits?: number }
   | { t: "spec.approved"; refs: string[]; rejected?: string[] }
   | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number }

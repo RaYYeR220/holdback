@@ -124,8 +124,9 @@ export type ResumeCalls = { extractResume: typeof extractResume; resumeSession: 
 
 /**
  * Route every pause of a Kane session to the human until it completes. Each answer is appended
- * to the PRD's Clarifications (re-seal afterwards); credits of a resumed call are logged in
- * `spec.answered` and zeroed on the result, so the caller does not count them twice.
+ * to the PRD's Clarifications (re-seal afterwards); credits of the call that paused are logged in
+ * `spec.paused`, those of a resumed call in `spec.answered` and zeroed on the result, so the
+ * caller does not count them twice.
  */
 export async function drivePaused<R extends IngestResult | DesignResult | ReconcileResult>(
   p: Project,
@@ -138,7 +139,8 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   let r: R = first;
   while (r.status === "paused") {
     const paused = r as Paused;
-    await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions });
+    // the call that paused is billed: its credits count once, here (a resumed call's in `spec.answered`)
+    await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions, credits: paused.credits });
     const answers = await io.answer(paused.questions);
     await appendClarifications(
       p.appDir,
