@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AcNode, Graph, ReconcileResult } from "../src/kane/assurance.js";
+import type { AcNode, Graph, ListedNode, ReconcileResult, ReconcileRow } from "../src/kane/assurance.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
@@ -11,10 +12,13 @@ import type { ApprovalItem, HumanIO } from "../src/loop/human.js";
 import { reseal } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { checkSeal } from "../src/seal.js";
+import { markTampered, tamperMarker } from "../src/tamper.js";
 
 const at = "2026-11-15T00:00:00.000Z";
 const T1 = ".testmuai/tests/t-1.test.md";
 const T2 = ".testmuai/tests/t-2.test.md";
+const T3 = ".testmuai/tests/t-3.test.md";
+const OLD_PRD = "# PRD\n\nRule 1.\n";
 const saved = { ...process.env };
 let root: string;
 let p: Project;
@@ -26,11 +30,12 @@ beforeEach(async () => {
   process.env.HOLDBACK_HOME = join(root, "home");
   const appDir = join(root, "app");
   mkdirSync(appDir, { recursive: true });
-  writeFileSync(join(appDir, "PRD.md"), "# PRD\n\nRule 1.\n");
+  writeFileSync(join(appDir, "PRD.md"), OLD_PRD);
   p = await loadProject(appDir);
   mkdirSync(join(p.verifierDir, ".testmuai", "tests"), { recursive: true });
   writeFileSync(join(p.verifierDir, T1), "t-1 body");
-  await log({ at, t: "spec.ingested", sources: [{ id: "PRD.md", cid: "" }] });
+  writeFileSync(join(p.verifierDir, "PRD.md"), OLD_PRD); // the verifier's spec copy from the spec stage
+  await log({ at, t: "spec.ingested", sources: [{ id: "prd", cid: "sha256:abc", status: "created", file: "PRD.md" }] });
   await log({ at, t: "design", useCase: "uc-1", acs: [ac("ac-1", "rule 1")], tests: [{ id: "t-1", title: "t", file: T1, verifies: ["ac-1"] }], gaps: [], credits: 1 });
   await reseal(p, log);
 });
@@ -42,30 +47,36 @@ afterEach(() => {
 const editPrd = () => writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\n");
 
 type Calls = string[];
-function fakeKane(calls: Calls): DriftKane {
+type FakeOpts = { rows?: ReconcileRow[]; nodes?: ListedNode[]; extraFiles?: boolean };
+const MODIFY: ReconcileRow = { kind: "MODIFY", ref: "uc-1", why: "rule 2 added" };
+
+function fakeKane(calls: Calls, o: FakeOpts = {}): DriftKane {
   const graph: Graph = {
     useCases: [],
-    acs: [ac("ac-1", "rule 1"), ac("ac-2", "rule 2")],
+    acs: [ac("ac-1", "rule 1"), ac("ac-2", "rule 2"), ac("ac-3", "rule 3")],
     tests: [
       { id: "t-1", title: "one", file: T1, verifies: ["ac-1"] },
       { id: "t-2", title: "two", file: T2, verifies: ["ac-2"] },
+      { id: "t-3", title: "three", file: T3, verifies: ["ac-3"] },
     ],
     gaps: [],
   };
   return {
     reconcile: async (_cwd, file, sourceId, mode): Promise<ReconcileResult> => {
       calls.push(`reconcile:${mode}:${file}:${sourceId}`);
-      return { status: "complete", rows: [{ kind: "MODIFY", ref: "uc-1", why: "rule 2 added" }], summary: {}, credits: mode === "plan" ? 5 : 3 };
+      return { status: "complete", rows: o.rows ?? [MODIFY], summary: {}, credits: mode === "plan" ? 5 : 3 };
     },
-    designTests: async (cwd, uc, o) => {
-      calls.push(`design:${uc}:${o.force ? "force" : "plain"}`);
+    designTests: async (cwd, uc, opt) => {
+      calls.push(`design:${uc}:${opt.force ? "force" : "plain"}`);
       writeFileSync(join(cwd, T2), "t-2 body");
+      if (o.extraFiles) writeFileSync(join(cwd, T3), "t-3 body");
       return { status: "complete", tests: ["t-2"], acs: ["ac-2"], gaps: [], variables: [], credits: 2, next: [] };
     },
-    listNodes: async () => [
-      { id: "ac-2", label: "ac", title: "rule 2", trust: "derived" },
-      { id: "t-2", label: "test", title: "two", trust: "derived" },
-    ],
+    listNodes: async () =>
+      o.nodes ?? [
+        { id: "ac-2", label: "ac", title: "rule 2", trust: "derived" },
+        { id: "t-2", label: "test", title: "two", trust: "derived" },
+      ],
     readGraph: async () => graph,
     review: async (_cwd, refs) => void calls.push(`review:${refs.join(",")}`),
     resumeSession: async () => {
@@ -87,6 +98,10 @@ function human(calls: Calls, pick: (items: ApprovalItem[]) => string[]): HumanIO
   };
 }
 const all = (i: ApprovalItem[]) => i.map((x) => x.ref);
+const sealed = async () => (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").at(-1) as Extract<LedgerEvent, { t: "seal" }>;
+/** Verifier side only: nothing the seal covers moved. */
+const verifierClean = async () => expect(await checkSeal(p.verifierDir, (await sealed()).manifest)).toEqual([]);
+const verifierPrd = () => readFileSync(join(p.verifierDir, "PRD.md"), "utf8");
 
 describe("runDrift", () => {
   it("unchanged spec: no Kane call, no event", async () => {
@@ -102,7 +117,8 @@ describe("runDrift", () => {
     editPrd();
     const calls: Calls = [];
     const r = await runDrift(p, human(calls, all), log, { kane: fakeKane(calls) });
-    expect(r).toEqual({ changed: true });
+    expect(r).toEqual({ changed: true, applied: true });
+    // the source id is the one Kane reported at ingest and the ledger recorded
     expect(calls).toEqual([
       "reconcile:plan:PRD.md:prd",
       "approve:uc-1",
@@ -112,7 +128,7 @@ describe("runDrift", () => {
       "approve:ac-2,t-2",
       "review:ac-2,t-2",
     ]);
-    expect(readFileSync(join(p.verifierDir, "PRD.md"), "utf8")).toContain("Rule 2.");
+    expect(verifierPrd()).toContain("Rule 2.");
     const events = await readEvents(p.ledgerFile);
     const drifts = events.filter((e) => e.t === "drift");
     expect(drifts).toMatchObject([{ applied: false, credits: 5, rows: [{ kind: "MODIFY", ref: "uc-1" }] }, { applied: true, credits: 3 }]);
@@ -120,7 +136,7 @@ describe("runDrift", () => {
     const state = reduce(events);
     expect(state.acs["ac-2"]).toMatchObject({ status: "owed", tests: ["t-2"] });
     expect(state.tampered).toBe(false);
-    const manifest = (events.at(-1) as Extract<LedgerEvent, { t: "seal" }>).manifest;
+    const manifest = (await sealed()).manifest;
     expect(manifest[T2]).toBeDefined();
     expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual([]);
     const again: Calls = [];
@@ -128,22 +144,80 @@ describe("runDrift", () => {
     expect(again).toEqual([]);
   });
 
-  it("plan rows not approved: apply never called, nothing sealed", async () => {
+  it("reads the Kane source id from the ledger, never from the file name", async () => {
+    await log({ at, t: "spec.ingested", sources: [{ id: "product-req", cid: "sha256:x", status: "created", file: "PRD.md" }] });
+    await reseal(p, log);
+    editPrd();
+    const calls: Calls = [];
+    await runDrift(p, human(calls, all), log, { kane: fakeKane(calls) });
+    expect(calls[0]).toBe("reconcile:plan:PRD.md:product-req");
+  });
+
+  it("no source id on record: clear error, no reconcile call", async () => {
+    writeFileSync(p.ledgerFile, "");
+    await log({ at, t: "design", useCase: "uc-1", acs: [ac("ac-1", "rule 1")], tests: [{ id: "t-1", title: "t", file: T1, verifies: ["ac-1"] }], gaps: [], credits: 1 });
+    await log({ at, t: "spec.ingested", sources: [{ id: "x", cid: "", status: "created" }] }); // no file mapping
+    await reseal(p, log);
+    editPrd();
+    const calls: Calls = [];
+    await expect(runDrift(p, human(calls, all), log, { kane: fakeKane(calls) })).rejects.toThrow(/no Kane source id/);
+    expect(calls).toEqual([]);
+    expect(verifierPrd()).toBe(OLD_PRD);
+  });
+
+  it("plan not approved: nothing applied or sealed, verifier restored, app edit kept", async () => {
     editPrd();
     const calls: Calls = [];
     const r = await runDrift(p, human(calls, () => []), log, { kane: fakeKane(calls) });
-    expect(r).toEqual({ changed: true });
+    expect(r).toMatchObject({ changed: true, applied: false, reason: expect.stringContaining("not approved") });
     expect(calls).toEqual(["reconcile:plan:PRD.md:prd", "approve:uc-1"]);
     const events = await readEvents(p.ledgerFile);
     expect(events.filter((e) => e.t === "seal")).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({ t: "drift", applied: false });
+    expect(verifierPrd()).toBe(OLD_PRD);
+    expect(readFileSync(join(p.appDir, "PRD.md"), "utf8")).toContain("Rule 2.");
+    await verifierClean();
+  });
+
+  it("empty plan: declined, no reseal", async () => {
+    editPrd();
+    const calls: Calls = [];
+    const r = await runDrift(p, human(calls, all), log, { kane: fakeKane(calls, { rows: [] }) });
+    expect(r).toMatchObject({ changed: true, applied: false });
+    expect(calls).toEqual(["reconcile:plan:PRD.md:prd"]);
+    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "seal")).toHaveLength(1);
+    expect(verifierPrd()).toBe(OLD_PRD);
+  });
+
+  it("ARCHIVE/REMOVE-only plan: needs interactive Kane, never applied or sealed", async () => {
+    editPrd();
+    const calls: Calls = [];
+    const rows: ReconcileRow[] = [
+      { kind: "ARCHIVE", ref: "uc-2", why: "dropped" },
+      { kind: "REMOVE", ref: "uc-3", why: "gone" },
+    ];
+    const r = await runDrift(p, human(calls, all), log, { kane: fakeKane(calls, { rows }) });
+    expect(r).toMatchObject({ changed: true, applied: false, needsInteractive: true, reason: expect.stringContaining(p.verifierDir) });
+    expect(r).toMatchObject({ reason: expect.stringContaining("kane-cli maintain reconcile") });
+    expect(calls).toEqual(["reconcile:plan:PRD.md:prd"]);
+    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "seal")).toHaveLength(1);
+    expect(verifierPrd()).toBe(OLD_PRD);
+  });
+
+  it("only use-case refs are designed; other refs are shown and skipped", async () => {
+    editPrd();
+    const calls: Calls = [];
+    const rows: ReconcileRow[] = [MODIFY, { kind: "ADD", ref: "rule-9", why: "stray" }];
+    await runDrift(p, human(calls, all), log, { kane: fakeKane(calls, { rows }) });
+    expect(calls[1]).toBe("approve:uc-1,rule-9");
+    expect(calls.filter((c) => c.startsWith("design:"))).toEqual(["design:uc-1:force"]);
   });
 
   it("rolls back when a test file nobody approved appears", async () => {
     editPrd();
     const calls: Calls = [];
     const r = await runDrift(p, human(calls, (i) => i.filter((x) => x.kind !== "test").map((x) => x.ref)), log, { kane: fakeKane(calls) });
-    expect(r).toEqual({ changed: true });
+    expect(r).toMatchObject({ changed: true, applied: false });
     expect(existsSync(join(p.verifierDir, T2))).toBe(false);
     expect(readFileSync(join(p.verifierDir, T1), "utf8")).toBe("t-1 body");
     const events = await readEvents(p.ledgerFile);
@@ -151,6 +225,8 @@ describe("runDrift", () => {
     expect(events.at(-1)).toMatchObject({ t: "redesign.dropped", useCases: ["uc-1"], detail: expect.stringContaining(T2) });
     expect(calls.some((c) => c.startsWith("review:ac-2"))).toBe(false);
     expect(reduce(events).acs["ac-2"]).toBeUndefined();
+    expect(verifierPrd()).toBe(OLD_PRD);
+    await verifierClean();
   });
 
   it("rolls back when nothing was approved", async () => {
@@ -160,6 +236,91 @@ describe("runDrift", () => {
     await runDrift(p, io, log, { kane: fakeKane(calls) });
     expect(existsSync(join(p.verifierDir, T2))).toBe(false);
     expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "redesign.dropped", credits: 5 });
+    expect(verifierPrd()).toBe(OLD_PRD);
+    await verifierClean();
+  });
+
+  it("rolls back and restores the verifier when Kane throws", async () => {
+    editPrd();
+    const calls: Calls = [];
+    const kane = fakeKane(calls);
+    kane.designTests = async (cwd) => {
+      writeFileSync(join(cwd, T2), "half written");
+      throw new Error("kane crashed");
+    };
+    const r = await runDrift(p, human(calls, all), log, { kane });
+    expect(r).toMatchObject({ changed: true, applied: false, reason: expect.stringContaining("kane crashed") });
+    expect(existsSync(join(p.verifierDir, T2))).toBe(false);
+    expect(verifierPrd()).toBe(OLD_PRD);
+    await verifierClean();
+  });
+
+  it("partial approval of derived refs: only the approved test may change", async () => {
+    editPrd();
+    const calls: Calls = [];
+    const nodes: ListedNode[] = [
+      { id: "ac-2", label: "ac", title: "rule 2", trust: "derived" },
+      { id: "t-2", label: "test", title: "two", trust: "derived" },
+      { id: "ac-3", label: "ac", title: "rule 3", trust: "derived" },
+      { id: "t-3", label: "test", title: "three", trust: "derived" },
+    ];
+    const subset = (i: ApprovalItem[]) => i.filter((x) => x.ref !== "ac-3" && x.ref !== "t-3").map((x) => x.ref);
+    // Kane writes t-3 too, but the human only approved ac-2/t-2: rolled back
+    const bad = await runDrift(p, human(calls, subset), log, { kane: fakeKane(calls, { nodes, extraFiles: true }) });
+    expect(bad).toMatchObject({ applied: false, reason: expect.stringContaining(T3) });
+    expect(existsSync(join(p.verifierDir, T3))).toBe(false);
+    expect(existsSync(join(p.verifierDir, T2))).toBe(false);
+    // the same subset with only the approved file written goes through; the rejected AC is not designed in
+    const ok = await runDrift(p, human(calls, subset), log, { kane: fakeKane(calls, { nodes }) });
+    expect(ok).toEqual({ changed: true, applied: true });
+    expect(Object.keys(reduce(await readEvents(p.ledgerFile)).acs).sort()).toEqual(["ac-1", "ac-2"]);
+    expect(existsSync(join(p.verifierDir, T3))).toBe(false);
+  });
+
+  describe("preflight", () => {
+    it("refuses on a tamper marker, no Kane call", async () => {
+      editPrd();
+      await markTampered(p, "agent poked the seal");
+      const calls: Calls = [];
+      await expect(runDrift(p, human(calls, all), log, { kane: fakeKane(calls) })).rejects.toThrow(/tamper is on record/);
+      expect(calls).toEqual([]);
+    });
+
+    it("refuses on a tampered ledger, no Kane call", async () => {
+      editPrd();
+      await log({ at, t: "tamper", detail: "x" });
+      const calls: Calls = [];
+      await expect(runDrift(p, human(calls, all), log, { kane: fakeKane(calls) })).rejects.toThrow(/ledger records a tamper/);
+      expect(calls).toEqual([]);
+    });
+
+    it("records a tamper when a sealed test file changed, no Kane call", async () => {
+      editPrd();
+      writeFileSync(join(p.verifierDir, T1), "forged");
+      const calls: Calls = [];
+      await expect(runDrift(p, human(calls, all), log, { kane: fakeKane(calls) })).rejects.toThrow(/sealed files changed/);
+      expect(calls).toEqual([]);
+      expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper" });
+      expect(await tamperMarker(p)).not.toBeNull();
+    });
+
+    it("records a tamper when the app config changed too", async () => {
+      editPrd();
+      writeFileSync(join(p.appDir, "holdback.config.json"), JSON.stringify({ spec: ["PRD.md"], note: "x" }));
+      const calls: Calls = [];
+      await expect(runDrift(p, human(calls, all), log, { kane: fakeKane(calls) })).rejects.toThrow(/holdback\.config\.json/);
+      expect(calls).toEqual([]);
+    });
+
+    it("records a tamper when recordings moved since the anchor", async () => {
+      editPrd();
+      execFileSync("git", ["init", "-q"], { cwd: p.appDir });
+      await log({ at, t: "recordings", digest: "bogus", gitConfig: "bogus" });
+      const calls: Calls = [];
+      await expect(runDrift(p, human(calls, all), log, { kane: fakeKane(calls) })).rejects.toThrow(/changed since Holdback last recorded/);
+      expect(calls).toEqual([]);
+      expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper" });
+    });
   });
 });
 
@@ -180,5 +341,23 @@ describe("watchSpec", () => {
     writeFileSync(join(p.appDir, "PRD.md"), "after stop");
     await new Promise((r) => setTimeout(r, 250));
     expect(n).toBe(1);
+  });
+
+  it("survives an atomic rename-save and ignores other files", async () => {
+    let n = 0;
+    const stop = watchSpec(p, () => void n++, { debounceMs: 60 });
+    try {
+      writeFileSync(join(p.appDir, "other.txt"), "x");
+      await new Promise((r) => setTimeout(r, 250));
+      expect(n).toBe(0);
+      for (let i = 0; i < 2; i++) {
+        writeFileSync(join(p.appDir, "PRD.md.tmp"), `save ${i}`);
+        renameSync(join(p.appDir, "PRD.md.tmp"), join(p.appDir, "PRD.md"));
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(n).toBe(2);
+    } finally {
+      stop();
+    }
   });
 });

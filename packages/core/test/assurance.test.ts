@@ -92,7 +92,7 @@ describe("ingest / extractResume", () => {
     );
     process.env.FAKE_KANE_EXIT = "1";
     const r = await ingest(cwd, ["a.md"]);
-    expect(r).toEqual({ status: "error", message: "not logged in", code: "E_AUTH" });
+    expect(r).toEqual({ status: "error", message: "not logged in", code: "E_AUTH", sources: [] });
   });
 
   it("maps a bare nonzero exit with no events to status error", async () => {

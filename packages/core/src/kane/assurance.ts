@@ -153,9 +153,15 @@ function ingestOutcome(r: RunKaneResult): IngestResult {
 
 // ---------------------------------------------------------------- context ingest / extract / review
 
-export async function ingest(cwd: string, sources: string[]): Promise<IngestResult> {
+/** One source Kane registered, from its `ingested` event (`PRD.md` is `prd`). */
+export type IngestedSource = { id: string; cid: string; status: string };
+
+export async function ingest(cwd: string, sources: string[]): Promise<IngestResult & { sources: IngestedSource[] }> {
   const r = await runKane(["context", "ingest", ...sources, "--mode", "agent"], { cwd, timeoutMs: AI_TIMEOUT_MS });
-  return ingestOutcome(r);
+  const ingested = r.events
+    .filter((e) => e.type === "ingested" && str(e.source_id) !== "")
+    .map((e) => ({ id: str(e.source_id), cid: str(e.cid), status: str(e.status) }));
+  return { ...ingestOutcome(r), sources: ingested };
 }
 
 export async function extractResume(cwd: string, sid: string, answers: Record<string, string>): Promise<IngestResult> {

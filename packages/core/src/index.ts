@@ -3,6 +3,7 @@ export { parseLine, type KaneEvent } from "./kane/ndjson.js";
 export { runKane, type RunKaneOptions, type RunKaneResult } from "./kane/run.js";
 export {
   ingest,
+  type IngestedSource,
   extractResume,
   resumeSession,
   tokenize,

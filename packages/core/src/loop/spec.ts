@@ -170,7 +170,13 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<v
   // 2. ingest + extraction, answering Kane's questions
   const first = await ingest(cwd, sources);
   if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
-  await emit({ t: "spec.ingested", sources: sources.map((id) => ({ id, cid: "" })), credits: first.status === "complete" ? first.credits : 0 });
+  // Kane's own source ids (`PRD.md` is `prd`); `file` keeps the spec path each came from, so drift can map back
+  const mapped = first.sources.length === sources.length;
+  await emit({
+    t: "spec.ingested",
+    sources: first.sources.map((s, i) => ({ id: s.id, cid: s.cid, status: s.status, ...(mapped ? { file: sources[i]! } : {}) })),
+    credits: first.status === "complete" ? first.credits : 0,
+  });
   const extracted = await drive<IngestResult>(first);
   if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
 
