@@ -122,11 +122,11 @@ function hookDeps(over: Partial<HookDeps> = {}): HookDeps {
 
 type Out = { code: number; out: string; err: string };
 
-async function hook(name: string, input: unknown, over: Partial<HookDeps> = {}, env: NodeJS.ProcessEnv = {}): Promise<Out> {
+async function hook(name: string, input: unknown, over: Partial<HookDeps> = {}, env: NodeJS.ProcessEnv = {}, args: string[] = []): Promise<Out> {
   const out: string[] = [];
   const err: string[] = [];
   const raw = typeof input === "string" ? input : JSON.stringify(input);
-  const code = await main(["hook", name], {
+  const code = await main(["hook", name, ...args], {
     cwd: root, // the hooks find the project from the hook input, never from the process cwd
     out: (l) => out.push(l),
     err: (l) => err.push(l),
@@ -165,6 +165,16 @@ describe("hook guard (PreToolUse)", () => {
     expect((await hook("guard", pre("Bash", { command: "git status" }))).code).toBe(0);
     // denials are kept for the human, outside the ledger
     expect(readFileSync(join(p.home, "guard.log"), "utf8").trim().split("\n")).toHaveLength(4);
+  });
+
+  it("uses the app the installed command names (--app), wherever the session's cwd is", async () => {
+    await fixture();
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere);
+    const read = { ...pre("Read", { file_path: join(p.home, "ledger.jsonl") }), cwd: elsewhere };
+    expect((await hook("guard", read, {}, {}, ["--app", appDir])).code).toBe(2);
+    // found from the input alone, "elsewhere" would be another project with another home
+    expect((await hook("guard", read)).code).toBe(0);
   });
 
   it("prefers CLAUDE_PROJECT_DIR over the input's cwd", async () => {
@@ -220,6 +230,23 @@ describe("hook post-edit (PostToolUse, asyncRewake)", { timeout: 120_000 }, () =
     expect(world.kaneCalls).toHaveLength(1);
   });
 
+  it("a save to a git-ignored file still invalidates the last verdict; a save under .claude/ asks for no check", async () => {
+    await fixture();
+    writeFileSync(join(appDir, ".gitignore"), ".env\n");
+    expect((await hook("stop", stopIn())).code).toBe(0);
+    expect(world.kaneCalls).toHaveLength(1);
+    // the work-tree fingerprint cannot see .env; the save mark can
+    writeFileSync(join(appDir, ".env"), "LIMIT=1\n");
+    world.failing.add(T2);
+    const r = await hook("post-edit", post(".env"));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("## ac-2");
+    expect(world.kaneCalls).toEqual([["t-1", "t-2"], ["t-1", "t-2"]]); // nothing owed before: the passing ones replayed
+    const checks = world.checks;
+    expect(await hook("post-edit", post(join(".claude", "settings.local.json")))).toEqual({ code: 0, out: "", err: "" });
+    expect(world.checks).toBe(checks);
+  });
+
   it("wakes the agent with the app's start failure when the app does not boot", async () => {
     await fixture();
     world.appUp = false;
@@ -234,7 +261,7 @@ describe("hook post-edit (PostToolUse, asyncRewake)", { timeout: 120_000 }, () =
     appendFileSync(T1, "forged\n");
     const r = await hook("post-edit", post("app.js"));
     expect(r.code).toBe(2);
-    expect(r.err).toContain("Only a human can lift this");
+    expect(r.err).toContain("Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.");
     rmSync(root, { recursive: true, force: true });
     mkdirSync(appDir, { recursive: true });
     await fixture({ seal: false });
@@ -302,7 +329,7 @@ describe("hook stop (Stop)", { timeout: 180_000 }, () => {
     for (let i = 0; i < 5; i++) {
       const r = await hook("stop", stopIn());
       expect(r.code).toBe(2);
-      expect(r.err).toContain("Only a human can lift this");
+      expect(r.err).toContain("Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.");
     }
     expect(world.kaneCalls).toHaveLength(0);
     const r = await hook("stop", stopIn());
@@ -326,7 +353,7 @@ describe("hook stop (Stop)", { timeout: 180_000 }, () => {
     expect(held).not.toBeNull();
     const busy = await hook("stop", stopIn(), { waitMs: 400 });
     expect(busy.code).toBe(2);
-    expect(busy.err).toContain("Kane is still checking");
+    expect(busy.err).toContain("busy — still verifying");
     expect(world.kaneCalls).toHaveLength(0);
     // released while the next stop waits: that stop gets a real verdict
     const next = hook("stop", stopIn());
@@ -395,7 +422,7 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     expect(r.code).toBe(0);
     expect(existsSync(join(appDir, "holdback.config.json"))).toBe(true);
     const s = JSON.parse(readFileSync(settingsFile(), "utf8"));
-    const cmd = (name: string) => `"${process.execPath}" "${entry()}" hook ${name}`;
+    const cmd = (name: string) => `"${process.execPath}" "${entry()}" hook ${name} --app "${appDir}"`;
     expect(s.hooks.PreToolUse).toEqual([{ matcher: "*", hooks: [{ type: "command", command: cmd("guard"), onFailure: "block" }] }]);
     expect(s.hooks.PostToolUse).toEqual([{ matcher: "Edit|Write|MultiEdit", hooks: [{ type: "command", command: cmd("post-edit"), asyncRewake: true, timeout: 900 }] }]);
     expect(s.hooks.Stop).toEqual([{ hooks: [{ type: "command", command: cmd("stop"), timeout: 900 }] }]);
@@ -425,9 +452,10 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     writeFileSync(entry(), "// built cli\n");
     writeFileSync(join(appDir, "holdback.config.json"), '{"start":{"port":4000}}');
     mkdirSync(join(appDir, ".claude"));
+    // the human already had one of Holdback's rules and the read boundary: --remove must leave both
     const mine = {
       model: "opus",
-      permissions: { allow: ["Bash(npm test)"], deny: ["Read(./.env)"] },
+      permissions: { allow: ["Bash(npm test)"], deny: ["Read(./.env)", "Edit(./.git/**)"], blockReadsOutsideWorkingDirectories: true },
       hooks: {
         PostToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "prettier --write" }] }],
         Stop: [{ hooks: [{ type: "command", command: "say done" }] }],
@@ -446,8 +474,17 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     expect(s.hooks.Stop[0]).toEqual(mine.hooks.Stop[0]);
     expect(s.hooks.Stop).toHaveLength(2);
 
+    expect(s.permissions.deny.filter((r: string) => r === "Edit(./.git/**)")).toHaveLength(1);
+
     expect((await init([])).code).toBe(0);
     expect(readFileSync(settingsFile(), "utf8")).toBe(once);
+
+    // a re-run follows the config: the spec file's deny rule moves with it
+    writeFileSync(join(appDir, "holdback.config.json"), '{"start":{"port":4000},"spec":["docs/SPEC.md"]}');
+    expect((await init([])).code).toBe(0);
+    const moved = JSON.parse(readFileSync(settingsFile(), "utf8")).permissions.deny as string[];
+    expect(moved).toContain("Edit(./docs/SPEC.md)");
+    expect(moved).not.toContain("Edit(./PRD.md)");
 
     const removed = await init(["--remove"]);
     expect(removed.code).toBe(0);
@@ -480,7 +517,41 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("your own terminal");
     expect(readFileSync(settingsFile(), "utf8")).toBe(before);
-    const reseal = await main(["reseal", "--yes"], { cwd: appDir, out: () => {}, err: () => {}, deps: { env: { CLAUDECODE: "1" } } });
-    expect(reseal).toBe(1);
+    for (const args of [["reseal", "--yes"], ["drift"], ["spec"], ["run"], ["watch"]]) {
+      const err: string[] = [];
+      const notCalled = async () => {
+        throw new Error(`${args[0]} must not run`);
+      };
+      const code = await main(args, {
+        cwd: appDir,
+        out: () => {},
+        err: (l) => err.push(l),
+        deps: { env: { CLAUDECODE: "1" }, reseal: notCalled, runDrift: notCalled, runSpecStage: notCalled, runBuildLoop: notCalled, watchSpec: notCalled as never },
+      });
+      expect(code, args[0]).toBe(1);
+      expect(err.join("\n")).toContain(`\`holdback ${args[0]}\` is for you, not the coding agent`);
+    }
+  });
+});
+
+describe("commands that write the ledger and the background check", { timeout: 60_000 }, () => {
+  it("reseal waits for a check in flight, and fails with a clear error (changing nothing) when it does not finish", async () => {
+    await fixture();
+    const held = await acquireCheckLock(p.home, { waitMs: 0 });
+    const out: string[] = [];
+    const err: string[] = [];
+    const reseal = (lockWaitMs: number) => main(["reseal", "--yes"], { cwd: appDir, out: (l) => out.push(l), err: (l) => err.push(l), deps: { env: {}, hooks: hookDeps(), lockWaitMs } });
+    const seals = async () => (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
+
+    expect(await reseal(200)).toBe(1);
+    expect(out.join("\n")).toContain("Waiting for Holdback's background check");
+    expect(err.join("\n")).toContain("A background check is still running after 1 minute. Nothing was changed");
+    expect(await seals()).toBe(1);
+
+    const pending = reseal(20_000);
+    await new Promise((r) => setTimeout(r, 200));
+    await held!.release();
+    expect(await pending).toBe(0);
+    expect(await seals()).toBe(2);
   });
 });

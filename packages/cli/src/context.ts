@@ -1,11 +1,13 @@
 import { createInterface } from "node:readline";
 import {
+  acquireCheckLock,
   appendEvent,
   checkSeal,
   CliHumanIO,
   defaultBuildDeps,
   defaultFalsifyDeps,
   gate,
+  isAppKeyOf,
   lastSeal,
   readEvents,
   reduce,
@@ -28,7 +30,7 @@ import {
   type Project,
 } from "@holdback/core";
 import { defaultHookDeps, type HookDeps } from "./hooks.js";
-import { tamperMessage } from "./messages.js";
+import { HUMAN_ONLY, tamperMessage } from "./messages.js";
 
 /** Process exit codes: 2 is only ever a tamper, 3 a finished run that is not fully green, 130 an interrupt. */
 export const EXIT = { ok: 0, error: 1, tamper: 2, unfinished: 3, aborted: 130 } as const;
@@ -53,6 +55,8 @@ export type Deps = {
   env: NodeJS.ProcessEnv;
   /** Claude Code hooks: their background check, timing and the CLI entry they run. */
   hooks: HookDeps;
+  /** How long a command that writes the ledger waits for a background check (Claude Code hooks) to finish. */
+  lockWaitMs: number;
 };
 
 export type Ctx = {
@@ -133,6 +137,7 @@ export function defaultCtx(): Ctx {
       confirm: (q) => askYesNo(stdin, stdout, q),
       env: process.env,
       hooks: defaultHookDeps({ tests: runTests, app: startApp }),
+      lockWaitMs: 20 * 60_000,
     },
   };
 }
@@ -165,9 +170,9 @@ export async function snapshot(p: Project): Promise<Snapshot> {
   const marker = await tamperMarker(p);
   const manifest = lastSeal(events);
   const broken = manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
-  const specKeys = new Set(p.config.spec.map((f) => `app:${f.split("\\").join("/")}`));
-  const specChanged = broken.filter((k) => specKeys.has(k));
-  const changed = broken.filter((k) => !specKeys.has(k));
+  const isSpec = (k: string) => p.config.spec.some((f) => isAppKeyOf(k, f));
+  const specChanged = broken.filter(isSpec);
+  const changed = broken.filter((k) => !isSpec(k));
   const lastTamper = events.findLast((e) => e.t === "tamper");
   const fromLedger = state.tampered && lastTamper?.t === "tamper" ? lastTamper.detail : null;
   const fromDisk = changed.length > 0 ? `sealed files changed: ${changed.join(", ")}` : null;
@@ -191,6 +196,36 @@ export async function snapshot(p: Project): Promise<Snapshot> {
  */
 export function insideClaudeCode(ctx: Ctx): boolean {
   return !!ctx.deps.env.CLAUDECODE;
+}
+
+/** Refuses a human-only command inside Claude Code: true (and the reason printed) when it must not run. */
+export function refuseInsideClaudeCode(ctx: Ctx, cmd: string): boolean {
+  if (!insideClaudeCode(ctx)) return false;
+  ctx.err(HUMAN_ONLY(cmd));
+  return true;
+}
+
+/**
+ * Runs a command that writes the ledger under the check lock, so a background check started by
+ * the Claude Code hooks never sees a foreign append mid-check (which it would record as a tamper).
+ * Waits for a check in flight, saying so; fails with a clear error when the wait runs out.
+ */
+export async function withCheckLock(ctx: Ctx, p: Project, run: () => Promise<number>): Promise<number> {
+  let lock = await acquireCheckLock(p.home, { waitMs: 0 });
+  if (!lock) {
+    ctx.out("Waiting for Holdback's background check (from the Claude Code hooks) to finish…");
+    lock = await acquireCheckLock(p.home, { waitMs: ctx.deps.lockWaitMs });
+  }
+  if (!lock) {
+    const min = Math.max(1, Math.round(ctx.deps.lockWaitMs / 60_000));
+    ctx.err(`A background check is still running after ${min} minute${min === 1 ? "" : "s"}. Nothing was changed: run this again when it finishes.`);
+    return EXIT.error;
+  }
+  try {
+    return await run();
+  } finally {
+    await lock.release();
+  }
 }
 
 /** Prints why a command failed. A tamper (on record or just found) is reported as one and exits 2. */

@@ -1,5 +1,5 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, scrubAgentEnv, snapshot, type Ctx } from "./context.js";
+import { EXIT, explainFailure, ledgerLog, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { tamperMessage } from "./messages.js";
 
 export type RunOptions = {
@@ -60,9 +60,18 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
 
 /**
  * One pass of `holdback run`: drift check, build loop, falsify, and back to the build loop while
- * falsify re-opens work. Returns the exit code; never throws.
+ * falsify re-opens work. Holds the check lock throughout, so the Claude Code hooks' background
+ * check never races it on the ledger. Returns the exit code; never throws.
  */
 export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions): Promise<number> {
+  try {
+    return await withCheckLock(ctx, p, () => pipeline(ctx, p, io, signal, o));
+  } catch (e) {
+    return await explainFailure(ctx, e, p);
+  }
+}
+
+async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions): Promise<number> {
   const log = ledgerLog(p);
   let turns = 0;
   let falsified: FalsifyResult | undefined;
@@ -134,6 +143,7 @@ export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: Abo
 }
 
 export async function runCmd(ctx: Ctx, o: RunOptions): Promise<number> {
+  if (refuseInsideClaudeCode(ctx, "holdback run")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
   const io = ctx.deps.humanIO();
   const sig = ctx.signals();

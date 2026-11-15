@@ -1,9 +1,8 @@
 import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, insideClaudeCode, type Ctx } from "./context.js";
+import { EXIT, explainFailure, refuseInsideClaudeCode, type Ctx } from "./context.js";
 import { installClaudeHooks, removeClaudeHooks } from "./hooks.js";
-import { HUMAN_ONLY } from "./messages.js";
 
 export type InitOptions = {
   spec?: string[];
@@ -43,10 +42,7 @@ export async function initCmd(ctx: Ctx, o: InitOptions): Promise<number> {
   if (o.agent !== undefined) {
     try {
       if (o.remove) {
-        if (insideClaudeCode(ctx)) {
-          ctx.err(HUMAN_ONLY("holdback init --agent claude --remove"));
-          return EXIT.error;
-        }
+        if (refuseInsideClaudeCode(ctx, "holdback init --agent claude --remove")) return EXIT.error;
         return await removeClaudeHooks(ctx);
       }
       if (!(await exists(file)) || o.force) {

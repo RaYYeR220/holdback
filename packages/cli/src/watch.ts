@@ -1,9 +1,10 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, type Ctx } from "./context.js";
+import { EXIT, refuseInsideClaudeCode, type Ctx } from "./context.js";
 import { runPipeline, type RunOptions } from "./run.js";
 
 /** Watches the spec files: every edit goes through drift and then the run loop, until Ctrl-C. */
 export async function watchCmd(ctx: Ctx, o: RunOptions): Promise<number> {
+  if (refuseInsideClaudeCode(ctx, "holdback watch")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
   const io = ctx.deps.humanIO();
   const sig = ctx.signals();

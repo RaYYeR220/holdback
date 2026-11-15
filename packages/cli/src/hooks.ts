@@ -10,8 +10,10 @@ import {
   appSealFiles,
   byAcId,
   checkOnce,
+  forAgent,
   guardPayload,
   loadProject,
+  markEdit,
   readCheckState,
   writeCheckState,
   type CheckDeps,
@@ -33,17 +35,23 @@ export type HookDeps = {
   /** post-edit waits this long for more saves before it asks for a check. */
   debounceMs: number;
   pollMs: number;
-  /** How long a hook waits for its check: below the hooks' 900 s timeout, so a hook always answers itself. */
+  /** How long a hook waits for its check before it answers itself (below any timeout Claude Code may apply). */
   waitMs: number;
   /** The CLI's built entry (`dist/index.js`): the installed hook commands and the background check run it. */
   cliEntry: string;
 };
 
+export type HookOptions = { app?: string; reason?: string };
+
 /** Hook exit code that blocks (PreToolUse, Stop) or wakes the agent with stderr (PostToolUse asyncRewake). */
 const BLOCK = 2;
 /** After this many consecutive refused stops over the same owed set, the next stop is handed to a human. */
 export const STOP_BLOCK_CAP = 5;
-export const HOOK_TIMEOUT_S = 900;
+/**
+ * A hook waits at most this long for its check, then answers itself: below Claude Code's 600 s
+ * default, so even a timeout clamped to the default never cancels a Stop hook without a decision.
+ */
+export const HOOK_WAIT_MS = 540_000;
 const CONFIG = "holdback.config.json";
 /** A background check waits this long for the one in flight before it gives up. */
 const WORKER_LOCK_WAIT_MS = 60 * 60_000;
@@ -51,11 +59,13 @@ const WORKER_LOCK_WAIT_MS = 60 * 60_000;
 const HANDOFF = "Holdback: handing to a human — see `holdback status`";
 const GATE_OPEN = "Holdback: gate open — Kane passes every criterion.";
 const UNSEALED = "Holdback: nothing is sealed yet — run `holdback spec` to set up the criteria.";
-const BUSY = "Holdback: Kane is still checking your latest changes. Wait for its verdict before you finish: stop again in a minute.";
+const BUSY = "Holdback: busy — still verifying your latest changes with Kane. Wait for its verdict before you finish: stop again in a minute.";
 const DIED = "Holdback: the check stopped before Kane gave a verdict, so your latest changes are not verified. Tell the human (details in `holdback status`).";
 const EDIT_CHECKED = "Holdback: Kane checked the app after your last edit.";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** An error, fit for the agent: Holdback's folders and Kane's files are never named. */
+const agentError = (p: Project | undefined, e: unknown) => (p ? forAgent(p, errText(e)) : errText(e));
 
 export function defaultHookDeps(check: CheckDeps): HookDeps {
   const cliEntry = fileURLToPath(new URL("./index.js", import.meta.url));
@@ -65,7 +75,7 @@ export function defaultHookDeps(check: CheckDeps): HookDeps {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     debounceMs: 5_000,
     pollMs: 500,
-    waitMs: (HOOK_TIMEOUT_S - 60) * 1000,
+    waitMs: HOOK_WAIT_MS,
     cliEntry,
   };
 }
@@ -102,9 +112,10 @@ async function readInput(ctx: Ctx): Promise<HookInput> {
 }
 
 /**
- * The app a hook belongs to: the session's project root (CLAUDE_PROJECT_DIR), else the input's
- * cwd, else this process's; then up to the nearest folder holding holdback.config.json. With none
- * found it stays the start folder (a deleted config then shows up as a changed seal, not a free pass).
+ * The app a hook belongs to when the installed command does not name it (`--app`): the session's
+ * project root (CLAUDE_PROJECT_DIR), else the input's cwd, else this process's; then up to the
+ * nearest folder holding holdback.config.json. With none found it stays the start folder (a
+ * deleted config then shows up as a changed seal, not a free pass).
  */
 export function appDirOf(input: HookInput, env: NodeJS.ProcessEnv, fallback: string): string {
   const cwd = typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : undefined;
@@ -116,6 +127,9 @@ export function appDirOf(input: HookInput, env: NodeJS.ProcessEnv, fallback: str
     dir = up;
   }
 }
+
+/** The project: the `--app` the installer baked into the command, else found from the input. */
+const projectOf = (ctx: Ctx, input: HookInput, o: HookOptions) => loadProject(o.app ? path.resolve(o.app) : appDirOf(input, ctx.deps.env, ctx.cwd));
 
 const homeFile = (p: Project, name: string) => path.join(p.home, name);
 
@@ -152,34 +166,54 @@ async function awaitVerdict(
 }
 
 /** PreToolUse: the same guard the headless agent runs under. Exit 2 + reason denies; anything that goes wrong denies. */
-async function guardHook(ctx: Ctx): Promise<number> {
+async function guardHook(ctx: Ctx, o: HookOptions): Promise<number> {
+  let p: Project | undefined;
   try {
     const input = await readInput(ctx);
-    const p = await loadProject(appDirOf(input, ctx.deps.env, ctx.cwd));
+    p = await projectOf(ctx, input, o);
     const d = guardPayload(input, { home: p.home, verifierDir: p.verifierDir });
     if (d.allow) return EXIT.ok;
     await note(p, "guard.log", `deny ${String(input.tool_name)}: ${d.reason}`);
     ctx.err(d.reason);
     return BLOCK;
   } catch (e) {
-    ctx.err(`Holdback guard could not check this tool call, so it was blocked: ${errText(e)}`);
+    ctx.err(`Holdback guard could not check this tool call, so it was blocked: ${agentError(p, e)}`);
     return BLOCK;
   }
 }
 
+/** The file an Edit/Write/MultiEdit/NotebookEdit call saved, when the input names one. */
+function savedFile(input: HookInput): string | undefined {
+  const ti = input.tool_input;
+  if (typeof ti !== "object" || ti === null) return undefined;
+  const f = (ti as Record<string, unknown>).file_path ?? (ti as Record<string, unknown>).notebook_path;
+  return typeof f === "string" && f !== "" ? f : undefined;
+}
+
+/** Claude Code's own folder and Kane's copied screenshots: saving there changes nothing Kane checks. */
+function outsideTheApp(appDir: string, file: string): boolean {
+  const rel = path.relative(appDir, path.resolve(appDir, file)).split(path.sep).join("/").toLowerCase();
+  return rel === ".claude" || rel.startsWith(".claude/") || rel === "kane-evidence" || rel.startsWith("kane-evidence/");
+}
+
 /**
- * PostToolUse (Edit|Write, asyncRewake): waits for a quiet moment (a newer save takes over), asks
- * for a background check and waits for its verdict. A failure wakes the agent with the bug-report
- * brief (exit 2); a pass, a newer save or a check still running ends quietly: the Stop hook is the gate.
+ * PostToolUse (Edit|Write, asyncRewake): marks the save (`edit.at`), waits for a quiet moment (a
+ * newer save takes over), asks for a background check and waits for its verdict. A failure wakes
+ * the agent with the bug-report brief (exit 2); a pass, a newer save or a check still running ends
+ * quietly: the Stop hook is the gate.
  */
-async function postEditHook(ctx: Ctx): Promise<number> {
+async function postEditHook(ctx: Ctx, o: HookOptions): Promise<number> {
   const h = ctx.deps.hooks;
+  let p: Project | undefined;
   try {
     const input = await readInput(ctx);
-    const p = await loadProject(appDirOf(input, ctx.deps.env, ctx.cwd));
+    p = await projectOf(ctx, input, o);
+    const file = savedFile(input);
+    if (file && outsideTheApp(p.appDir, file)) return EXIT.ok;
+    // first, before anything can fail: no verdict from a check that began earlier stands any more
+    await markEdit(p.home);
     const stamp = homeFile(p, "edit.stamp");
     const token = randomUUID();
-    await mkdir(p.home, { recursive: true });
     await writeFile(stamp, token, "utf8");
     const superseded = async () => (await readFile(stamp, "utf8").catch(() => "")) !== token;
     await h.sleep(h.debounceMs);
@@ -196,7 +230,7 @@ async function postEditHook(ctx: Ctx): Promise<number> {
     ctx.err(v.status === "checked" ? `${EDIT_CHECKED}\n\n${v.brief.trimEnd()}` : v.brief.trimEnd());
     return BLOCK;
   } catch (e) {
-    ctx.err(`Holdback could not check your last edit: ${errText(e)}`);
+    ctx.err(`Holdback could not check your last edit: ${agentError(p, e)}`);
     return BLOCK;
   }
 }
@@ -239,17 +273,17 @@ async function refuseStop(ctx: Ctx, p: Project | undefined, key: string, message
 }
 
 /**
- * Stop: asks for a check of the app as it is now (Kane runs only when the work tree or the ledger
- * changed since the last one; a check in flight finishes first) and waits for the verdict. The gate
- * open → exit 0; otherwise exit 2 with the brief, the start failure, or the tamper/drift/error note.
- * Fails closed on every error, and on a verdict that does not come before the hook's own timeout.
+ * Stop: asks for a check of the app as it is now (Kane runs only when something changed since the
+ * last one; a check in flight finishes first) and waits for the verdict. The gate open → exit 0;
+ * otherwise exit 2 with the brief, the start failure, or the tamper/drift/error note. Fails closed
+ * on every error, and when no verdict comes within the wait (the check keeps running).
  */
-async function stopHook(ctx: Ctx): Promise<number> {
+async function stopHook(ctx: Ctx, o: HookOptions): Promise<number> {
   const h = ctx.deps.hooks;
   let p: Project | undefined;
   try {
     const input = await readInput(ctx);
-    p = await loadProject(appDirOf(input, ctx.deps.env, ctx.cwd));
+    p = await projectOf(ctx, input, o);
     const requestAt = Date.now();
     const v = await awaitVerdict(h, p, requestAt, h.startCheck(p.appDir, "stop"));
     if (v === "timeout" || v === "superseded") return await refuseStop(ctx, p, "busy", BUSY);
@@ -267,15 +301,15 @@ async function stopHook(ctx: Ctx): Promise<number> {
       v.status === "checked" || v.status === "unchanged" ? (v.appStartError !== undefined ? "app-down" : `owed:${[...v.owed].sort().join(",")}`) : v.status;
     return await refuseStop(ctx, p, key, v.brief);
   } catch (e) {
-    return await refuseStop(ctx, p, "error", `Holdback could not check the app: ${errText(e)}. Tell the human; your work is not verified.`);
+    return await refuseStop(ctx, p, "error", `Holdback could not check the app: ${agentError(p, e)}. Tell the human; your work is not verified.`);
   }
 }
 
 /** UserPromptSubmit: at most three lines on what is owed, added to the agent's context. Never blocks or fails the prompt. */
-async function promptHook(ctx: Ctx): Promise<number> {
+async function promptHook(ctx: Ctx, o: HookOptions): Promise<number> {
   try {
     const input = await readInput(ctx);
-    const p = await loadProject(appDirOf(input, ctx.deps.env, ctx.cwd));
+    const p = await projectOf(ctx, input, o);
     await clearBlocks(p); // a human is back: the agent gets its full count of refused stops again
     const s = await snapshot(p);
     const lines: string[] = [];
@@ -297,7 +331,7 @@ async function promptHook(ctx: Ctx): Promise<number> {
 }
 
 /** `holdback hook check`: the background check the hooks start. One at a time per project (the check lock). */
-async function checkWorker(ctx: Ctx, o: { app?: string; reason?: string }): Promise<number> {
+async function checkWorker(ctx: Ctx, o: HookOptions): Promise<number> {
   if (!o.app || (o.reason !== "edit" && o.reason !== "stop")) {
     ctx.err("hook check needs --app <dir> and --reason edit|stop");
     return EXIT.error;
@@ -317,7 +351,7 @@ async function checkWorker(ctx: Ctx, o: { app?: string; reason?: string }): Prom
   } catch (e) {
     // the hooks are waiting for a verdict: give them one that keeps the gate shut
     await note(p, "check.log", `${reason}: failed: ${errText(e)}`);
-    const brief = `# Holdback — the check did not run\n\nHoldback could not check the app: ${errText(e)}\nTell the human; Kane has not checked your latest changes.\n`;
+    const brief = `# Holdback — the check did not run\n\nHoldback could not check the app: ${agentError(p, e)}\nTell the human; Kane has not checked your latest changes.\n`;
     await writeCheckState(p.home, {
       status: "error",
       allowStop: false,
@@ -339,16 +373,16 @@ async function checkWorker(ctx: Ctx, o: { app?: string; reason?: string }): Prom
 }
 
 /** `holdback hook <name>`: one Claude Code hook. Every path answers with the hook's own exit code. */
-export async function hookCmd(ctx: Ctx, name: string, o: { app?: string; reason?: string } = {}): Promise<number> {
+export async function hookCmd(ctx: Ctx, name: string, o: HookOptions = {}): Promise<number> {
   switch (name) {
     case "guard":
-      return guardHook(ctx);
+      return guardHook(ctx, o);
     case "post-edit":
-      return postEditHook(ctx);
+      return postEditHook(ctx, o);
     case "stop":
-      return stopHook(ctx);
+      return stopHook(ctx, o);
     case "prompt":
-      return promptHook(ctx);
+      return promptHook(ctx, o);
     case "check":
       return checkWorker(ctx, o);
     default:
@@ -363,6 +397,14 @@ type Json = Record<string, unknown>;
 type HookEntry = Json & { command?: unknown };
 type HookGroup = Json & { hooks?: HookEntry[] };
 
+/**
+ * `<home>/claude-install.json`: exactly what `init --agent claude` added to the settings file, so
+ * a re-run replaces it and `--remove` takes out that and nothing else (an identical rule or hook
+ * the human had before is never recorded).
+ */
+type InstallRecord = { settings: string; hooks: { event: string; command: string }[]; deny: string[]; blockReads: boolean };
+const INSTALL_RECORD = "claude-install.json";
+
 const SETTINGS = [".claude", "settings.json"];
 const SKILL = [".claude", "skills", "holdback", "SKILL.md"];
 const SKILL_HEAD = "---\nname: holdback\n";
@@ -371,15 +413,19 @@ const CLAUDE_SETTINGS_FILES = [".claude/settings.json", ".claude/settings.local.
 
 const templateFile = (name: string) => fileURLToPath(new URL(`../templates/${name}`, import.meta.url));
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
-/** A hook command Holdback installed, wherever its CLI lived then: `"<node>" "<cli entry>" hook <name>`. */
-const isOurs = (cmd: unknown) => typeof cmd === "string" && /^"[^"]+" "[^"]+" hook (guard|post-edit|stop|prompt)\s*$/.test(cmd);
+const quote = (s: string) => `"${s}"`;
 
-/** What `--agent claude` adds to `.claude/settings.json` for this project. */
+/** What `--agent claude` puts into `.claude/settings.json` for this project. */
 async function ourSettings(p: Project, cliEntry: string): Promise<{ hooks: Record<string, HookGroup[]>; deny: string[] }> {
   const tpl = JSON.parse(await readFile(templateFile("settings.json"), "utf8")) as { hooks: Record<string, HookGroup[]> };
-  const prefix = `"${process.execPath}" "${cliEntry}"`;
+  const prefix = `${quote(process.execPath)} ${quote(cliEntry)}`;
   for (const groups of Object.values(tpl.hooks)) {
-    for (const g of groups) for (const hk of g.hooks ?? []) if (typeof hk.command === "string") hk.command = hk.command.replace("{{holdback}}", prefix);
+    for (const g of groups) {
+      for (const hk of g.hooks ?? []) {
+        // function replacements: a `$` in a path must never be read as a replacement pattern
+        if (typeof hk.command === "string") hk.command = hk.command.replace("{{holdback}}", () => prefix).replace("{{app}}", () => quote(p.appDir));
+      }
+    }
   }
   const deny = agentDenyRules({ home: p.home, verifierDir: p.verifierDir }, { protect: { appDir: p.appDir, files: [...appSealFiles(p), ...CLAUDE_SETTINGS_FILES] } });
   return { hooks: tpl.hooks, deny };
@@ -414,28 +460,60 @@ async function readSettings(file: string): Promise<Json> {
   return v;
 }
 
-/** The hooks without Holdback's commands; a group left empty by that, and an event left empty, go too. */
-function withoutOurs(hooks: Json): Json {
-  const out: Json = {};
-  for (const [event, groups] of Object.entries(hooks)) {
-    const kept: HookGroup[] = [];
-    for (const g of groups as HookGroup[]) {
-      const had = g.hooks ?? [];
-      const left = had.filter((hk) => !isOurs(hk.command));
-      if (left.length === had.length) kept.push(g);
-      else if (left.length > 0) kept.push({ ...g, hooks: left });
+async function readRecord(p: Project): Promise<InstallRecord | null> {
+  try {
+    const v = JSON.parse(await readFile(homeFile(p, INSTALL_RECORD), "utf8")) as Partial<InstallRecord>;
+    if (!Array.isArray(v.hooks) || !Array.isArray(v.deny) || typeof v.blockReads !== "boolean" || typeof v.settings !== "string") return null;
+    return v as InstallRecord;
+  } catch {
+    return null;
+  }
+}
+
+/** The settings without what `record` says Holdback added; groups, events and blocks left empty by that go too. */
+function takeOut(settings: Json, record: InstallRecord | null): Json {
+  const out: Json = { ...settings };
+  if (!record) return out;
+  if (isObj(settings.hooks)) {
+    const hooks: Json = {};
+    for (const [event, groups] of Object.entries(settings.hooks)) {
+      const ours = new Set(record.hooks.filter((h) => h.event === event).map((h) => h.command));
+      const kept: HookGroup[] = [];
+      for (const g of groups as HookGroup[]) {
+        const had = g.hooks ?? [];
+        const left = had.filter((hk) => typeof hk.command !== "string" || !ours.has(hk.command));
+        if (left.length === had.length) kept.push(g);
+        else if (left.length > 0) kept.push({ ...g, hooks: left });
+      }
+      if (kept.length > 0) hooks[event] = kept;
     }
-    if (kept.length > 0) out[event] = kept;
+    if (Object.keys(hooks).length > 0) out.hooks = hooks;
+    else delete out.hooks;
+  }
+  if (isObj(settings.permissions)) {
+    const perms: Json = { ...settings.permissions };
+    if (Array.isArray(perms.deny)) {
+      const deny = perms.deny.filter((r) => typeof r !== "string" || !record.deny.includes(r));
+      if (deny.length > 0) perms.deny = deny;
+      else delete perms.deny;
+    }
+    if (record.blockReads && perms.blockReadsOutsideWorkingDirectories === true) delete perms.blockReadsOutsideWorkingDirectories;
+    if (Object.keys(perms).length > 0) out.permissions = perms;
+    else delete out.permissions;
   }
   return out;
 }
 
-async function writeSettings(file: string, s: Json): Promise<void> {
+async function writeJson(file: string, v: unknown): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(s, null, 2) + "\n", "utf8");
+  await writeFile(file, JSON.stringify(v, null, 2) + "\n", "utf8");
 }
 
-/** Merges Holdback's hooks, deny rules and read boundary into the app's `.claude/settings.json`, and installs the skill. */
+/**
+ * Merges Holdback's hooks (each command names this app with `--app`), deny rules and read boundary
+ * into the app's `.claude/settings.json`, records what it added, and installs the skill. A re-run
+ * first takes out what the last run recorded, so the deny rules follow the current config.
+ */
 export async function installClaudeHooks(ctx: Ctx): Promise<number> {
   const entry = ctx.deps.hooks.cliEntry;
   if (!existsSync(entry)) {
@@ -452,15 +530,36 @@ export async function installClaudeHooks(ctx: Ctx): Promise<number> {
     ctx.err(`${errText(e)}. Holdback did not change it; fix it by hand and run this again.`);
     return EXIT.error;
   }
+  const base = takeOut(current, await readRecord(p));
   const ours = await ourSettings(p, entry);
-  const perms: Json = { ...(isObj(current.permissions) ? current.permissions : {}) };
+  const record: InstallRecord = { settings: file, hooks: [], deny: [], blockReads: false };
+
+  const perms: Json = { ...(isObj(base.permissions) ? base.permissions : {}) };
   const deny = [...((perms.deny as unknown[] | undefined) ?? [])];
-  for (const r of ours.deny) if (!deny.includes(r)) deny.push(r);
+  for (const r of ours.deny) {
+    if (deny.includes(r)) continue;
+    deny.push(r);
+    record.deny.push(r);
+  }
   perms.deny = deny;
-  perms.blockReadsOutsideWorkingDirectories = true;
-  const hooks = withoutOurs(isObj(current.hooks) ? current.hooks : {});
-  for (const [event, groups] of Object.entries(ours.hooks)) hooks[event] = [...((hooks[event] as HookGroup[] | undefined) ?? []), ...groups];
-  await writeSettings(file, { ...current, permissions: perms, hooks });
+  if (perms.blockReadsOutsideWorkingDirectories !== true) {
+    perms.blockReadsOutsideWorkingDirectories = true;
+    record.blockReads = true;
+  }
+  const hooks: Json = { ...(isObj(base.hooks) ? base.hooks : {}) };
+  for (const [event, groups] of Object.entries(ours.hooks)) {
+    const present = new Set(((hooks[event] as HookGroup[] | undefined) ?? []).flatMap((g) => (g.hooks ?? []).map((hk) => hk.command)));
+    const added: HookGroup[] = [];
+    for (const g of groups) {
+      const fresh = (g.hooks ?? []).filter((hk) => !present.has(hk.command));
+      if (fresh.length === 0) continue;
+      added.push({ ...g, hooks: fresh });
+      for (const hk of fresh) record.hooks.push({ event, command: hk.command as string });
+    }
+    if (added.length > 0) hooks[event] = [...((hooks[event] as HookGroup[] | undefined) ?? []), ...added];
+  }
+  await writeJson(file, { ...base, permissions: perms, hooks });
+  await writeJson(homeFile(p, INSTALL_RECORD), record);
 
   const skill = path.join(p.appDir, ...SKILL);
   const existing = await readFile(skill, "utf8").catch(() => null);
@@ -478,7 +577,7 @@ export async function installClaudeHooks(ctx: Ctx): Promise<number> {
   return EXIT.ok;
 }
 
-/** Takes Holdback's hooks, deny rules, read boundary and skill out of the app's `.claude/`; leaves everything else. */
+/** Takes out of the app's `.claude/` exactly what `init --agent claude` recorded adding, and Holdback's skill. */
 export async function removeClaudeHooks(ctx: Ctx): Promise<number> {
   const p = await loadProject(ctx.cwd);
   const file = path.join(p.appDir, ...SETTINGS);
@@ -489,27 +588,10 @@ export async function removeClaudeHooks(ctx: Ctx): Promise<number> {
     ctx.err(`${errText(e)}. Holdback did not change it; fix it by hand and run this again.`);
     return EXIT.error;
   }
-  if (existsSync(file)) {
-    const ours = await ourSettings(p, ctx.deps.hooks.cliEntry);
-    const out: Json = { ...current };
-    if (isObj(current.hooks)) {
-      const hooks = withoutOurs(current.hooks);
-      if (Object.keys(hooks).length > 0) out.hooks = hooks;
-      else delete out.hooks;
-    }
-    if (isObj(current.permissions)) {
-      const perms: Json = { ...current.permissions };
-      if (Array.isArray(perms.deny)) {
-        const deny = perms.deny.filter((r) => !ours.deny.includes(r as string));
-        if (deny.length > 0) perms.deny = deny;
-        else delete perms.deny;
-      }
-      if (perms.blockReadsOutsideWorkingDirectories === true) delete perms.blockReadsOutsideWorkingDirectories;
-      if (Object.keys(perms).length > 0) out.permissions = perms;
-      else delete out.permissions;
-    }
-    await writeSettings(file, out);
-  }
+  const record = await readRecord(p);
+  if (!record) ctx.err("warning: Holdback has no record of what it added to .claude/settings.json; the settings are left as they are.");
+  else if (existsSync(file)) await writeJson(file, takeOut(current, record));
+  await rm(homeFile(p, INSTALL_RECORD), { force: true });
   const skill = path.join(p.appDir, ...SKILL);
   const existing = await readFile(skill, "utf8").catch(() => null);
   if (existing !== null && existing.startsWith(SKILL_HEAD)) {

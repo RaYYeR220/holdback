@@ -6,23 +6,23 @@
     "PreToolUse": [
       {
         "matcher": "*",
-        "hooks": [{ "type": "command", "command": "{{holdback}} hook guard", "onFailure": "block" }]
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook guard --app {{app}}", "onFailure": "block" }]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
-        "hooks": [{ "type": "command", "command": "{{holdback}} hook post-edit", "asyncRewake": true, "timeout": 900 }]
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook post-edit --app {{app}}", "asyncRewake": true, "timeout": 900 }]
       }
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "{{holdback}} hook stop", "timeout": 900 }]
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook stop --app {{app}}", "timeout": 900 }]
       }
     ],
     "UserPromptSubmit": [
       {
-        "hooks": [{ "type": "command", "command": "{{holdback}} hook prompt" }]
+        "hooks": [{ "type": "command", "command": "{{holdback}} hook prompt --app {{app}}" }]
       }
     ]
   }

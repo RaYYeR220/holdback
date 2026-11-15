@@ -1,14 +1,14 @@
-import { holdbackGitOptions, loadProject } from "@holdback/core";
-import { EXIT, explainFailure, insideClaudeCode, ledgerLog, snapshot, type Ctx } from "./context.js";
-import { HUMAN_ONLY } from "./messages.js";
+import { holdbackGitOptions, loadProject, type Project } from "@holdback/core";
+import { EXIT, explainFailure, ledgerLog, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
 
 /** The human re-seal: accepts what is on disk now as the sealed state, which lifts a tamper. */
 export async function resealCmd(ctx: Ctx, o: { yes?: boolean }): Promise<number> {
-  if (insideClaudeCode(ctx)) {
-    ctx.err(HUMAN_ONLY("holdback reseal"));
-    return EXIT.error;
-  }
+  if (refuseInsideClaudeCode(ctx, "holdback reseal")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
+  return withCheckLock(ctx, p, () => reseal(ctx, p, o));
+}
+
+async function reseal(ctx: Ctx, p: Project, o: { yes?: boolean }): Promise<number> {
   try {
     const s = await snapshot(p);
     if (!s.manifest) {
