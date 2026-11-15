@@ -163,7 +163,8 @@ export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefi
     throw new Error(`cannot read the answers file ${file}: ${(e as NodeJS.ErrnoException).code ?? String(e)}`);
   }
   const rel = path.relative(await realpath(p.appDir), real);
-  if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+  const outside = rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  if (!outside) {
     throw new Error(`the answers file must be outside the app folder, where the coding agent cannot edit it: ${file}`);
   }
   return await ctx.deps.humanIO(real);

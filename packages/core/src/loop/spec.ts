@@ -30,9 +30,10 @@ const CONFIG_FILE = "holdback.config.json";
 
 const oneLine = (t: string): string => t.replace(/\s+/g, " ").trim();
 
+/** True when `target` is strictly below `root` (a child folder named `..x` is inside). */
 function inside(root: string, target: string): boolean {
   const rel = path.relative(root, target);
-  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
 /** Validate config.spec entries: relative, inside appDir, destination inside verifierDir. */

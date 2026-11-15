@@ -343,7 +343,11 @@ describe("--answers", () => {
     writeFileSync(join(appDir, "notes", "answers.json"), JSON.stringify(script));
     const outside = join(root, "linked");
     symlinkSync(join(appDir, "notes"), outside, "junction");
+    mkdirSync(join(appDir, "..answers"));
+    writeFileSync(join(appDir, "..answers", "x.json"), JSON.stringify(script));
     for (const args of [
+      ["spec", "--answers", "..answers/x.json"],
+      ["spec", "--answers", join(appDir, "..answers", "x.json")],
       ["spec", "--answers", "notes/answers.json"],
       ["spec", "--answers", join(outside, "answers.json")],
       ["run", "--answers", join(outside, "answers.json")],

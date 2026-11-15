@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
-import { resealAppFiles, runSpecStage } from "../src/loop/spec.js";
+import { checkSpecPaths, resealAppFiles, runSpecStage } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { loadProject } from "../src/project.js";
@@ -145,6 +145,18 @@ describe("runSpecStage", () => {
       const p = await loadProject(appDir);
       await expect(runSpecStage(p, acceptAll, async () => {})).rejects.toThrow(/spec path/);
     }
+  });
+
+  it("takes a spec in a folder whose name starts with two dots as inside the app dir", async () => {
+    const appDir = setup("# PRD\n");
+    mkdirSync(join(appDir, "..docs"));
+    writeFileSync(join(appDir, "..docs", "PRD.md"), "# PRD\n");
+    writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: ["..docs/PRD.md"] }));
+    const p = await loadProject(appDir);
+    expect(() => checkSpecPaths(p)).not.toThrow();
+    writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: ["..docs/../../x.md"] }));
+    const escaped = await loadProject(appDir);
+    expect(() => checkSpecPaths(escaped)).toThrow(/escapes the app dir/);
   });
 
   it("refuses to seal when the design approval is empty, and logs rejections", async () => {
