@@ -34,12 +34,13 @@ export function kaneCreditsText(s: LedgerState): string {
 
 /**
  * The tests whose latest Kane run proved nothing (Kane's own environment or replay, a timeout, a
- * crash), or undefined. `countOnly` (the coding agent reading `holdback status`): how many, not which or why.
+ * crash), or undefined. `countOnly` (the coding agent reading `holdback status`): how many, not
+ * which or why; pass the gate's list then, the runs that keep it shut.
  */
-export function inconclusiveLine(s: LedgerState, countOnly = false): string | undefined {
-  if (s.inconclusive.length === 0) return undefined;
-  if (countOnly) return `Inconclusive Kane runs: ${s.inconclusive.length} (not counted; the gate stays shut until Kane re-checks them)`;
-  const runs = s.inconclusive.map((u) => `${u.test}${u.turn !== undefined ? ` turn ${u.turn}` : ""}: ${u.reason}`);
+export function inconclusiveLine(list: LedgerState["inconclusive"], countOnly = false): string | undefined {
+  if (list.length === 0) return undefined;
+  if (countOnly) return `Inconclusive Kane runs: ${list.length} (not counted; the gate stays shut until Kane re-checks them)`;
+  const runs = list.map((u) => `${u.test}${u.turn !== undefined ? ` turn ${u.turn}` : ""}: ${u.reason}`);
   return `Inconclusive Kane runs (not counted; their criteria kept their status): ${runs.join("; ")}`;
 }
 

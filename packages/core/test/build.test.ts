@@ -295,33 +295,57 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(reduce(await readEvents(p.ledgerFile)).inconclusive).toEqual([]);
   });
 
-  it("keeps the gate shut while a passing criterion's latest replay proved nothing, and re-checks it before any agent turn (R34)", async () => {
+  it("stops with reason inconclusive, without another re-check, once a turn's own replay re-ran the test that proved nothing (R34)", async () => {
     await setup();
-    let t1Replays = 0;
     const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
     const { deps, calls } = fakes({
       kane: (turn, files) =>
         files.map((f) => {
           if (turn === 1) return idOf(f) === "t-3" ? fail(f) : pass(f);
-          // turn 2: ac-3 fixed, then t-1's replay (and its re-run) time out; the re-check after it passes
-          if (turn === 2 && idOf(f) === "t-1" && t1Replays < 2) return (t1Replays++, timeout(f));
-          return pass(f);
+          // turn 2: ac-3 fixed, then t-1's replay (and its re-run) time out
+          return turn === 2 && idOf(f) === "t-1" ? timeout(f) : pass(f);
         }),
     });
     const r = await runBuildLoop(p, deps, log);
-    expect(r).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
+    expect(r).toEqual({ allowStop: false, turns: 2, reason: "inconclusive", inconclusive: [{ test: "t-1", turn: 2, reason: "timeout" }] });
     expect(calls.claude).toHaveLength(2); // nothing for the agent to fix: no third turn
+    // two runs of the stuck test, not four: the replay already re-ran it, so no separate re-check
     expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
       [1, [T1, T3]],
       [2, [T3]],
       [2, [T1]],
       [2, [T1]],
-      [2, [T1]], // the re-check: only the test that proved nothing, the app started once more
     ]);
-    expect(calls.starts).toBe(3);
-    const ev = await loopEvents();
-    expect(ev.filter((e) => e.t === "turn.start")).toHaveLength(2);
-    expect(ev.at(-1)).toMatchObject({ t: "run", kind: "build", turn: 2, result: { testId: "t-1", status: "passed" } });
+    expect(calls.starts).toBe(2);
+    expect(reduce(await readEvents(p.ledgerFile)).acs["ac-1"]!.status).toBe("passing");
+  });
+
+  it("bisects a regression the re-check finds, the same way as one a turn finds", async () => {
+    await setup();
+    // ac-1 green at turn 1; by turn 3 its replay timed out twice (inconclusive), nothing else owed
+    await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T3) });
+    await log({ at, t: "turn.start", n: 2, owed: [] });
+    await log({ at, t: "turn.start", n: 3, owed: [] });
+    await log({ at, t: "run", kind: "build", turn: 3, result: { ...pass(T1), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    let t1Runs = 0;
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map((f) => (idOf(f) === "t-1" && t1Runs++ === 0 ? fail(f) : pass(f))) });
+    const blamed: unknown[][] = [];
+    deps.bisect = async (_p, ac, good, bad) => {
+      blamed.push([ac, good, bad]);
+      return null;
+    };
+    const r = await runBuildLoop(p, deps, log);
+    // the re-check found a real failure: regressed, bisected, then briefed and fixed in turn 4
+    expect(blamed).toEqual([["ac-1", 1, 3]]);
+    expect(r).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
+    const regressions = (await loopEvents()).filter((e) => e.t === "regression");
+    expect(regressions).toMatchObject([
+      { ac: "ac-1", turn: 3 },
+      { ac: "ac-1", turn: 3, detail: "bisect inconclusive: no turn could be blamed" },
+    ]);
+    expect(calls.claude[0]!.prompt).toContain("## ac-1 — ");
   });
 
   it("replays a vacuous criterion's inconclusive test with the green ones, so a conclusive run can reopen the gate", async () => {

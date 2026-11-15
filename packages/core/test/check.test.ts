@@ -366,6 +366,21 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(r.gate.inconclusive).toEqual([]);
   });
 
+  it("lets the last verdict stand while owed work keeps the lingering inconclusive test out of this check", async () => {
+    await setup();
+    // ac-1 passed, then t-1 timed out twice; ac-3 still fails on the app
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "run", kind: "build", turn: 1, result: { ...pass(T1), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    const first = await checkOnce(p, deps, log, { reason: "edit" });
+    expect(first).toMatchObject({ status: "checked", allowStop: false, owed: ["ac-3"], inconclusive: ["t-1: timeout"] });
+    expect(calls.tests).toEqual([[T3]]); // ac-3 still owed: no replay, so t-1 is not run
+    // the Stop after it, on the same tree: this check would not run t-1 either, so the verdict stands
+    const again = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(again.status).toBe("unchanged");
+    expect(calls.tests).toEqual([[T3]]);
+  });
+
   it("refuses the stop while a passing criterion's latest replay proved nothing, though nothing is owed (R34)", async () => {
     await setup();
     const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });

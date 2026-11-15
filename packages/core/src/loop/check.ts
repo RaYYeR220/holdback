@@ -240,11 +240,17 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     // a save through Claude Code after the last check began counts too: it may have touched a git-ignored file
     const editAt = await readEditAt(p.home);
     const g = gate(fresh.state);
-    // while a run that proved nothing keeps the gate shut, nothing stands: Kane must run it again
+    const owed = [...[...g.regressed].sort(byAcId), ...[...g.owed].sort(byAcId)];
+    const fileOf = testFileMap(s.events, p.verifierDir);
+    const owedFiles = filesOf(owed, fileOf);
+    // a test whose latest run proved nothing must run again, so no verdict stands when this check
+    // would run it: with nothing owed (the replay takes it) or as one of the owed tests. Next to other
+    // owed work it waits for the replay; re-running the owed batch meanwhile would only cost credits
+    const rerunsUnsure = g.inconclusive.some((u) => owed.length === 0 || owedFiles.includes(fileOf.get(u.test) ?? ""));
     const stands =
       last !== null &&
       (last.status === "checked" || last.status === "unchanged") &&
-      g.inconclusive.length === 0 &&
+      !rerunsUnsure &&
       last.tree === tree &&
       sameMark(last.ledger, s.mark) &&
       last.startedAt > editAt;
@@ -254,9 +260,6 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     }
     if (opts.signal?.aborted) return closed("aborted", ABORTED_BRIEF);
 
-    const owed = [...[...g.regressed].sort(byAcId), ...[...g.owed].sort(byAcId)];
-    const fileOf = testFileMap(s.events, p.verifierDir);
-    const owedFiles = filesOf(owed, fileOf);
     s.assertSealed(owedFiles);
     if (!turn) {
       turnBase = last?.tree ?? null;

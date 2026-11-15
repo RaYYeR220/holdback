@@ -499,9 +499,14 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(gate(state).inconclusive).toEqual([]);
   });
 
-  it("commits the Clarifications a re-design added to PRD.md before its seal", async () => {
+  it.each([
+    ["a kept", true],
+    ["a rolled-back", false],
+  ])("%s re-design: the Clarifications it added to PRD.md are committed before its seal only when it is kept", async (_which, keep) => {
     await setup();
-    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass) });
+    const head = git(appDir, "rev-parse", "HEAD");
+    const prd = readFileSync(join(appDir, "PRD.md"), "utf8");
+    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass), ...(keep ? {} : { approve: () => [] }) });
     const design = deps.kane.designTests;
     deps.kane = {
       ...deps.kane,
@@ -520,7 +525,14 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     };
     io.answer = async () => ({ q1: "Yes" });
     const r = await runFalsify(p, deps, io, log);
-    expect(r.redesigned).toEqual(["uc-1"]);
+    expect(r.redesigned).toEqual(keep ? ["uc-1"] : []);
+    if (!keep) {
+      // the rollback put PRD.md back as it was: nothing to commit, nothing left over
+      expect(git(appDir, "rev-parse", "HEAD")).toBe(head);
+      expect(readFileSync(join(appDir, "PRD.md"), "utf8")).toBe(prd);
+      expect(git(appDir, "status", "--porcelain", "--", "PRD.md")).toBe("");
+      return;
+    }
     expect(git(appDir, "log", "-1", "--format=%s")).toBe("spec: clarifications");
     expect(git(appDir, "show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
     expect(git(appDir, "status", "--porcelain", "--", "PRD.md")).toBe("");

@@ -57,7 +57,7 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
   );
   ctx.out(`Turns this run: ${turns} (turn ${s.state.turn} overall)`);
   ctx.out(`Kane credits: ${kaneCreditsText(s.state)}`);
-  const unsure = inconclusiveLine(s.state);
+  const unsure = inconclusiveLine(s.state.inconclusive);
   if (unsure) ctx.out(unsure);
   ctx.out(`Breaker spend: $${s.state.breakerUsd.toFixed(4)} of $${p.config.breaker.capUsd}`);
   if (falsified && falsified.skipped.length > 0) ctx.out(`Not attacked (breaker budget): ${falsified.skipped.join(", ")}`);

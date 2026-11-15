@@ -454,6 +454,36 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     error === undefined ? { allowStop, turns, reason } : { allowStop, turns, reason, error };
   const stopped = (r: SessionStop): BuildResult => done(false, r.reason === "unsealed" ? "error" : r.reason, r.error);
 
+  /**
+   * For each criterion a batch just regressed that was green at least two turns ago: find the turn
+   * that broke it (the app is down). True when a sealed file changed during the bisect.
+   */
+  const blame = async (regressed: Verified["regressed"]): Promise<boolean> => {
+    if (!deps.bisect) return false;
+    for (const r of regressed) {
+      const good = lastGoodTurn(s.events, r.ac, r.turn);
+      if (r.turn - good < 2) continue;
+      s.kaneWindow = true;
+      try {
+        const blamed = await deps.bisect(
+          p,
+          r.ac,
+          good,
+          r.turn,
+          { tests: deps.tests, app: deps.app, guard: () => s.tampered(false), ...(deps.balance ? { balance: deps.balance } : {}) },
+          (e) => s.emit(e as EventBody),
+        );
+        if (blamed === null) await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: "bisect inconclusive: no turn could be blamed" });
+      } catch (e) {
+        if (e instanceof BisectTampered) return true;
+        if (e instanceof LedgerTampered) throw e;
+        // best effort: the brief omits the blame line, but the failure is on record
+        await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: `bisect failed: ${errText(e)}` });
+      }
+    }
+    return false;
+  };
+
   const loop = async (): Promise<BuildResult> => {
     const maxTurns = opts.maxTurnsOverride ?? p.config.loop.maxTurns;
     if (typeof maxTurns !== "number" || !(maxTurns >= 0)) return done(false, "error", `loop.maxTurns must be a number, got ${JSON.stringify(maxTurns)}`);
@@ -493,7 +523,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         startError = await s.startApp(p.config.start.port);
         if (s.app) {
           const v = await s.recheck(state.turn, [...new Set(g.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []))], fileOf);
-          if (v.tampered) return done(false, "tamper");
+          if (v.tampered || (await blame(v.regressed))) return done(false, "tamper");
           if (s.kaneWindow) await s.closeKaneWindow();
           continue;
         }
@@ -548,31 +578,10 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
 
       // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then
       const v = await s.verify(n, owedFiles, fileOf, n % REPLAY_EVERY === 0);
-      if (v.tampered) return done(false, "tamper");
-      // a criterion that was green at least two turns ago: find the turn that broke it (the app is down)
-      if (deps.bisect) {
-        for (const r of v.regressed) {
-          const good = lastGoodTurn(s.events, r.ac, r.turn);
-          if (r.turn - good < 2) continue;
-          s.kaneWindow = true;
-          try {
-            const blamed = await deps.bisect(
-              p,
-              r.ac,
-              good,
-              r.turn,
-              { tests: deps.tests, app: deps.app, guard: () => s.tampered(false), ...(deps.balance ? { balance: deps.balance } : {}) },
-              (e) => s.emit(e as EventBody),
-            );
-            if (blamed === null) await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: "bisect inconclusive: no turn could be blamed" });
-          } catch (e) {
-            if (e instanceof BisectTampered) return done(false, "tamper");
-            if (e instanceof LedgerTampered) throw e;
-            // best effort: the brief omits the blame line, but the failure is on record
-            await s.emit({ t: "regression", ac: r.ac, turn: r.turn, detail: `bisect failed: ${errText(e)}` });
-          }
-        }
-      }
+      if (v.tampered || (await blame(v.regressed))) return done(false, "tamper");
+      // this turn already ran (and re-ran) every test that still proves nothing: no separate re-check
+      const left = gate(reduce(s.events)).inconclusive;
+      if (left.length > 0 && left.every((u) => v.ran.has(fileOf.get(u.test) ?? ""))) rechecked = true;
       // the app is down: Kane's recordings as they are now are what the next check (and run) holds them to
       if (s.kaneWindow) await s.closeKaneWindow();
     }

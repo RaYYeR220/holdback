@@ -62,7 +62,8 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   }
   ctx.out("");
   ctx.out(`Gate: ${open ? "open" : "closed"} | owed ${s.gate.owed.length + s.gate.regressed.length} | turn ${s.state.turn} | Kane credits ${kaneCreditsText(s.state)} | breaker $${s.state.breakerUsd.toFixed(4)}`);
-  const unsure = inconclusiveLine(s.state, agent);
+  // the agent's count is what keeps the gate shut
+  const unsure = agent ? inconclusiveLine(s.gate.inconclusive, true) : inconclusiveLine(s.state.inconclusive);
   if (unsure) ctx.out(unsure);
   if (s.specChanged.length > 0) ctx.out(`The spec changed since the last seal (${s.specChanged.join(", ")}): \`holdback run\` runs drift first.`);
   if (s.tamper !== null) {
