@@ -415,6 +415,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       for (const r of results) await emit({ t: "run", kind: "falsify", mutantId: id, result: r });
       (verdict === "killed" ? out.killed : verdict === "invalid" ? out.invalid : out.survived).push(ac.id);
     };
+    // at the Kane credit cap no batch could judge the mutant: never pay the breaker for one (N-m2)
+    await meter.assertBudget();
     try {
       await mkdir(path.dirname(dir), { recursive: true });
       await worktreeAdd(p.appDir, dir, "HEAD", gitOpts);

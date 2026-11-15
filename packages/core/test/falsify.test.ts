@@ -790,6 +790,19 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
   });
 
+  it("checks the Kane credit cap before the breaker's paid call: at the cap, no breaker spend and no mutant (N-m2)", async () => {
+    await setup();
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log, { kaneCap: 0 });
+    expect(r).toMatchObject({ killed: [], invalid: [], survived: [], usd: 0, reason: "kane-budget" });
+    expect(r.error).toMatch(/Kane credit cap reached/);
+    expect(calls.chat).toEqual([]);
+    expect(calls.tests).toEqual([]);
+    expect(tags(await after(since)).filter((t) => t.startsWith("mutant"))).toEqual([]);
+    expect(reduce(await readEvents(p.ledgerFile)).breakerUsd).toBe(0);
+  });
+
   it("removes a mutant worktree a crashed pass left behind, first thing, without touching the app's node_modules behind its link", async () => {
     await setup({ before: async () => markTampered(p, "an earlier tamper") });
     const stale = mutDir("m-ac-1-1");
