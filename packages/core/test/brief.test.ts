@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { runTest, type TestRunResult } from "../src/kane/testmd.js";
 import { reduce } from "../src/ledger/reduce.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { buildBrief } from "../src/loop/brief.js";
+import { contractPath } from "../src/agent/claude.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const T3 = join(here, "fixtures", "kane", "tests", "non-snap-household-above-2-461-is-not-eligible_test.md");
@@ -225,6 +226,22 @@ describe("buildBrief", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  it("names the spec files and the start command the config gives, as the contract asks (M1)", () => {
+    const brief = buildBrief(reduce([design([AC1])]), { notes: "STACK.md", spec: ["docs/SPEC.md"], start: "node server.js" });
+    expect(brief.split("\n").slice(0, 6)).toEqual([
+      "# Holdback — 1 criterion still owed",
+      "",
+      "Spec: docs/SPEC.md",
+      "Start command: `node server.js` (the app listens on the port in the PORT environment variable)",
+      "Stack and style notes: STACK.md",
+      "",
+    ]);
+    // the contract names neither: they come from the config, through the brief
+    const contract = readFileSync(contractPath(), "utf8");
+    expect(contract).not.toContain("npm start");
+    expect(contract).not.toContain("`PRD.md`");
   });
 
   it("uses the singular for one owed AC and sorts ids numerically", () => {

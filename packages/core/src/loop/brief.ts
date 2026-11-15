@@ -8,6 +8,10 @@ export type BriefOptions = {
   maxItems?: number;
   /** Stack and style notes file the agent should follow (config.agentNotes). */
   notes?: string;
+  /** The spec files (config.spec): the contract points the agent here for them (M1). */
+  spec?: string[];
+  /** The command the app starts with (config.start.cmd). */
+  start?: string;
   /**
    * Where the agent can open a failure's screenshot. When given, its result replaces Kane's own
    * path on the `Screenshot:` line, and `undefined` drops the line.
@@ -101,7 +105,12 @@ export function buildBrief(state: LedgerState, opts: BriefOptions = {}): string 
   const items = [...[...g.regressed].sort(byAcId), ...[...g.owed].sort(byAcId)];
   const n = items.length;
   const lines = [`# Holdback — ${n} ${n === 1 ? "criterion" : "criteria"} still owed`];
-  if (opts.notes) lines.push("", `Stack and style notes: ${opts.notes}`);
+  const head = [
+    ...(opts.spec && opts.spec.length > 0 ? [`Spec: ${opts.spec.join(", ")}`] : []),
+    ...(opts.start ? [`Start command: \`${opts.start}\` (the app listens on the port in the PORT environment variable)`] : []),
+    ...(opts.notes ? [`Stack and style notes: ${opts.notes}`] : []),
+  ];
+  if (head.length > 0) lines.push("", ...head);
   const max = Math.max(0, Math.floor(opts.maxItems ?? n));
   for (const ac of items.slice(0, max)) lines.push("", ...section(ac, opts));
   if (n > max) lines.push("", `…and ${n - max} more not shown.`);

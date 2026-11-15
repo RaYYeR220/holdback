@@ -633,7 +633,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       const before = await headSha(p.appDir, s.gitOpts);
       const agent = await deps.claude({
         cwd: p.appDir,
-        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, screenshot: s.screenshot, broke: blameOf(s.events) }),
+        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, spec: p.config.spec, start: p.config.start.cmd, screenshot: s.screenshot, broke: blameOf(s.events) }),
         settingsFile,
         contractFile: contractPath(),
         maxTurns: p.config.agent.maxTurnsPerCall,

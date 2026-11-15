@@ -186,6 +186,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     // briefs
     expect(calls.claude).toHaveLength(2);
     expect(calls.claude[0]!.prompt.startsWith("# Holdback — 2 criteria still owed\n")).toBe(true);
+    expect(calls.claude[0]!.prompt).toContain("\nSpec: PRD.md\nStart command: `npm start`");
     expect(calls.claude[0]!.prompt).not.toContain("Kane saw:");
     const second = calls.claude[1]!.prompt;
     expect(second.startsWith("# Holdback — 1 criterion still owed\n")).toBe(true);

@@ -216,7 +216,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
       allowStop: g.allowStop && appStartError === undefined,
       gate: g,
       ran,
-      brief: buildBrief(state, { appStartError, notes: p.config.agentNotes, screenshot: s.screenshot, broke: blameOf(s.events) }),
+      brief: buildBrief(state, { appStartError, notes: p.config.agentNotes, spec: p.config.spec, start: p.config.start.cmd, screenshot: s.screenshot, broke: blameOf(s.events) }),
       tampered: false,
       owed: owedIds(state),
       ...(appStartError !== undefined ? { appStartError } : {}),
