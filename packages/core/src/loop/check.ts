@@ -50,8 +50,9 @@ export type CheckResult = {
   /** The app did not start for this work tree: no criterion could be checked. */
   appStartError?: string;
   /**
-   * Runs of this check that proved nothing (`<test>: <why>`), after one re-run: their criteria kept
-   * their status. For the human (check.json, check.log, `holdback status`), never the agent's brief.
+   * The tests whose latest run proved nothing (`<test>: <why>`), which keep the gate shut until Kane
+   * runs them conclusively: their criteria kept their status. For the human (check.json, check.log,
+   * `holdback status`) and the Stop hook's hand-off, never the agent's brief.
    */
   inconclusive?: string[];
 };
@@ -194,9 +195,10 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     if (r.reason === "unsealed") return closed("unsealed", UNSEALED_BRIEF, r.error);
     return closed("error", ERROR_BRIEF(forAgent(p, r.error ?? "unknown error")), r.error);
   };
-  const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined, inconclusive: string[] = []): CheckResult => {
+  const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined): CheckResult => {
     const state = reduce(s.events);
     const g = gate(state);
+    const inconclusive = g.inconclusive.map((u) => `${u.test}: ${u.reason}`);
     return {
       status,
       allowStop: g.allowStop && appStartError === undefined,
@@ -237,11 +239,12 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
 
     // a save through Claude Code after the last check began counts too: it may have touched a git-ignored file
     const editAt = await readEditAt(p.home);
-    // a check with a run that proved nothing did not verify the tree: it never stands
+    const g = gate(fresh.state);
+    // while a run that proved nothing keeps the gate shut, nothing stands: Kane must run it again
     const stands =
       last !== null &&
       (last.status === "checked" || last.status === "unchanged") &&
-      !last.inconclusive?.length &&
+      g.inconclusive.length === 0 &&
       last.tree === tree &&
       sameMark(last.ledger, s.mark) &&
       last.startedAt > editAt;
@@ -251,7 +254,6 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     }
     if (opts.signal?.aborted) return closed("aborted", ABORTED_BRIEF);
 
-    const g = gate(fresh.state);
     const owed = [...[...g.regressed].sort(byAcId), ...[...g.owed].sort(byAcId)];
     const fileOf = testFileMap(s.events, p.verifierDir);
     const owedFiles = filesOf(owed, fileOf);
@@ -264,18 +266,16 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
 
     const appStartError = await s.startApp(await (deps.port ?? freePort)());
     let ran: string[] = [];
-    let inconclusive: string[] = [];
     if (appStartError === undefined) {
       const v = await s.verify(turn.n, owedFiles, fileOf, false);
       if (v.tampered) return tamper();
       const idOf = new Map([...fileOf].map(([id, f]) => [f, id]));
       ran = [...v.ran].map((f) => idOf.get(f) ?? f);
-      inconclusive = v.inconclusive;
     }
     // the app is down: Kane's recordings as they are now are what the next check holds them to
     if (s.kaneWindow) await s.closeKaneWindow();
     if (opts.reason === "stop") await endTurn(turn, appStartError === undefined);
-    return verdict("checked", ran, appStartError, inconclusive);
+    return verdict("checked", ran, appStartError);
   };
 
   let result: CheckResult;

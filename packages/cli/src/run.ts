@@ -1,6 +1,6 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
 import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
-import { inconclusiveLine, kaneCreditsText, tamperMessage } from "./messages.js";
+import { inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage } from "./messages.js";
 
 export type RunOptions = {
   maxTurns?: string | number;
@@ -22,6 +22,9 @@ function buildStop(b: BuildResult): Stop {
       return { code: EXIT.tamper, why: b.error ?? "" };
     case "aborted":
       return { code: EXIT.aborted, why: "stopped" };
+    case "inconclusive":
+      // Kane's to redo, not the agent's: more turns would not help
+      return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []) };
     case "max-turns":
       return { code: EXIT.error, why: `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}: some criteria are still owed (raise it with --max-turns or loop.maxTurns)` };
     default:
@@ -102,7 +105,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
     // the spec was edited after the last seal: Kane re-plans with the human before anything is built
     if (before.specChanged.length > 0) {
       ctx.out("spec changed since the last seal — running drift");
-      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance });
+      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err });
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
         ctx.err("Nothing was built. Fix or revert the spec edit, then run `holdback drift` or `holdback run` again.");
@@ -125,7 +128,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       }
       if (o.falsify === false) break;
       ctx.out("Gate open: falsifying the passing criteria with planted bugs");
-      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal });
+      const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err });
       falsified = f;
       stop = falsifyStop(f);
       if (stop) break;

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,6 +130,26 @@ describe("runSpecStage", () => {
     expect(git("status", "--porcelain")).toBe("A  staged.txt\n?? notes.txt");
     const events = await readEvents(p.ledgerFile);
     expect(events.filter((e) => e.t === "seal")).toHaveLength(1);
+  }, 60_000);
+
+  it("a Clarifications commit that fails is a warning: the paid spec stage still seals", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: appDir, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("add", "-A");
+    git("commit", "-q", "-m", "spec");
+    writeFileSync(join(appDir, ".git", "index.lock"), ""); // another git process holds the index
+    const p = await loadProject(appDir);
+    const warnings: string[] = [];
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e), { warn: (l) => warnings.push(l) });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^warning: could not commit the Clarifications Holdback added to PRD\.md .*index\.lock/s);
+    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "seal")).toHaveLength(1);
+    rmSync(join(appDir, ".git", "index.lock"));
+    expect(git("log", "--format=%s")).toBe("spec");
+    expect(git("status", "--porcelain")).toBe("M PRD.md");
   }, 60_000);
 
   it("leaves an unborn HEAD alone: the build loop's first commit takes the whole tree", async () => {

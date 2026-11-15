@@ -7,7 +7,7 @@ import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, PortInUse, startApp, type RunningApp } from "../app.js";
 import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { balance } from "../kane/assurance.js";
-import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
+import { notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
@@ -46,9 +46,16 @@ export type BuildOptions = {
   signal?: AbortSignal;
 };
 
-export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted";
-/** `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on record). */
-export type BuildResult = { allowStop: boolean; turns: number; reason: BuildStopReason; error?: string };
+/** `inconclusive`: only Kane runs that proved nothing keep the gate shut, and a re-check proved nothing again. */
+export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive";
+/**
+ * `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on
+ * record); `inconclusive` the tests that keep the gate shut, for an `inconclusive` stop.
+ */
+export type BuildResult = { allowStop: boolean; turns: number; reason: BuildStopReason; error?: string; inconclusive?: LedgerState["inconclusive"] };
+
+/** What a session's Kane batches did. `tampered`: a sealed file changed meanwhile, and nothing but `tamper` was logged for that batch. */
+export type Verified = { tampered: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[] };
 
 const TURN_TIMEOUT_MS = 30 * 60_000;
 /** Every Nth turn (and on the turn that empties the owed list) the passing ACs' tests are replayed too. */
@@ -323,43 +330,28 @@ export class VerifySession {
   }
 
   /**
-   * With the app up (`startApp`): Kane runs the owed files, then replays the green criteria's
-   * files that have not run yet when `replay` is set or nothing is owed any more. Build runs keep
-   * adaptive heal on: the UI is expected to change between turns. A run that failed for a reason
-   * other than the app is run once more (`runSettled`); one that does again is logged inconclusive,
-   * changes no criterion and is listed in `inconclusive` for the human. Each result is logged as
-   * `run{kind:"build", turn}` (a criterion that turns from green to failing also as `regression`),
-   * each batch as `credits`. The app is stopped afterwards whatever happens. `tampered`: a sealed
-   * file changed meanwhile, and nothing but `tamper` was logged for that batch.
+   * One Kane batch of `files` with the app up, logged as `run{kind:"build", turn}` (a criterion that
+   * turns from green to failing also as `regression`) and metered as one `credits` event. A run that
+   * failed for a reason other than the app is run once more (`runSettled`); one that does again is
+   * logged inconclusive and changes no criterion. True (and nothing logged but `tamper`) when a
+   * sealed file changed meanwhile.
    */
-  async verify(
-    turn: number,
-    owedFiles: string[],
-    fileOf: Map<string, string>,
-    replay: boolean,
-  ): Promise<{ tampered: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[]; inconclusive: string[] }> {
+  private async runLogged(turn: number, files: string[], fileOf: Map<string, string>, done: Verified): Promise<boolean> {
+    if (files.length === 0) return false;
+    this.assertSealed(files);
+    for (const f of files) done.ran.add(f);
     const { p } = this;
-    const ran = new Set<string>();
-    const regressed: { ac: string; turn: number }[] = [];
-    const inconclusive: string[] = [];
     const idOf = new Map([...fileOf].map(([id, f]) => [f, id]));
-    /** Runs one batch and logs it; true (and nothing logged but `tamper`) when a sealed file changed meanwhile. */
-    const runBatch = async (batch: string[], runOpts: Parameters<typeof runTests>[2]): Promise<boolean> => {
-      if (batch.length === 0) return false;
-      this.assertSealed(batch);
-      for (const f of batch) ran.add(f);
-      return this.meter.batch(this.source, () => logBatch(batch, runOpts));
-    };
-    const logBatch = async (batch: string[], runOpts: Parameters<typeof runTests>[2]): Promise<boolean> => {
+    const runOpts = { startUrl: `${this.app!.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
+    return this.meter.batch(this.source, async () => {
       this.kaneWindow = true;
-      const results = await runSettled(this.deps.tests, p.verifierDir, batch, runOpts);
+      const results = await runSettled(this.deps.tests, p.verifierDir, files, runOpts);
       // results produced against a changed test or variable never reach the ledger
       if (await this.tampered(false)) return true;
       const was = reduce(this.events);
       for (const [i, r] of results.entries()) {
         // a run that never read its file has no id: attribute it, so the failure counts against its ACs
-        const result = r.testId == null ? { ...r, testId: idOf.get(batch[i]!) ?? null } : r;
-        if (notAnAppFailure(result) !== undefined) inconclusive.push(inconclusiveNote(result));
+        const result = r.testId == null ? { ...r, testId: idOf.get(files[i]!) ?? null } : r;
         await this.keepEvidence(result, turn);
         await this.emit({ t: "run", kind: "build", turn, result });
       }
@@ -368,27 +360,49 @@ export class VerifySession {
         const prev = was.acs[ac.id]?.status;
         if ((prev === "passing" || prev === "proved") && ac.status === "regressed") {
           await this.emit({ t: "regression", ac: ac.id, turn });
-          regressed.push({ ac: ac.id, turn });
+          done.regressed.push({ ac: ac.id, turn });
         }
       }
       return false;
-    };
+    });
+  }
+
+  /** With the app up: the seal checked, then `batches` (each true on a tamper); the app is stopped afterwards whatever happens. */
+  private async withApp(batches: (done: Verified) => Promise<boolean>): Promise<Verified> {
+    const done: Verified = { tampered: false, ran: new Set(), regressed: [] };
     try {
-      if (await this.tampered(true)) return { tampered: true, ran, regressed, inconclusive };
-      const runOpts = { startUrl: `${this.app!.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
-      if (await runBatch(owedFiles, runOpts)) return { tampered: true, ran, regressed, inconclusive };
-      const state = reduce(this.events);
-      const left = gate(state);
-      if (replay || (left.owed.length === 0 && left.regressed.length === 0)) {
-        const green = Object.values(state.acs)
-          .filter((a) => a.status === "passing" || a.status === "proved")
-          .sort(byAcId);
-        if (await runBatch(filesOf(green, fileOf).filter((f) => !ran.has(f)), runOpts)) return { tampered: true, ran, regressed, inconclusive };
-      }
-      return { tampered: false, ran, regressed, inconclusive };
+      done.tampered = (await this.tampered(true)) || (await batches(done));
+      return done;
     } finally {
       await this.stopApp();
     }
+  }
+
+  /**
+   * With the app up (`startApp`): Kane runs the owed files, then, when `replay` is set or nothing is
+   * owed any more, the files not run yet of the green criteria and of every test whose latest run
+   * proved nothing (whatever its criteria's status: a vacuous one's too, else it would keep the
+   * gate shut for good). Build runs keep adaptive heal on: the UI is expected to change between
+   * turns. Each batch goes through `runLogged`.
+   */
+  async verify(turn: number, owedFiles: string[], fileOf: Map<string, string>, replay: boolean): Promise<Verified> {
+    return this.withApp(async (done) => {
+      if (await this.runLogged(turn, owedFiles, fileOf, done)) return true;
+      const state = reduce(this.events);
+      const left = gate(state);
+      if (!replay && (left.owed.length > 0 || left.regressed.length > 0)) return false;
+      const green = Object.values(state.acs)
+        .filter((a) => a.status === "passing" || a.status === "proved")
+        .sort(byAcId);
+      const unsure = left.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []);
+      const again = [...new Set([...filesOf(green, fileOf), ...unsure])].filter((f) => !done.ran.has(f));
+      return this.runLogged(turn, again, fileOf, done);
+    });
+  }
+
+  /** With the app up: only `files`, in one batch (`runLogged`), no replay. */
+  async recheck(turn: number, files: string[], fileOf: Map<string, string>): Promise<Verified> {
+    return this.withApp((done) => this.runLogged(turn, files, fileOf, done));
   }
 
   /**
@@ -427,7 +441,9 @@ export class VerifySession {
  * its turn, restart the app, re-run the tests of the owed ACs (plus a replay of
  * the passing ones every few turns), and repeat until the gate opens, the turn
  * cap is hit, or a sealed file, Kane's recordings, the repo's git config or the
- * ledger change behind Holdback's back.
+ * ledger change behind Holdback's back. When only Kane runs that proved nothing
+ * keep the gate shut, Kane re-runs just those tests once, with no agent turn;
+ * proving nothing again stops the loop with reason `inconclusive`.
  * `log` must append to `p.ledgerFile`: the loop re-reads and verifies it every turn.
  */
 export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: BuildOptions = {}): Promise<BuildResult> {
@@ -458,6 +474,8 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
 
     let startError: string | undefined;
     let lastTurn = 0;
+    /** Kane re-checked the tests whose latest run proved nothing, without an agent turn (once per call). */
+    let rechecked = false;
     for (;;) {
       // before any decision: a change made at any point since the last check is flagged
       const fresh = await s.refresh();
@@ -466,6 +484,21 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       const g = gate(state);
       if (g.allowStop) return done(true, "gate-open");
       if (opts.signal?.aborted) return done(false, "aborted");
+      // only Kane runs that proved nothing keep the gate shut: Kane, not the agent, has something to
+      // redo. Re-run just those tests once, under the latest turn; proving nothing again ends the run
+      if (g.owed.length === 0 && g.regressed.length === 0 && g.inconclusive.length > 0) {
+        if (rechecked) return { ...done(false, "inconclusive"), inconclusive: g.inconclusive };
+        rechecked = true;
+        const fileOf = testFileMap(s.events, p.verifierDir);
+        startError = await s.startApp(p.config.start.port);
+        if (s.app) {
+          const v = await s.recheck(state.turn, [...new Set(g.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []))], fileOf);
+          if (v.tampered) return done(false, "tamper");
+          if (s.kaneWindow) await s.closeKaneWindow();
+          continue;
+        }
+        // the app does not start: that is the agent's to fix, and the next brief says so
+      }
       const n = Math.max(state.turn, lastTurn) + 1;
       if (n > maxTurns) return done(false, "max-turns");
 

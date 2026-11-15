@@ -1,5 +1,5 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, readerView, snapshot, type Ctx } from "./context.js";
+import { EXIT, explainFailure, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
 import { inconclusiveLine, kaneCreditsText } from "./messages.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
@@ -16,13 +16,15 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   }
   // no criteria is not an open gate: nothing has been proved
   const open = s.gate.allowStop && Object.keys(s.state.acs).length > 0;
+  // the coding agent learns how many runs proved nothing, never which test or Kane's reason
+  const agent = insideClaudeCode(caller);
   const ids = (l: { id: string }[]) => l.map((a) => a.id);
 
   if (o.json) {
     ctx.out(
       JSON.stringify(
         {
-          state: s.state,
+          state: agent ? { ...s.state, inconclusive: s.state.inconclusive.length } : s.state,
           gate: {
             open,
             tampered: s.gate.tampered,
@@ -30,7 +32,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
             regressed: ids(s.gate.regressed),
             vacuous: ids(s.gate.vacuous),
             needsSpec: ids(s.gate.needsSpec),
-            inconclusive: s.gate.inconclusive.map((u) => u.test),
+            inconclusive: agent ? s.gate.inconclusive.length : s.gate.inconclusive.map((u) => u.test),
           },
           tamper: s.tamper === null ? null : { marker: s.marker, changed: s.changed },
           specChanged: s.specChanged,
@@ -60,7 +62,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   }
   ctx.out("");
   ctx.out(`Gate: ${open ? "open" : "closed"} | owed ${s.gate.owed.length + s.gate.regressed.length} | turn ${s.state.turn} | Kane credits ${kaneCreditsText(s.state)} | breaker $${s.state.breakerUsd.toFixed(4)}`);
-  const unsure = inconclusiveLine(s.state);
+  const unsure = inconclusiveLine(s.state, agent);
   if (unsure) ctx.out(unsure);
   if (s.specChanged.length > 0) ctx.out(`The spec changed since the last seal (${s.specChanged.join(", ")}): \`holdback run\` runs drift first.`);
   if (s.tamper !== null) {

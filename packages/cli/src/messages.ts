@@ -32,9 +32,23 @@ export function kaneCreditsText(s: LedgerState): string {
   return `${s.kaneCredits}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`;
 }
 
-/** The tests whose latest Kane run proved nothing (Kane's own environment or replay, a timeout, a crash), or undefined. */
-export function inconclusiveLine(s: LedgerState): string | undefined {
+/**
+ * The tests whose latest Kane run proved nothing (Kane's own environment or replay, a timeout, a
+ * crash), or undefined. `countOnly` (the coding agent reading `holdback status`): how many, not which or why.
+ */
+export function inconclusiveLine(s: LedgerState, countOnly = false): string | undefined {
   if (s.inconclusive.length === 0) return undefined;
+  if (countOnly) return `Inconclusive Kane runs: ${s.inconclusive.length} (not counted; the gate stays shut until Kane re-checks them)`;
   const runs = s.inconclusive.map((u) => `${u.test}${u.turn !== undefined ? ` turn ${u.turn}` : ""}: ${u.reason}`);
   return `Inconclusive Kane runs (not counted; their criteria kept their status): ${runs.join("; ")}`;
+}
+
+/** Why `holdback run` stopped when only Kane runs that proved nothing, even re-checked, keep the gate shut. */
+export function inconclusiveStop(list: LedgerState["inconclusive"]): string {
+  const runs = list.map((u) => `${u.test}${u.turn !== undefined ? ` (turn ${u.turn})` : ""}: ${u.reason}`).join("; ");
+  return [
+    `Kane could not finish checking ${list.length === 1 ? "this test" : "these tests"}, even re-run: ${runs}.`,
+    "Their criteria keep their status and the gate stays shut; the coding agent has nothing to fix for them.",
+    "Look at what Kane reported (`holdback status`), then run `holdback run` again.",
+  ].join("\n");
 }

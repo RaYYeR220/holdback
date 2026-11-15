@@ -227,7 +227,8 @@ async function postEditHook(ctx: Ctx, o: HookOptions): Promise<number> {
       ctx.err(DIED);
       return BLOCK;
     }
-    if (v.allowStop || v.status === "unchanged" || v.status === "unsealed") return EXIT.ok;
+    // nothing the agent can fix (only runs that proved nothing keep the gate shut): the Stop hook hands it over
+    if (v.allowStop || v.status === "unchanged" || v.status === "unsealed" || verifierOnly(v)) return EXIT.ok;
     ctx.err(v.status === "checked" ? `${EDIT_CHECKED}\n\n${v.brief.trimEnd()}` : v.brief.trimEnd());
     return BLOCK;
   } catch (e) {
@@ -235,6 +236,10 @@ async function postEditHook(ctx: Ctx, o: HookOptions): Promise<number> {
     return BLOCK;
   }
 }
+
+/** A checked verdict whose gate only Kane runs that proved nothing keep shut: nothing owed, the app up. */
+const verifierOnly = (v: CheckState) =>
+  (v.status === "checked" || v.status === "unchanged") && v.appStartError === undefined && v.owed.length === 0 && (v.inconclusive?.length ?? 0) > 0;
 
 type Blocks = { key: string; count: number };
 const BLOCKS_FILE = "stop-blocks.json";
@@ -255,11 +260,11 @@ const clearBlocks = (p: Project) => rm(homeFile(p, BLOCKS_FILE), { force: true }
  * the same owed set (`key`): then the stop goes through and the human is told. It stays handed over
  * until the owed set changes, the gate opens or the human sends a prompt.
  */
-async function refuseStop(ctx: Ctx, p: Project | undefined, key: string, message: string): Promise<number> {
+async function refuseStop(ctx: Ctx, p: Project | undefined, key: string, message: string, cap: number = STOP_BLOCK_CAP): Promise<number> {
   if (p) {
     const prev = await readBlocks(p);
     const count = prev && prev.key === key ? prev.count : 0;
-    if (count >= STOP_BLOCK_CAP) {
+    if (count >= cap) {
       ctx.out(JSON.stringify({ systemMessage: HANDOFF }));
       return EXIT.ok;
     }
@@ -298,6 +303,8 @@ async function stopHook(ctx: Ctx, o: HookOptions): Promise<number> {
       ctx.out(JSON.stringify({ systemMessage: GATE_OPEN }));
       return EXIT.ok;
     }
+    // only Kane runs that proved nothing keep the gate shut: nothing for the agent to do, a human's at once
+    if (verifierOnly(v)) return await refuseStop(ctx, p, "verifier", v.brief, 0);
     const key =
       v.status === "checked" || v.status === "unchanged" ? (v.appStartError !== undefined ? "app-down" : `owed:${[...v.owed].sort().join(",")}`) : v.status;
     return await refuseStop(ctx, p, key, v.brief);

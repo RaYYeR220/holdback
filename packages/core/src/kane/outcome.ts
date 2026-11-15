@@ -9,18 +9,18 @@ const NOT_THE_APP = new Set(["environment_issue", "automation_bug"]);
 
 /**
  * Why a run that did not pass says nothing about the app, or undefined when it did pass or failed
- * on the app. Not the app's: a verdict family in `NOT_THE_APP`, a Holdback timeout, a crash (no
- * complete run, or Kane ending neither passed nor failed with no verdict family), or a run already
- * found inconclusive. Everything else is a product failure. Pure: the ledger reducer reads old and
- * new results through it.
+ * on the app. The verdict family is read first, whatever the run's status: one in `NOT_THE_APP` is
+ * not the app's, any other is. With no family: a Holdback timeout or a crash (no complete run, or
+ * Kane ending neither passed nor failed) is not the app's; a plain failure is. A run already found
+ * inconclusive stays so. Pure: the ledger reducer reads old and new results through it.
  */
 export function notAnAppFailure(r: TestRunResult): string | undefined {
   if (r.inconclusive !== undefined) return r.inconclusive;
   if (r.status === "passed") return undefined;
-  if (r.status === "error") return r.reason === "timeout" ? "timeout" : `crash: ${r.reason ?? "no result"}`;
   const family = r.verdict?.family?.trim().toLowerCase() ?? "";
   if (NOT_THE_APP.has(family)) return `${family}${r.verdict?.bugTitle ? `: ${r.verdict.bugTitle}` : ""}`;
   if (family !== "") return undefined;
+  if (r.status === "error") return r.reason === "timeout" ? "timeout" : `crash: ${r.reason ?? "no result"}`;
   // Kane finished without a pass or a fail and blamed nothing: not an assertion failure
   if (r.status === "broken") return `crash: ${r.reason ?? "Kane reported no outcome"}`;
   return undefined;

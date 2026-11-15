@@ -210,6 +210,14 @@ describe("status and owed", () => {
     const doc = JSON.parse((await cli(["status", "--json"])).out);
     expect(doc.state).toMatchObject({ credits: 15, kaneCredits: 16.5, kaneUnmeasured: 0, inconclusive: [{ test: "t-2", turn: 2, reason: "timeout" }] });
 
+    // inside Claude Code the agent sees how many, never which test or why
+    const agent = await cli(["status"], { env: { CLAUDECODE: "1" } });
+    expect(agent.out).toContain("Inconclusive Kane runs: 1");
+    expect(agent.out).not.toMatch(/t-2 turn 2|timeout/);
+    const agentJson = JSON.parse((await cli(["status", "--json"], { env: { CLAUDECODE: "1" } })).out);
+    expect(agentJson.state.inconclusive).toBe(1);
+    expect(JSON.stringify(agentJson)).not.toContain("timeout");
+
     await log({ at, t: "credits", source: "check", delta: null, perRunSum: 0, error: "balance: offline" });
     expect((await cli(["status"])).out).toContain("Kane credits 16.5 (per-run sum 15; 1 batch without a balance reading)");
   });
@@ -449,6 +457,18 @@ describe("run", () => {
     expect(r.err).toContain("run `holdback spec` first");
     expect(s.calls).toEqual([]);
     expect(s.io.closed).toBe(1);
+  });
+
+  it("stops with exit 3 and names the tests when only Kane's own failures keep the gate shut, never suggesting more turns", async () => {
+    await greenFixture();
+    const s = stages();
+    const inconclusive = [{ test: "t-1", turn: 3, reason: "environment_issue: Browser target closed" }];
+    const r = await cli(["run"], { ...s.deps, runBuildLoop: async () => ({ allowStop: false, turns: 0, reason: "inconclusive", inconclusive }) });
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("t-1 (turn 3): environment_issue: Browser target closed");
+    expect(r.err).toContain("holdback status");
+    expect(r.err).not.toMatch(/max-turns|maxTurns/);
+    expect(r.out).toContain("Gate: ");
   });
 
   it("builds, falsifies, and prints the one-screen summary", async () => {

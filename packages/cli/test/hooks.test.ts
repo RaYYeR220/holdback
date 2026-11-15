@@ -307,6 +307,20 @@ describe("hook stop (Stop)", { timeout: 180_000 }, () => {
     expect(ends).toMatchObject([{ n: 1, commit: "" }, { n: 2, commit: "", filesChanged: ["app.js"] }]);
   });
 
+  it("hands a gate shut only by runs Kane could not finish to a human at once; post-edit does not wake the agent for it", async () => {
+    await fixture();
+    await log({ at, t: "run", kind: "build", turn: 1, result: result(T1, "passed") });
+    await log({ at, t: "run", kind: "build", turn: 1, result: result(T2, "passed") });
+    world.stuck.add(T1);
+    const edit = await hook("post-edit", post("app.js"));
+    expect(edit).toMatchObject({ code: 0, err: "" });
+    const r = await hook("stop", stopIn());
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({ systemMessage: "Holdback: handing to a human — see `holdback status`" });
+    expect(r.err).toBe("");
+    expect(JSON.parse(readFileSync(join(p.home, "check.json"), "utf8"))).toMatchObject({ allowStop: false, owed: [], inconclusive: ["t-1: timeout"] });
+  });
+
   it("hands over to a human on the 6th consecutive block with the same owed set, and starts counting again after a prompt", async () => {
     await fixture();
     world.failing.add(T2);

@@ -10,7 +10,7 @@ export async function specCmd(ctx: Ctx, o: SpecOptions = {}): Promise<number> {
   const io = await openHumanIO(ctx, p, o.answers);
   try {
     const locked = await withCheckLock(ctx, p, async () => {
-      await ctx.deps.runSpecStage(p, io, ledgerLog(p), { balance: ctx.deps.balance });
+      await ctx.deps.runSpecStage(p, io, ledgerLog(p), { balance: ctx.deps.balance, warn: ctx.err });
       return EXIT.ok;
     });
     if (locked !== EXIT.ok) return locked;

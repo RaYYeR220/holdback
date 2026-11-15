@@ -11,6 +11,8 @@ import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
+import { gate } from "../src/ledger/gate.js";
+import { runBuildLoop } from "../src/loop/build.js";
 import { falsifyVerdict, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { ApprovalItem, HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
@@ -461,6 +463,68 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       ["design", 11, 9],
       ["falsify", 6, 0],
     ]);
+  });
+
+  it("a survivor's test that proved nothing twice in the closing replay is re-checked by the next build loop, and the gate can open", async () => {
+    await setup();
+    const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
+    const { deps, io } = fakes({
+      mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass),
+      approve: () => [], // the re-design is turned down: ac-3 stays vacuous
+      replay: (files) => files.map((f) => (idOf(f) === "t-3" ? timeout(f) : pass(f))),
+    });
+    await runFalsify(p, deps, io, log);
+    let state = reduce(await readEvents(p.ledgerFile));
+    expect(state.acs["ac-3"]!.status).toBe("vacuous");
+    expect(gate(state)).toMatchObject({ allowStop: false, owed: [], regressed: [], inconclusive: [{ test: "t-3", reason: "timeout" }] });
+
+    // the next `holdback run`: Kane re-checks t-3 first; the agent is never called
+    const ran: string[][] = [];
+    const r = await runBuildLoop(
+      p,
+      {
+        guardCommand: "node guard.js",
+        claude: async () => {
+          throw new Error("no agent turn expected");
+        },
+        app: async (o) => ({ url: `http://127.0.0.1:${o.port}`, logs: () => "", stop: async () => {} }),
+        tests: async (_cwd, files) => (ran.push([...files]), files.map(pass)),
+      },
+      log,
+    );
+    expect(r).toEqual({ allowStop: true, turns: 0, reason: "gate-open" });
+    expect(ran).toEqual([[T3]]);
+    state = reduce(await readEvents(p.ledgerFile));
+    expect(state.acs["ac-3"]!.status).toBe("vacuous");
+    expect(gate(state).inconclusive).toEqual([]);
+  });
+
+  it("commits the Clarifications a re-design added to PRD.md before its seal", async () => {
+    await setup();
+    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass) });
+    const design = deps.kane.designTests;
+    deps.kane = {
+      ...deps.kane,
+      designTests: async (...a) => {
+        await design(...a);
+        return {
+          status: "paused",
+          verb: "design",
+          sid: "s1",
+          resume: "kane-cli design tests --resume s1 --mode agent",
+          questions: [{ id: "q1", text: "Is $2,462 above the limit?", risk: "low", rationale: "", options: [{ label: "Yes" }], recommendedIndex: 0, allowFreeText: false }],
+          credits: 2,
+        };
+      },
+      resumeSession: async () => ({ status: "complete", tests: ["t-3b"], acs: ["ac-3"], gaps: [], variables: [], credits: 7, next: [] }),
+    };
+    io.answer = async () => ({ q1: "Yes" });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.redesigned).toEqual(["uc-1"]);
+    expect(git(appDir, "log", "-1", "--format=%s")).toBe("spec: clarifications");
+    expect(git(appDir, "show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
+    expect(git(appDir, "status", "--porcelain", "--", "PRD.md")).toBe("");
+    expect(readFileSync(join(appDir, "PRD.md"), "utf8")).toContain("- Q: Is $2,462 above the limit? — A: Yes");
   });
 
   it("rolls the verifier back and keeps the survivor vacuous when the human approves none of the re-design", async () => {

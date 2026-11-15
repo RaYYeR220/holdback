@@ -352,6 +352,20 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked", allowStop: true });
   });
 
+  it("replays a vacuous criterion's inconclusive test with the green ones, so the gate can open again", async () => {
+    await setup();
+    await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T3) });
+    await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "p", model: "m", usd: 0, verdict: "survived" });
+    await log({ at, t: "run", kind: "build", turn: 1, result: { ...pass(T1), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    const r = await checkOnce(p, deps, log, { reason: "edit" });
+    expect(calls.tests).toEqual([[T3, T1]]);
+    expect(r).toMatchObject({ status: "checked", allowStop: true, owed: [] });
+    expect(r.gate.inconclusive).toEqual([]);
+  });
+
   it("refuses the stop while a passing criterion's latest replay proved nothing, though nothing is owed (R34)", async () => {
     await setup();
     const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });

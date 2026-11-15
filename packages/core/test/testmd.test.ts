@@ -279,6 +279,9 @@ describe("notAnAppFailure / runSettled (R34: Kane's verdict family gates everyth
     expect(notAnAppFailure(base({ status: "broken", verdict: verdict("platform_hiccup") }))).toBeUndefined();
     expect(notAnAppFailure(base({ verdict: verdict("environment issue") }))).toBeUndefined();
     expect(notAnAppFailure(base({ status: "error", reason: "timeout" }))).toBe("timeout");
+    // the family is read first, for a timeout or crash too: Kane's own application_issue on record is the app's failure
+    expect(notAnAppFailure(base({ status: "error", reason: "timeout", verdict: verdict("application_issue") }))).toBeUndefined();
+    expect(notAnAppFailure(base({ status: "error", reason: "crashed", verdict: verdict("Environment_Issue") }))).toBe("environment_issue: something broke");
     expect(notAnAppFailure(base({ status: "error", reason: "spawn kane-cli ENOENT" }))).toBe("crash: spawn kane-cli ENOENT");
     expect(notAnAppFailure(base({ status: "broken", reason: "Kane exited mid-run" }))).toBe("crash: Kane exited mid-run");
     expect(notAnAppFailure(base({ inconclusive: "timeout" }))).toBe("timeout");

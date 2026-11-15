@@ -18,7 +18,7 @@ import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamp
 import { byAcId } from "./brief.js";
 import { assertTestsSealed, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
-import { appSealFiles, drivePaused, reseal } from "./spec.js";
+import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, reseal, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Verdict = Extract<LedgerEvent, { t: "mutant" }>["verdict"];
@@ -264,6 +264,8 @@ export async function linkAppNodeModules(p: Project, dir: string): Promise<void>
 export type FalsifyOptions = {
   /** Aborts the pass: it stops after the current AC, still replays the real build, and returns reason `aborted`. */
   signal?: AbortSignal;
+  /** Warnings that do not stop the pass. Default: stderr. */
+  warn?: Warn;
 };
 
 /**
@@ -493,8 +495,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
    * test file Kane added or changed is one the human approved here.
    */
   const redesign = async (ucs: string[], survivors: string[]): Promise<void> => {
+    const clarifiedBefore = await clarifiedFile(p);
     // one metered Kane batch: the designs and the human's approval (the re-seal after it is local)
     if (!(await meter.batch("design", () => designAgain(ucs, survivors)))) return;
+    // kept only now: a rollback restores PRD.md, and a commit made right after the append would be left behind
+    await commitClarifications(p, clarifiedBefore, opts.warn);
     await reseal(p, append, gitOpts); // also anchors the recordings as they are now
     kaneWindow = false;
     manifest = lastSeal(events);

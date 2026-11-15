@@ -187,6 +187,53 @@ describe("runDrift", () => {
     expect(events[1]).toMatchObject({ source: "drift", delta: 5, perRunSum: 5 });
   });
 
+  it("commits the Clarifications it added to PRD.md before the re-seal; a declined drift commits nothing", async () => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: p.appDir, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("add", "-A");
+    git("commit", "-q", "-m", "spec");
+    await reseal(p, log); // anchors the repo's git config
+    const pausing = (calls: Calls): DriftKane => {
+      const base = fakeKane(calls);
+      let asked = false;
+      return {
+        ...base,
+        reconcile: async (cwd, file, sourceId, mode) => {
+          if (mode === "plan" && !asked) {
+            asked = true;
+            return {
+              status: "paused",
+              verb: "reconcile",
+              sid: "s9",
+              resume: "kane-cli maintain reconcile --resume s9 --mode agent",
+              questions: [{ id: "q1", text: "Does rule 2 replace rule 1?", risk: "low", rationale: "", options: [{ label: "No" }], recommendedIndex: 0, allowFreeText: false }],
+              credits: 1,
+            };
+          }
+          return base.reconcile(cwd, file, sourceId, mode);
+        },
+        resumeSession: async () => ({ status: "complete", rows: [MODIFY], summary: {}, credits: 4 }),
+      };
+    };
+    const answering = (pick: (i: ApprovalItem[]) => string[]): HumanIO => ({ answer: async () => ({ q1: "No" }), approve: async (items) => pick(items) });
+
+    editPrd();
+    const declined = await runDrift(p, answering(() => []), log, { kane: pausing([]) });
+    expect(declined).toMatchObject({ changed: true, applied: false });
+    expect(git("log", "--format=%s")).toBe("spec");
+
+    const r = await runDrift(p, answering(all), log, { kane: pausing([]) });
+    expect(r).toEqual({ changed: true, applied: true });
+    expect(git("log", "--format=%s")).toBe("spec: clarifications\nspec");
+    expect(git("show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
+    const committed = git("show", "HEAD:PRD.md");
+    expect(committed).toContain("Rule 2."); // the human's spec edit goes in with them
+    expect(committed).toContain("- Q: Does rule 2 replace rule 1? — A: No");
+    expect(git("status", "--porcelain", "--", "PRD.md")).toBe("");
+  }, 60_000); // a dozen git spawns: slow on Windows under a parallel suite
+
   it("plan not approved: nothing applied or sealed, verifier restored, app edit kept", async () => {
     editPrd();
     const calls: Calls = [];

@@ -157,25 +157,40 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   return r as Exclude<R, Paused>;
 }
 
-const readOrNull = (file: string) => readFile(file).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? null : Promise.reject(e)));
+/** Where a stage reports what went wrong without stopping it (the CLI prints it). */
+export type Warn = (line: string) => void;
+const stderrWarn: Warn = (line) => void process.stderr.write(line + "\n");
+
+/** The app's PRD.md as it is now (null when there is none): what `commitClarifications` compares with. */
+export async function clarifiedFile(p: Project): Promise<Buffer | null> {
+  return readFile(path.join(p.appDir, CLARIFIED_FILE)).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? null : Promise.reject(e)));
+}
 
 /**
- * The spec stage's own Clarifications go into the app repo as a commit of their own, before the
- * seal, so the agent's first turn neither carries nor lists them. Only that file is committed;
- * nothing else the human has staged or not. No repo, or an unborn HEAD (the build loop's first
- * commit then takes the whole tree): nothing to do. Git runs with Holdback's safe options.
+ * The Clarifications a stage (spec, drift, a falsify re-design) appended to PRD.md since `before`
+ * go into the app repo as a commit of their own, before that stage's seal, so no agent turn
+ * carries or lists them. Only that file is committed; nothing else the human has staged or not.
+ * No repo, or an unborn HEAD (the build loop's first commit then takes the whole tree): nothing to
+ * do. Git runs with Holdback's safe options. A commit that fails is a warning, never a failed
+ * stage (that would throw away what Kane was paid for): PRD.md then goes into the next commit.
  */
-async function commitClarifications(p: Project, before: Buffer | null): Promise<void> {
-  const now = await readOrNull(path.join(p.appDir, CLARIFIED_FILE));
-  if (now === null || (before !== null && now.equals(before))) return;
-  const gitOpts = await holdbackGitOptions(p.home);
-  if (!(await isRepoRoot(p.appDir, gitOpts)) || (await headSha(p.appDir, gitOpts)) === null) return;
-  await commitPaths(p.appDir, "spec: clarifications", [CLARIFIED_FILE], gitOpts);
+export async function commitClarifications(p: Project, before: Buffer | null, warn: Warn = stderrWarn): Promise<void> {
+  try {
+    const now = await clarifiedFile(p);
+    if (now === null || (before !== null && now.equals(before))) return;
+    const gitOpts = await holdbackGitOptions(p.home);
+    if (!(await isRepoRoot(p.appDir, gitOpts)) || (await headSha(p.appDir, gitOpts)) === null) return;
+    await commitPaths(p.appDir, "spec: clarifications", [CLARIFIED_FILE], gitOpts);
+  } catch (e) {
+    warn(`warning: could not commit the Clarifications Holdback added to ${CLARIFIED_FILE} (${e instanceof Error ? e.message : String(e)}); they will go into the next commit`);
+  }
 }
 
 export type SpecDeps = {
   /** Kane's balance, read around the ingest and each design (`credits` events); leave out to log none. */
   balance?: BalanceReader;
+  /** Warnings that do not stop the stage. Default: stderr. */
+  warn?: Warn;
 };
 
 export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: SpecDeps = {}): Promise<void> {
@@ -190,7 +205,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first);
 
   checkSpecPaths(p);
-  const clarifiedBefore = await readOrNull(path.join(p.appDir, CLARIFIED_FILE));
+  const clarifiedBefore = await clarifiedFile(p);
 
   // 1. copy the spec into the verifier store (kept outside the app repo)
   for (const rel of p.config.spec) {
@@ -258,6 +273,6 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
 
   // 6. point the tests at the app, commit Holdback's own spec edit, then seal (a fresh seal is the only thing that lifts a tamper)
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
-  await commitClarifications(p, clarifiedBefore);
+  await commitClarifications(p, clarifiedBefore, deps.warn);
   await reseal(p, log);
 }

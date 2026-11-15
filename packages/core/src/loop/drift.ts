@@ -24,7 +24,7 @@ import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js"
 import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed } from "./falsify.js";
 import type { HumanIO } from "./human.js";
-import { checkSpecPaths, drivePaused, reseal } from "./spec.js";
+import { checkSpecPaths, clarifiedFile, commitClarifications, drivePaused, reseal, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 
@@ -45,6 +45,8 @@ export type DriftDeps = {
   kane?: DriftKane;
   /** Kane's balance, read before and after the run's Kane calls (a `credits` event); leave out to log none. */
   balance?: BalanceReader;
+  /** Warnings that do not stop the run. Default: stderr. */
+  warn?: Warn;
 };
 
 export type DriftResult =
@@ -132,6 +134,7 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
 
   // ---- everything from here on is undone on a decline or a drop
   const copy = await copySealed(p);
+  const clarifiedBefore = await clarifiedFile(p);
   const specCopies = new Map<string, Buffer | null>();
   for (const rel of changed) {
     try {
@@ -254,6 +257,8 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     return undefined;
   });
   if (declined) return declined;
+  // kept only now: a rollback restores PRD.md, and a commit made right after the append would be left behind
+  await commitClarifications(p, clarifiedBefore, deps.warn);
   await reseal(p, log, gitOpts);
   return { changed: true, applied: true };
 }

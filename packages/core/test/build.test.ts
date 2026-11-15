@@ -295,7 +295,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(reduce(await readEvents(p.ledgerFile)).inconclusive).toEqual([]);
   });
 
-  it("keeps the gate shut while a passing criterion's latest replay proved nothing, and re-runs it next turn (R34)", async () => {
+  it("keeps the gate shut while a passing criterion's latest replay proved nothing, and re-checks it before any agent turn (R34)", async () => {
     await setup();
     let t1Replays = 0;
     const timeout = (file: string): TestRunResult => ({ ...pass(file), status: "error", reason: "timeout" });
@@ -303,28 +303,83 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       kane: (turn, files) =>
         files.map((f) => {
           if (turn === 1) return idOf(f) === "t-3" ? fail(f) : pass(f);
-          // turn 2: ac-3 fixed, then t-1's replay (and its re-run) time out; turn 3: all fine
-          if (turn === 2 && idOf(f) === "t-1") return (t1Replays++, timeout(f));
+          // turn 2: ac-3 fixed, then t-1's replay (and its re-run) time out; the re-check after it passes
+          if (turn === 2 && idOf(f) === "t-1" && t1Replays < 2) return (t1Replays++, timeout(f));
           return pass(f);
         }),
     });
     const r = await runBuildLoop(p, deps, log);
-    expect(r).toEqual({ allowStop: true, turns: 3, reason: "gate-open" });
-    expect(t1Replays).toBe(2);
+    expect(r).toEqual({ allowStop: true, turns: 2, reason: "gate-open" });
+    expect(calls.claude).toHaveLength(2); // nothing for the agent to fix: no third turn
     expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
       [1, [T1, T3]],
       [2, [T3]],
       [2, [T1]],
       [2, [T1]],
-      [3, [T1, T3]], // nothing owed: the replay runs every green criterion's tests again
+      [2, [T1]], // the re-check: only the test that proved nothing, the app started once more
     ]);
-    // ac-1 never left `passing`, and the agent's third brief names nothing of the timeout
-    const third = calls.claude[2]!.prompt;
-    expect(third.startsWith("# Holdback — 0 criteria still owed\n")).toBe(true);
-    expect(third).not.toMatch(/timeout|t-1|inconclusive/i);
-    const afterTurn2 = (await readEvents(p.ledgerFile)).filter((e) => !(e.t === "run" && e.turn === 3));
-    expect(reduce(afterTurn2).acs["ac-1"]!.status).toBe("passing");
-    expect(gate(reduce(afterTurn2))).toMatchObject({ allowStop: false, owed: [], inconclusive: [{ test: "t-1", turn: 2, reason: "timeout" }] });
+    expect(calls.starts).toBe(3);
+    const ev = await loopEvents();
+    expect(ev.filter((e) => e.t === "turn.start")).toHaveLength(2);
+    expect(ev.at(-1)).toMatchObject({ t: "run", kind: "build", turn: 2, result: { testId: "t-1", status: "passed" } });
+  });
+
+  it("replays a vacuous criterion's inconclusive test with the green ones, so a conclusive run can reopen the gate", async () => {
+    await setup();
+    // ac-1 passed, a planted bug survived it (vacuous), then its test timed out twice; ac-3 is owed
+    await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "p", model: "m", usd: 0, verdict: "survived" });
+    await log({ at, t: "run", kind: "build", turn: 1, result: { ...pass(T1), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    expect(gate(reduce(await readEvents(p.ledgerFile)))).toMatchObject({ owed: [{ id: "ac-3" }], inconclusive: [{ test: "t-1" }] });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({ allowStop: true, turns: 1, reason: "gate-open" });
+    // nothing owed after ac-3: the replay takes t-1 too, though its criterion is vacuous, not green
+    expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
+      [1, [T3]], // the fake counts agent calls: ledger turn 2 is the agent's first here
+      [1, [T1]],
+    ]);
+    expect(calls.starts).toBe(1); // in the turn's own replay, not a separate re-check
+    expect((await loopEvents()).filter((e) => e.t === "run" && e.turn === 2).map((e) => e.t === "run" && e.result.testId)).toEqual(["t-3", "t-1"]);
+    const state = reduce(await readEvents(p.ledgerFile));
+    expect(state.acs["ac-1"]!.status).toBe("vacuous");
+    expect(state.inconclusive).toEqual([]);
+  });
+
+  it("re-checks only the inconclusive tests, with no agent turn, when nothing else keeps the gate shut", async () => {
+    await setup();
+    await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T3) });
+    await log({ at, t: "run", kind: "build", turn: 1, result: { ...pass(T3), status: "error", reason: "timeout", inconclusive: "timeout" } });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({ allowStop: true, turns: 0, reason: "gate-open" });
+    expect(calls.claude).toHaveLength(0);
+    expect(calls.tests.map((t) => t.files)).toEqual([[T3]]);
+    const ev = await loopEvents();
+    expect(ev.filter((e) => e.t === "turn.start")).toHaveLength(1); // no new turn: the run is under turn 1
+    expect(ev.at(-1)).toMatchObject({ t: "run", kind: "build", turn: 1, result: { testId: "t-3", status: "passed" } });
+  });
+
+  it("stops with reason inconclusive, naming the tests, when the re-check proves nothing again: never an agent turn, never max-turns", async () => {
+    await setup({ config: { loop: { maxTurns: 1 } } });
+    await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-3"] });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T1) });
+    await log({ at, t: "run", kind: "build", turn: 1, result: pass(T3) });
+    const env = (file: string): TestRunResult => ({ ...fail(file), verdict: { bugTitle: "Browser target closed", family: "environment_issue" } });
+    await log({ at, t: "run", kind: "build", turn: 1, result: { ...env(T3), inconclusive: "environment_issue: Browser target closed" } });
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(env) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({
+      allowStop: false,
+      turns: 0,
+      reason: "inconclusive",
+      inconclusive: [{ test: "t-3", turn: 1, reason: "environment_issue: Browser target closed" }],
+    });
+    expect(calls.claude).toHaveLength(0);
+    expect(calls.tests.map((t) => t.files)).toEqual([[T3], [T3]]); // one re-check (re-run once inside it), then stop
   });
 
   it("logs Kane's balance drop around each batch, and a batch whose balance cannot be read with its per-run sum (R34)", async () => {
