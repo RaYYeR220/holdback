@@ -843,6 +843,9 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(r.error).toContain("commit");
     expect(r.error).toContain("src/eligibility.js");
     expect(r.error).toContain("src/new.js");
+    // the app's own data folder is not code to commit: the message says where it goes (N-m6)
+    expect(r.error).toContain("data/");
+    expect(r.error).toContain(".gitignore");
     expect(calls.chat).toEqual([]);
     expect(calls.tests).toEqual([]);
     expect((await readEvents(p.ledgerFile)).slice(before).filter((e) => e.t === "mutant")).toEqual([]);

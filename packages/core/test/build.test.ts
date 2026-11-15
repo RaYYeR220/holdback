@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ClaudeTurnOptions, ClaudeTurnResult } from "../src/agent/claude.js";
@@ -289,6 +289,32 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     }
     expect(calls.appEnv.every((e) => e?.HOLDBACK_TODAY === "2026-11-19" && e?.VENICE_API_KEY === "")).toBe(true);
     expect(existsSync(join(appDir, "data"))).toBe(false);
+  });
+
+  it("runs the agent's turn with DATA_DIR on a scratch folder outside the app repo, removed after the turn (N-m6)", async () => {
+    await setup({ config: { start: { env: { DATA_DIR: "./data" } } } });
+    const seen: { dir: string; existed: boolean }[] = [];
+    const { deps, calls } = fakes({
+      kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f))),
+      edit: () => {
+        // the agent's own boot check: the app keeps its data where DATA_DIR says
+        const dir = calls.claude.at(-1)!.env!.DATA_DIR!;
+        seen.push({ dir, existed: existsSync(dir) });
+        writeFileSync(join(dir, "pantry.db"), "the agent's boot check");
+        writeFileSync(join(appDir, "app.js"), `// turn ${seen.length}\n`);
+      },
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("gate-open");
+    expect(seen).toHaveLength(2);
+    expect(new Set(seen.map((s) => s.dir)).size).toBe(2);
+    for (const s of seen) {
+      expect(s.existed).toBe(true);
+      expect(relative(appDir, s.dir).startsWith("..")).toBe(true);
+      expect(existsSync(s.dir)).toBe(false); // removed after the turn
+    }
+    expect(existsSync(join(appDir, "data"))).toBe(false);
+    expect(git(appDir, "show", "--name-only", "--format=", "HEAD")).toBe("app.js");
   });
 
   it("starts the app again on a fresh DATA_DIR for the replay batch: the owed batch's rows never reach it (N-m1)", async () => {

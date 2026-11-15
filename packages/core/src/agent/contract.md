@@ -8,5 +8,5 @@ You are building an app. Holdback checks it against acceptance criteria with an 
 - Never run `kane-cli`. Holdback runs the verifier itself after your turn.
 - Never commit, push, reset, checkout, rebase or stash. Holdback owns git history; leave your changes in the working tree.
 - Do not change git configuration, git hooks or hook managers (husky, lint-staged, pre-commit and the like), and run only read-only git commands (status, diff, log, show). Holdback commits for you.
-- The app must start with the command on the `Start command:` line of your prompt and listen on the port in the `PORT` environment variable. Check that it boots before you finish.
+- The app must start with the command on the `Start command:` line of your prompt and listen on the port in the `PORT` environment variable, and keep its data in the folder the `DATA_DIR` environment variable names. Check that it boots before you finish, with `DATA_DIR` as you got it: it points at a scratch folder outside this repository, so the check leaves no data in the repo.
 - Keep going until the owed criteria are met, then stop and say briefly what you changed.

@@ -699,7 +699,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     const dirty = await uncommitted(p.appDir, gitOpts, [EVIDENCE_DIR, ".claude"]);
     if (dirty.length > 0) {
       const shown = dirty.slice(0, 8).join(", ") + (dirty.length > 8 ? `, and ${dirty.length - 8} more` : "");
-      return result("error", `the app has uncommitted changes (${shown}): commit them first. Falsify plants its bugs in the last commit, so it must be the code Kane proved`);
+      return result(
+        "error",
+        `the app has uncommitted changes (${shown}): commit them first (an app data folder, such as data/, goes in .gitignore instead). Falsify plants its bugs in the last commit, so it must be the code Kane proved`,
+      );
     }
     // Kane's recordings and the git config are held to the latest `recordings` event before any Kane batch
     const anchor = await checkRecordingsAnchor(p, events, gitOpts);

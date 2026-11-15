@@ -1,11 +1,11 @@
 import { constants, existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
 import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, PortInUse, startApp, type RunningApp } from "../app.js";
-import { appEnv, freshDataDir } from "../datadir.js";
+import { appEnv, DATA_DIR_ENV, freshDataDir } from "../datadir.js";
 import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { balance } from "../kane/assurance.js";
 import { notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
@@ -639,18 +639,26 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       rechecked = false;
       await s.emit({ t: "turn.start", n, owed: owed.map((a) => a.id) });
 
-      // 1. agent turn
+      // 1. agent turn. Its own boot check keeps the app's data in a scratch folder outside the repo,
+      //    never `./data`, which the turn's commit would carry (N-m6)
       const before = await headSha(p.appDir, s.gitOpts);
-      const agent = await deps.claude({
-        cwd: p.appDir,
-        prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, spec: p.config.spec, start: p.config.start.cmd, screenshot: s.screenshot, broke: blameOf(s.events) }),
-        settingsFile,
-        contractFile: contractPath(),
-        maxTurns: p.config.agent.maxTurnsPerCall,
-        model: p.config.agent.model,
-        timeoutMs: TURN_TIMEOUT_MS,
-        signal: opts.signal,
-      });
+      const agentData = await mkdtemp(path.join(os.tmpdir(), "holdback-agent-data-"));
+      let agent: Awaited<ReturnType<typeof deps.claude>>;
+      try {
+        agent = await deps.claude({
+          cwd: p.appDir,
+          prompt: buildBrief(state, { appStartError: startError, notes: p.config.agentNotes, spec: p.config.spec, start: p.config.start.cmd, screenshot: s.screenshot, broke: blameOf(s.events) }),
+          settingsFile,
+          contractFile: contractPath(),
+          maxTurns: p.config.agent.maxTurnsPerCall,
+          model: p.config.agent.model,
+          timeoutMs: TURN_TIMEOUT_MS,
+          signal: opts.signal,
+          env: { [DATA_DIR_ENV]: agentData },
+        });
+      } finally {
+        await rm(agentData, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      }
       // right after the agent, before any git command of Holdback's reads what it may have planted
       if (await s.tampered(true)) return done(false, "tamper");
       // a spec edit seen right after the agent ran (a write at it on the guard's record is a tamper,

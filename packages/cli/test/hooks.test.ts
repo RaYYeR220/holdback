@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -533,6 +533,21 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     const skill = readFileSync(join(appDir, ".claude", "skills", "holdback", "SKILL.md"), "utf8");
     expect(skill.startsWith("---\nname: holdback\n")).toBe(true);
     expect(r.out).toContain(".claude/settings.json");
+    // the agent's own boot check keeps the app's data in a scratch folder outside the repo, never ./data (N-m6)
+    expect(Object.keys(s.env)).toEqual(["DATA_DIR"]);
+    expect(isAbsolute(s.env.DATA_DIR)).toBe(true);
+    expect(relative(appDir, s.env.DATA_DIR).startsWith("..")).toBe(true);
+    expect(relative(p.home, s.env.DATA_DIR).startsWith("..")).toBe(true); // never names Holdback's home
+  });
+
+  it("keeps a DATA_DIR the human set in the settings, and --remove leaves it (N-m6)", async () => {
+    writeFileSync(entry(), "// built cli\n");
+    mkdirSync(join(appDir, ".claude"));
+    writeFileSync(settingsFile(), JSON.stringify({ env: { DATA_DIR: "D:/scratch", NODE_ENV: "test" } }));
+    expect((await init([])).code).toBe(0);
+    expect(JSON.parse(readFileSync(settingsFile(), "utf8")).env).toEqual({ DATA_DIR: "D:/scratch", NODE_ENV: "test" });
+    expect((await init(["--remove"])).code).toBe(0);
+    expect(JSON.parse(readFileSync(settingsFile(), "utf8"))).toEqual({ env: { DATA_DIR: "D:/scratch", NODE_ENV: "test" } });
   });
 
   it("merges with what is there, is idempotent, and --remove takes out only Holdback's entries", async () => {

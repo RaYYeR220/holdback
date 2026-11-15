@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -425,10 +426,17 @@ type HookGroup = Json & { hooks?: HookEntry[] };
 /**
  * `<home>/claude-install.json`: exactly what `init --agent claude` added to the settings file, so
  * a re-run replaces it and `--remove` takes out that and nothing else (an identical rule or hook
- * the human had before is never recorded).
+ * the human had before is never recorded). `env`: the environment variables it set for the agent.
  */
-type InstallRecord = { settings: string; hooks: { event: string; command: string }[]; deny: string[]; blockReads: boolean };
+type InstallRecord = { settings: string; hooks: { event: string; command: string }[]; deny: string[]; blockReads: boolean; env?: Record<string, string> };
 const INSTALL_RECORD = "claude-install.json";
+
+/**
+ * Where the app keeps its data when the agent starts it in its own session (its boot check): a
+ * scratch folder outside the repo and outside Holdback's home, never `./data`, which would end up in
+ * the human's commits and stop falsify (N-m6).
+ */
+const agentDataDir = (p: Project) => path.join(os.tmpdir(), "holdback-agent-data", path.basename(p.home));
 
 const SETTINGS = [".claude", "settings.json"];
 const SKILL = [".claude", "skills", "holdback", "SKILL.md"];
@@ -489,6 +497,7 @@ async function readRecord(p: Project): Promise<InstallRecord | null> {
   try {
     const v = JSON.parse(await readFile(homeFile(p, INSTALL_RECORD), "utf8")) as Partial<InstallRecord>;
     if (!Array.isArray(v.hooks) || !Array.isArray(v.deny) || typeof v.blockReads !== "boolean" || typeof v.settings !== "string") return null;
+    if (v.env !== undefined && !(isObj(v.env) && Object.values(v.env).every((x) => typeof x === "string"))) return null;
     return v as InstallRecord;
   } catch {
     return null;
@@ -525,6 +534,12 @@ function takeOut(settings: Json, record: InstallRecord | null): Json {
     if (record.blockReads && perms.blockReadsOutsideWorkingDirectories === true) delete perms.blockReadsOutsideWorkingDirectories;
     if (Object.keys(perms).length > 0) out.permissions = perms;
     else delete out.permissions;
+  }
+  if (record.env && isObj(settings.env)) {
+    const env: Json = { ...settings.env };
+    for (const [k, v] of Object.entries(record.env)) if (env[k] === v) delete env[k];
+    if (Object.keys(env).length > 0) out.env = env;
+    else delete out.env;
   }
   return out;
 }
@@ -590,7 +605,15 @@ export async function installClaudeHooks(ctx: Ctx): Promise<number> {
     }
     if (added.length > 0) hooks[event] = [...((hooks[event] as HookGroup[] | undefined) ?? []), ...added];
   }
-  await writeJson(file, { ...base, permissions: perms, hooks });
+  // the agent's own boot check keeps the app's data out of the repo; a DATA_DIR the human set stays theirs
+  const env: Json = { ...(isObj(base.env) ? base.env : {}) };
+  if (env.DATA_DIR === undefined) {
+    const dir = agentDataDir(p);
+    await mkdir(dir, { recursive: true });
+    env.DATA_DIR = dir;
+    record.env = { DATA_DIR: dir };
+  }
+  await writeJson(file, { ...base, env, permissions: perms, hooks });
   await writeJson(homeFile(p, INSTALL_RECORD), record);
 
   const skill = path.join(p.appDir, ...SKILL);
