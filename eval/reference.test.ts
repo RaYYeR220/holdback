@@ -15,6 +15,7 @@ import {
   bookVisit,
   decide,
   examPrdLines,
+  examPrdScope,
   examTodayAllowed,
   formatMoney,
   limitFor,
@@ -745,7 +746,7 @@ describe("exam files", () => {
       "calendar month after the month of the earliest one listed";
     expect(fileFor("e-15").steps).toEqual([
       `${bookingStep("215-555-0115", EARLIEST)}.`,
-      `${bookingStep("215-555-0115", nextMonth)}; then assert the page says "Visit booked."`,
+      `${bookingStep("215-555-0115", nextMonth)}; then assert the page says "Visit booked." and shows "Your visit:"`,
     ]);
   });
 
@@ -786,7 +787,7 @@ describe("exam files", () => {
     const setup = [1, 2, 3, 4, 5].map((i) => `${bookingStep(`215-555-022${i}`, SECOND_LATEST)}.`);
     expect(fileFor("e-22").steps).toEqual([
       ...setup,
-      `${bookingStep("215-555-0226", SECOND_LATEST)}; then assert the page says "Visit booked."`,
+      `${bookingStep("215-555-0226", SECOND_LATEST)}; then assert the page says "Visit booked." and shows "Your visit:"`,
     ]);
   });
 
@@ -883,8 +884,28 @@ describe("PRD rules the exam depends on", () => {
     expect(EXAM_PRD_RULES).not.toContain(4);
     expect(EXAM_PRD_RULES).not.toContain(13);
     expect(EXAM_PRD_RULES.at(-1)).toBe(60);
-    const lines = prd().split(/\r?\n/);
+    const lines = examPrdScope(prd());
     for (const n of EXAM_PRD_RULES) expect(lines.filter((l) => l.startsWith(`${n}. `)), `rule ${n}`).toHaveLength(1);
+  });
+
+  it("keep the same hash when rules or a numbered Clarifications section are appended, and change on an edit", () => {
+    const sha = (x: string) => createHash("sha256").update(x).digest("hex");
+    const text = prd();
+    const before = sha(examPrdLines(text));
+    const clarified =
+      text.trimEnd() +
+      "\n\n## Clarifications\n\n1. Q: Can a proxy book? A: No.\n2. Q: Is income gross? A: Yes, before taxes.\n" +
+      "22. Q: Any other ZIP codes? A: No.\n\n| When | Message |\n| --- | --- |\n| x | This household already has a visit booked in that month. |\n";
+    expect(sha(examPrdLines(clarified))).toBe(before);
+    const newRule = text.replace(
+      /^(62\. .*)$/m,
+      "$1\n63. A household may say whether anyone in it is over 60; the volunteer list shows it.",
+    );
+    expect(newRule).not.toBe(text);
+    expect(sha(examPrdLines(newRule))).toBe(before);
+    const edited = text.replace("is multiplied by 26", "is multiplied by 24");
+    expect(edited).not.toBe(text);
+    expect(sha(examPrdLines(edited))).not.toBe(before);
   });
 
   it("cover every PRD string the exam quotes", () => {
@@ -930,10 +951,13 @@ describe("PREREGISTERED.md", () => {
     expect(sha(examPrdLines(read(join(SPEC_DIR, "PRD.md"))))).toBe(m![1]);
   });
 
-  it("records PRD.md and STACK.md hashes at registration", () => {
+  it("records PRD.md and STACK.md hashes at registration, and STACK.md is unchanged", () => {
     const text = pre();
     expect(text).toMatch(/^\| `examples\/pantry-spec\/PRD\.md` \| `[0-9a-f]{64}` \|$/m);
-    expect(text).toMatch(/^\| `examples\/pantry-spec\/STACK\.md` \| `[0-9a-f]{64}` \|$/m);
+    const m = /^\| `examples\/pantry-spec\/STACK\.md` \| `([0-9a-f]{64})` \|$/m.exec(text);
+    expect(m).not.toBeNull();
+    const stack = read(join(SPEC_DIR, "STACK.md")).replace(/\r\n/g, "\n");
+    expect(sha(stack)).toBe(m![1]);
   });
 
   it("pins the run conditions and the expectation", () => {
@@ -946,6 +970,9 @@ describe("PREREGISTERED.md", () => {
       "one attempt per case",
       `out of ${n}`,
       "without web access",
+      "computed once, from the first scoring date, and the same value is used for all three arms",
+      "An edit to any of these lines fails the check; appended text must not contradict them.",
+      "Before the first arm runs, the final `PRD.md` (with Kane's clarifying questions and answers appended) is hashed into `eval/results/`",
       "Holdback (C) scores ≥ the agent alone (A) and ≥ the agent with self-written Kane checks (B) on this exam; " +
         "A and B each stop claiming done with at least one exam case failing.",
     ]) {

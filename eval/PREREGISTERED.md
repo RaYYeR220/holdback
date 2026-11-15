@@ -20,9 +20,9 @@ Holdback (C) scores ≥ the agent alone (A) and ≥ the agent with self-written 
 
 ## How it is run
 
-- Every arm (A, B, C) builds from the same final `PRD.md` and `STACK.md` and runs without web access.
+- Every arm (A, B, C) builds from the same final `PRD.md` and `STACK.md` and runs without web access. Before the first arm runs, the final `PRD.md` (with Kane's clarifying questions and answers appended) is hashed into `eval/results/`.
 - Each arm's final app is scored once, as a fresh app on a fresh, empty `DATA_DIR`, with:
-  - `HOLDBACK_TODAY` = `nextExamToday()`: a Tuesday, Thursday or Saturday on or after the 7th of its month, as picked by `eval/reference.ts` from the scoring date.
+  - `HOLDBACK_TODAY` = `nextExamToday()`: a Tuesday, Thursday or Saturday on or after the 7th of its month. The value is computed once, from the first scoring date, and the same value is used for all three arms. It is stored in `eval/results/` when it is first computed.
   - `HOLDBACK_NOW` = `08:00`.
 
   These settings make the earliest visit time listed today's 10:00, keep every one of today's visit times open whatever the wall clock says, and put visit times of the next calendar month inside the 28-day booking window.
@@ -42,7 +42,7 @@ The exam depends on these parts of the PRD:
 - the income limits table;
 - the Messages row "This household already has a visit booked in that month."
 
-`examPrdLines()` in `eval/reference.ts` extracts exactly those lines, and the test suite checks their hash below against the current PRD. Because of that check, an append can never silently change what the exam measures. The PRD.md and STACK.md hashes are for the files as registered here.
+`examPrdLines()` in `eval/reference.ts` extracts exactly those lines, and the test suite checks their hash below against the current PRD. The extraction stops at a "Clarifications" heading and at any heading after the Messages section. An edit to any of these lines fails the check; appended text must not contradict them. The PRD.md and STACK.md hashes are for the files as registered here, and the test suite also checks the STACK.md hash.
 
 | File | sha256 |
 | --- | --- |
@@ -70,11 +70,11 @@ Hashes are the sha256 of each file's bytes as committed, with LF line endings. C
 | `exam/e-12-medicaid-eligible-regardless-of-income_test.md` | `d1e3d608ee80a4bb4f47beb69c0f4f4bf900dd815daadfc6bd480e5b1637aed4` |
 | `exam/e-13-zip-19103-outside-service-area_test.md` | `53801d6fc9c1596671bd83f6d8bf127469dc53a6b11c162b999c6d292295b2e6` |
 | `exam/e-14-second-visit-same-month-refused_test.md` | `12cab5303a5ca5c7898a6a238718dfa3f97399f989602ef6388214b245078444` |
-| `exam/e-15-visit-next-month-allowed_test.md` | `0bb86758b5558cf6aadd03effe61cd75080fa432c45ea61dfa4ca2df30528ebc` |
+| `exam/e-15-visit-next-month-allowed_test.md` | `73c45c91981eef2e13bced8456c6a146e78fa918658744a62fa6e8384a0e82d0` |
 | `exam/e-16-full-visit-time-refused_test.md` | `0a3b961b7390ef26abd5b4f1c977b4b8b0f8d8b0cbafb5de5160883cde200052` |
 | `exam/e-17-proxy-on-volunteer-list_test.md` | `2a613620ffd6b6772553f2df310329a4d70f30ab40a8544997bbe5325fec5a83` |
 | `exam/e-18-mark-picked-up-moves-visit_test.md` | `085f4c4d33cf9deeabfb18dd2114b188e010f9b67b36e3ae2026462b8e82c99a` |
 | `exam/e-19-snap-outside-service-area_test.md` | `fa1fdab48c82e91845c810e1fa31f76c936e155fd1b3a27ed82b01aac3ee04ac` |
 | `exam/e-20-four-person-at-weekly-limit_test.md` | `75e379bb9910a529b5344b3cb4054040cacb53e669d1ed3bf95337098ba3d48f` |
 | `exam/e-21-three-person-every-two-weeks-over_test.md` | `e77341f49d5eb336fde8b1ecc80a5532ab8f6a77583960d2dbb343996d1ddec7` |
-| `exam/e-22-sixth-household-fits_test.md` | `0a3b70e1c1858a781e1e002d91327342ef4ef946a2391d2bc42fc22c1b52e5c6` |
+| `exam/e-22-sixth-household-fits_test.md` | `4699e648d64acef58f3dd0f9711dc27b7321e66ca7ee37567b62cd1cd1bfefed` |

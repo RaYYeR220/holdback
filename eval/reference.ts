@@ -283,6 +283,7 @@ export function nextExamToday(from: string): string {
 // The PRD rules the exam depends on. Later PRD changes are append-only (new
 // rules after the last numbered rule, a Clarifications section), so the lines
 // below must stay byte-identical; PREREGISTERED.md records their sha256.
+// Appended text must also not contradict them; no hash can check that.
 // ---------------------------------------------------------------------------
 
 export const EXAM_PRD_RULES_TEXT = "1–3, 5–12, 14–29, 32–33, 36, 38, 40–51, 53–60";
@@ -296,9 +297,23 @@ export const EXAM_PRD_RULES: readonly number[] = EXAM_PRD_RULES_TEXT.split(", ")
 /** Messages-table rows whose message an exam case asserts. */
 export const EXAM_PRD_MESSAGES = ["This household already has a visit booked in that month."] as const;
 
+/**
+ * The registered part of the PRD: every line before the first "Clarifications" heading and before the first
+ * heading that follows the Messages section. Appended Clarifications (even numbered ones) fall outside it.
+ */
+export function examPrdScope(prd: string): string[] {
+  const lines = prd.split(/\r?\n/);
+  const messagesAt = lines.indexOf("## Messages");
+  if (messagesAt < 0) throw new Error("PRD: Messages section not found");
+  const stop = lines.findIndex(
+    (l, i) => /^#{1,6} Clarifications\b/.test(l) || (i > messagesAt && /^#{1,6} /.test(l)),
+  );
+  return stop < 0 ? lines : lines.slice(0, stop);
+}
+
 /** The exam-relevant PRD lines: the listed rules, the income limits table and the asserted Messages rows. */
 export function examPrdLines(prd: string): string {
-  const lines = prd.split(/\r?\n/);
+  const lines = examPrdScope(prd);
   const rules = lines.filter((l) => {
     const m = /^(\d+)\. /.exec(l);
     return m !== null && EXAM_PRD_RULES.includes(Number(m[1]));
