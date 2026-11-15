@@ -22,8 +22,9 @@ import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
 import type { EventBody } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
-import { appSealKey, isAppKeyOf, seal } from "../seal.js";
-import { clearTamper, logRecordings, tamperMarker } from "../tamper.js";
+import { attemptsText, specAttemptsSince } from "../agent/attempts.js";
+import { appSealKey, checkSeal, isAppKeyOf, seal } from "../seal.js";
+import { clearTamper, logRecordings, markTampered, tamperMarker } from "../tamper.js";
 import type { HumanIO } from "./human.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
@@ -111,6 +112,71 @@ export async function specChangeEvent(
   return { t: "spec.changed", files, duringAgentTurn, before, after };
 }
 
+/**
+ * How a spec change (spec files only, nothing else sealed) seen now is classed (R38, fail closed):
+ * - a write at the spec the guard logged since the latest seal makes it a tamper;
+ * - otherwise it counts as the human's only when no agent turn started since that seal, no agent
+ *   runs right now (`agentRunning`), and no record since the seal already calls it unverified (an
+ *   unverified record stays so until the next seal or drift approval).
+ * `event`: the `spec.changed` to log, or undefined when the latest record already says the same.
+ */
+export async function classifySpecChange(
+  p: Project,
+  events: LedgerEvent[],
+  manifest: Record<string, string>,
+  files: string[],
+  agentRunning: boolean,
+): Promise<{ tamper: string } | { unverified: boolean; event?: Omit<SpecChanged, "at"> }> {
+  const sealAt = events.findLastIndex((e) => e.t === "seal");
+  const sinceMs = sealAt < 0 ? 0 : Date.parse(events[sealAt]!.at) || 0;
+  const tries = await specAttemptsSince(p.home, sinceMs);
+  if (tries.length > 0) return { tamper: `the spec changed (${files.join(", ")}) after the agent tried to write it: ${attemptsText(tries)}` };
+  const turned = events.slice(sealAt + 1).some((e) => e.t === "turn.start");
+  const unverified = agentRunning || turned || latestSpecChange(events)?.duringAgentTurn === true;
+  const event = await specChangeEvent(p, events, manifest, files, unverified);
+  return event ? { unverified, event } : { unverified };
+}
+
+/** What the CLI makes of the spec as it is now, before a drift (`settleSpecChange`). */
+export type SpecChangeNow = { kind: "none" } | { kind: "tamper"; detail: string } | { kind: "drift"; files: string[]; unverified: boolean };
+
+/**
+ * For the CLI before it re-plans a spec change (`run`, `watch`, `drift`): classes the change as
+ * `classifySpecChange` does and logs what it found (a tamper, marked and logged; or the
+ * `spec.changed` record). `none` when only the spec is not what changed (or nothing did).
+ */
+export async function settleSpecChange(p: Project, log: Log): Promise<SpecChangeNow> {
+  const events = await readEvents(p.ledgerFile);
+  let manifest: Record<string, string> | undefined;
+  for (const e of events) if (e.t === "seal") manifest = e.manifest;
+  if (!manifest) return { kind: "none" };
+  const bad = await checkSeal(p.verifierDir, manifest, p.appDir);
+  if (bad.length === 0 || !bad.every((k) => isSpecKey(p, k))) return { kind: "none" };
+  const files = bad.map(specFileOf);
+  const at = new Date().toISOString();
+  const c = await classifySpecChange(p, events, manifest, files, false);
+  if ("tamper" in c) {
+    let detail = c.tamper;
+    try {
+      await markTampered(p, detail);
+    } catch (e) {
+      detail = `${detail} (tamper marker not written: ${e instanceof Error ? e.message : String(e)})`;
+    }
+    await log({ at, t: "tamper", detail });
+    return { kind: "tamper", detail };
+  }
+  if (c.event) await log({ at, ...c.event });
+  return { kind: "drift", files, unverified: c.unverified };
+}
+
+/**
+ * Text fit for a terminal: every C0 and C1 control character but tab and newline shown as `\xNN`
+ * (an escape sequence in a spec diff must never reach the terminal as one).
+ */
+export function escapeControls(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
+
 /** `<home>/sealed/<spec>`: each spec file as the latest seal hashed it, for the diff drift shows the human (R37). */
 export const SEALED_DIR = "sealed";
 
@@ -172,7 +238,7 @@ export async function specDiff(p: Project, manifest: Record<string, string>, rel
     if (r.code !== 1) return null;
     const lines = r.stdout.split(/\r?\n/);
     const hunk = lines.findIndex((l) => l.startsWith("@@"));
-    return [`--- ${rel} (sealed)`, `+++ ${rel} (now)`, ...(hunk < 0 ? [] : lines.slice(hunk))].join("\n").trimEnd();
+    return escapeControls([`--- ${rel} (sealed)`, `+++ ${rel} (now)`, ...(hunk < 0 ? [] : lines.slice(hunk))].join("\n").trimEnd());
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }

@@ -304,7 +304,7 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(ev.some((e) => e.t === "tamper")).toBe(false);
     expect(ev.filter((e) => e.t === "run")).toHaveLength(2); // Kane's results stand
     expect(ev.filter((e) => e.t === "turn.end")).toHaveLength(1); // the stop still closes the turn
-    expect(ev.at(-1)).toMatchObject({ t: "spec.changed", duringAgentTurn: true });
+    expect(ev.filter((e) => e.t === "spec.changed")).toEqual([expect.objectContaining({ duringAgentTurn: true })]);
   });
 
   it.each([

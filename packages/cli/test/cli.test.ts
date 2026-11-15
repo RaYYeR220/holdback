@@ -8,6 +8,7 @@ import {
   appSealFiles,
   CliHumanIO,
   loadProject,
+  logSpecAttempt,
   readEvents,
   ScriptedHumanIO,
   seal,
@@ -84,6 +85,11 @@ async function fixture(opts: { seal?: boolean } = {}) {
   await log({ at, t: "turn.start", n: 1, owed: ["ac-1", "ac-2"] });
   await log({ at, t: "run", kind: "build", turn: 1, result: result("t-1", "passed") });
   await log({ at, t: "run", kind: "build", turn: 1, result: result("t-2", "failed", { failedStep: 2, verdict: { bugTitle: "Limit off by one" } }) });
+}
+
+/** A seal of the app as it is now (a drift approval, say): no agent turn has started since. */
+async function resealNow() {
+  await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
 }
 
 /** Like `fixture`, but ac-2 has passed too: every criterion is green. */
@@ -580,6 +586,7 @@ describe("run", () => {
 
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {
     await greenFixture();
+    await resealNow();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
     const s = stages();
     const r = await cli(["run"], s.deps);
@@ -616,6 +623,27 @@ describe("run", () => {
     expect(r.err).toContain("SPEC CHANGED WHILE THE AGENT WAS WORKING");
     expect(r.err).toContain("origin unverified");
     expect(r.err).toContain("holdback drift");
+  });
+
+  it("a spec change after the guard logged a write at the spec since the seal is a tamper at the start of a run (R38)", async () => {
+    await greenFixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    logSpecAttempt(p.home, { tool: "Bash", how: "shell" });
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(2);
+    expect(s.calls).toEqual([]);
+    expect(r.err).toContain("tried to write");
+  });
+
+  it("a spec change with no record of its own counts as unverified once an agent turn ran since the seal (R38)", async () => {
+    await greenFixture(); // a turn after the seal, no spec.changed on record
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(s.calls).toEqual([]);
+    expect((await readEventsOf()).filter((e) => e.t === "spec.changed")).toEqual([expect.objectContaining({ duringAgentTurn: true })]);
   });
 
   it("never auto-drifts a spec change of unverified origin at the start of a run (R37)", async () => {
@@ -658,6 +686,7 @@ describe("run", () => {
 
   it("stops with drift's reason, never starting the build loop, when drift applied nothing", async () => {
     await greenFixture();
+    await resealNow();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
     const s = stages({ drift: { changed: true, applied: false, reason: "the human declined the plan" } });
     const r = await cli(["run"], s.deps);
@@ -829,45 +858,63 @@ describe("drift and watch", () => {
     expect(drifts).toBe(1);
   });
 
-  it("drift of a change seen outside agent turns shows the diff and asks nothing more", async () => {
+  it("drift of a change made with no agent turn since the seal shows the diff and asks nothing more (R38)", async () => {
     await fixture();
+    await resealNow();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA rule.\n");
-    await log({ at, t: "spec.changed", files: ["PRD.md"], duringAgentTurn: false, before: {}, after: {} });
     const r = await cli(["drift"], { humanIO: () => fakeIO() as never, runDrift: async () => ({ changed: true, applied: true }), confirm: notCalled("confirm") as never });
     expect(r.code).toBe(0);
     expect(r.out).toContain("PRD.md");
   });
 
-  it("watch stops, without drift, on a spec change seen while the agent was working (R37)", async () => {
+  it.each([
+    [false, ["build"]],
+    [true, ["build", "drift", "build"]],
+  ])("watch takes a change of unverified origin into the drift review: only a yes typed in the terminal re-plans it, --answers never does (R38; yes: %s)", async (yes, expected) => {
     await greenFixture();
-    const io = fakeIO();
+    mkdirSync(join(p.home, "sealed"), { recursive: true });
+    writeFileSync(join(p.home, "sealed", "PRD.md"), readFileSync(join(appDir, "PRD.md")));
+    const answers = join(root, "answers.json");
+    writeFileSync(answers, JSON.stringify({ answers: {}, approve: "all" }));
+    const ctl = new AbortController();
     let onChange: () => void = () => {};
     let watching = false;
     const calls: string[] = [];
+    const asked: string[] = [];
+    let builds = 0;
     const run = cli(
-      ["watch", "--no-falsify"],
+      ["watch", "--no-falsify", "--answers", answers],
       {
-        humanIO: () => io as never,
+        humanIO: () => fakeIO() as never,
+        confirm: async (q) => (asked.push(q), yes),
         watchSpec: ((_p, cb) => {
           onChange = cb;
           watching = true;
           return () => {};
         }) as Deps["watchSpec"],
-        runDrift: async () => (calls.push("drift"), { changed: true, applied: true }),
+        runDrift: async () => {
+          calls.push("drift");
+          await resealNow();
+          return { changed: true, applied: true };
+        },
         runBuildLoop: async () => {
           calls.push("build");
+          if (builds++ > 0) return buildOk;
           writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA rule the agent wrote.\n");
           return { allowStop: false, turns: 1, reason: "drift", error: "x", specChange: { files: ["PRD.md"], duringAgentTurn: true } };
         },
       },
-      { signals: () => ({ signal: new AbortController().signal, dispose() {} }) },
+      { signals: () => ({ signal: ctl.signal, dispose() {} }) },
     );
     await vi.waitFor(() => expect(watching).toBe(true), { timeout: 10_000 });
     onChange();
+    await vi.waitFor(() => expect(asked).toHaveLength(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(calls).toEqual(expected), { timeout: 10_000 });
+    ctl.abort();
     const r = await run;
-    expect(r.code).toBe(3);
-    expect(calls).toEqual(["build"]);
+    expect(r.code).toBe(130);
     expect(r.err).toContain("origin unverified");
+    expect(r.out).toContain("+A rule the agent wrote.");
   });
 
   it("drift reports applied, unchanged and declined, and closes the IO", async () => {
@@ -930,6 +977,7 @@ describe("drift and watch", () => {
           watching = true;
           return () => {};
         }) as Deps["watchSpec"],
+        confirm: async () => true, // an agent turn ran since the seal: the change needs the human's yes (R38)
         runDrift: async () => {
           calls.push("drift");
           // drift applied: the edit is sealed

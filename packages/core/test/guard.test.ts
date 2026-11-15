@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { linkSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -204,6 +205,34 @@ describe("guardDecision hardening", () => {
     // other denials carry no spec mark
     const other = guardDecision({ tool_name: "Bash", tool_input: { command: "git commit -m x" } }, c);
     expect(other.allow === false && other.spec).toBeFalsy();
+  });
+
+  it("reads a spec path the way Windows does: case, trailing dots and spaces, streams, dot segments, short names, links (R38)", () => {
+    const app = realpathSync.native(mkdtempSync(join(tmpdir(), "hb-guard-spec-")));
+    writeFileSync(join(app, "PRD.md"), "# spec\n");
+    writeFileSync(join(app, "P R D.md"), "# a spec with a short name\n");
+    const c = { ...ctx, specFiles: ["PRD.md", "P R D.md"], appDir: app };
+    const edit = (file_path: string) => guardDecision({ tool_name: "Write", tool_input: { file_path, content: "x" } }, c);
+    for (const form of ["PRD.md.", "PRD.md. . ", "PRD.md::$DATA", "PRD.md:hidden", "prd.MD", ".\\sub\\..\\PRD.md", "./sub/../PRD.md"]) {
+      expect(edit(join(app, form)), form).toMatchObject({ allow: false, spec: "edit" });
+      expect(edit(form), form).toMatchObject({ allow: false, spec: "edit" });
+      expect(guardDecision({ tool_name: "Bash", tool_input: { command: `echo x >> "${form}"` } }, c), form).toMatchObject({ allow: false, spec: "shell" });
+    }
+    // a hard link to the spec is the spec
+    linkSync(join(app, "PRD.md"), join(app, "notes.md"));
+    expect(edit(join(app, "notes.md"))).toMatchObject({ allow: false, spec: "edit" });
+    expect(guardDecision({ tool_name: "Bash", tool_input: { command: "echo x >> notes.md" } }, c)).toMatchObject({ allow: false, spec: "shell" });
+    // an 8.3 short name (Windows, where the volume keeps them): `PRD~1.MD` for `P R D.md`
+    if (process.platform === "win32") {
+      const short = execFileSync("cmd", ["/d", "/s", "/c", '"for %I in ("P R D.md") do @echo %~snxI"'], { cwd: app, encoding: "utf8", windowsVerbatimArguments: true }).trim();
+      if (short && short.toLowerCase() !== "p r d.md") {
+        expect(edit(join(app, short)), short).toMatchObject({ allow: false, spec: "edit" });
+        expect(edit(short), short).toMatchObject({ allow: false, spec: "edit" });
+      }
+    }
+    // other files stay open
+    expect(edit(join(app, "PRD.md.bak"))).toEqual({ allow: true });
+    expect(edit(join(app, "src", "app.js"))).toEqual({ allow: true });
   });
 
   it("still lets the agent read the spec, and write other files", () => {

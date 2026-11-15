@@ -19,6 +19,7 @@ import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { checkSeal, seal } from "../src/seal.js";
 import { checkRecordingsAnchor, logRecordings, markTampered, tamperMarker } from "../src/tamper.js";
+import { logSpecAttempt } from "../src/agent/attempts.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fxTests = join(here, "fixtures", "kane", "tests");
@@ -872,6 +873,20 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const ev = await readEvents(p.ledgerFile);
     expect(ev.some((e) => e.t === "tamper")).toBe(false);
     expect(await tamperMarker(p)).toBeNull();
+    // an agent turn ran since the seal: its origin is unverified (R38)
+    expect(ev.filter((e) => e.t === "spec.changed")).toEqual([expect.objectContaining({ duringAgentTurn: true })]);
+  });
+
+  it("a spec change during the pass after the guard logged a write at the spec since the seal is a tamper (R38)", async () => {
+    await setup();
+    logSpecAttempt(p.home, { tool: "Bash", how: "shell" });
+    const { deps, io } = fakes({
+      mutantRun: (ac, files) => files.map(failOn(ac)),
+      onBatch: () => appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n"),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    expect(await tamperMarker(p)).toMatch(/tried to write/);
   });
 
   it("stops with tamper when a sealed test changed since the seal", async () => {

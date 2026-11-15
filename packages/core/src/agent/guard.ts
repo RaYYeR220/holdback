@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -135,18 +136,77 @@ function gitViolation(text: string): string | undefined {
   return undefined;
 }
 
-/** Lowercase, `/`-separated, no `./` or `../` prefixes, no quotes: how a shell token is matched to a spec path. */
+/**
+ * A path as Windows reads it: `/`-separated, no `:stream` suffix on its last segment (`PRD.md::$DATA`
+ * is `PRD.md`), and no trailing dots or spaces on any segment (`PRD.md.` is `PRD.md`); `.` and `..`
+ * stay. Applied everywhere: on other systems it only makes the match wider.
+ */
+function fsPath(p: string): string {
+  const segs = unquote(p).replace(/\\/g, "/").split("/");
+  return segs
+    .map((s, i) => {
+      if (i === 0 && /^[a-zA-Z]:$/.test(s)) return s; // a drive
+      let out = i === segs.length - 1 ? s.replace(/^([a-zA-Z]:)?([^:]*):.*$/, "$1$2") : s;
+      if (!/^\.+$/.test(out)) out = out.replace(/[. ]+$/, "");
+      return out;
+    })
+    .join("/");
+}
+
+/** Lowercase, `/`-separated, Windows quirks dropped (`fsPath`), no `./` or `../` prefixes: how a shell token is matched to a spec path. */
 function specPathOf(token: string): string {
-  return unquote(token)
+  return fsPath(token)
     .toLowerCase()
-    .replace(/\\/g, "/")
     .replace(/^(?:\.{1,2}\/)+/, "");
 }
 
-/** True when `token` names one of `specs` (normalised): the path itself, or one ending in `/<spec>`. */
-function namesSpec(token: string, specs: string[]): boolean {
-  const t = specPathOf(token);
-  return t !== "" && specs.some((s) => t === s || t.endsWith(`/${s}`));
+/** The long, real form of `abs`: 8.3 short names expanded through the file itself, or else its existing parent. */
+function longPath(abs: string): string {
+  try {
+    return realpathSync.native(abs);
+  } catch {
+    try {
+      return path.join(realpathSync.native(path.dirname(abs)), path.basename(abs));
+    } catch {
+      return abs;
+    }
+  }
+}
+
+/** True when both paths exist and are one file (same device and file id: a hard link, a short name). */
+function sameFile(a: string, b: string): boolean {
+  try {
+    const x = statSync(a, { bigint: true });
+    const y = statSync(b, { bigint: true });
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a path the agent names is one of the spec files (R38). A relative path (or any, without the
+ * app dir): the normalised path, or one ending in `/<spec>`, compared case-insensitively. With the app
+ * dir known, also: the path resolved against it (Windows quirks dropped, 8.3 short names expanded)
+ * equal to a spec file's, or, when it exists, the same file as one (a hard link, a short name).
+ */
+function specMatcher(ctx: GuardContext): (token: string) => boolean {
+  const files = ctx.specFiles ?? [];
+  const specs = files.map(specPathOf).filter((s) => s !== "");
+  const appDir = ctx.appDir;
+  const real = appDir === undefined ? [] : files.map((s) => path.resolve(appDir, fsPath(s)));
+  const realLong = real.map((s) => norm(longPath(s)));
+  return (token: string) => {
+    const t = specPathOf(token);
+    if (t === "") return false;
+    // a relative path may be relative to anywhere (a shell's `cd`): any path ending in the spec's matches
+    const absolute = path.isAbsolute(fsPath(token)) || /^[a-zA-Z]:/.test(t);
+    if ((appDir === undefined || !absolute) && specs.some((s) => t === s || t.endsWith(`/${s}`))) return true;
+    if (appDir === undefined) return false;
+    const abs = path.resolve(appDir, fsPath(token));
+    if (realLong.includes(norm(longPath(abs)))) return true;
+    return real.some((s) => sameFile(abs, s));
+  };
 }
 
 /** Commands that write the file named by any of their arguments (PowerShell's, and `tee`). */
@@ -160,11 +220,11 @@ const WRITES_LAST_ARG = /^(?:cp|mv|copy|move|copy-item|move-item|cpi|mi|install|
  * Reading the spec stays open. An agent set on getting round it still can (R15); the seal then
  * sees the change, which reads as drift a human looks at.
  */
-function specWrite(text: string, specFiles: string[]): boolean {
-  const specs = specFiles.map(specPathOf).filter((s) => s !== "");
-  if (specs.length === 0) return false;
+function specWrite(text: string, ctx: GuardContext): boolean {
+  if (!ctx.specFiles || ctx.specFiles.length === 0) return false;
+  const namesSpec = specMatcher(ctx);
   // a redirect: `> PRD.md`, `>>PRD.md`, `1> "PRD.md"`, `&> PRD.md`
-  for (const m of text.matchAll(/>{1,2}\|?\s*("[^"]*"|'[^']*'|[^\s;&|<>()]+)/g)) if (namesSpec(m[1]!, specs)) return true;
+  for (const m of text.matchAll(/>{1,2}\|?\s*("[^"]*"|'[^']*'|[^\s;&|<>()]+)/g)) if (namesSpec(m[1]!)) return true;
   for (const seg of text.split(/;|&&|\|\||\||\r?\n|`|\$\(|\(|\)/)) {
     const toks = seg
       .trim()
@@ -176,12 +236,12 @@ function specWrite(text: string, specFiles: string[]): boolean {
     const cmd = toks[at]!.replace(/^.*[/\\]/, "").replace(/\.exe$/i, "");
     const args = toks.slice(at + 1);
     const operands = args.filter((a) => !a.startsWith("-"));
-    if (WRITES_ANY_ARG.test(cmd) && operands.some((a) => namesSpec(a, specs))) return true;
-    if (/^sed$/i.test(cmd) && args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith("--in-place")) && operands.some((a) => namesSpec(a, specs))) return true;
+    if (WRITES_ANY_ARG.test(cmd) && operands.some((a) => namesSpec(a))) return true;
+    if (/^sed$/i.test(cmd) && args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith("--in-place")) && operands.some((a) => namesSpec(a))) return true;
     if (WRITES_LAST_ARG.test(cmd)) {
       const dest = args.findIndex((a) => /^-destination$/i.test(a));
       const target = dest >= 0 ? args[dest + 1] : operands.at(-1);
-      if (operands.length >= 2 || dest >= 0) if (target !== undefined && namesSpec(target, specs)) return true;
+      if (operands.length >= 2 || dest >= 0) if (target !== undefined && namesSpec(target)) return true;
     }
   }
   return false;
@@ -192,21 +252,16 @@ const EDIT_TOOLS = /^(?:edit|write|multiedit|notebookedit)$/i;
 const EDIT_PATH_FIELDS = ["file_path", "notebook_path", "path"];
 
 /**
- * True when an Edit/Write/MultiEdit/NotebookEdit call writes a spec file. With the app dir known the
- * path is resolved against it, so only the spec itself matches; without it, any path ending in the
- * spec's relative path does. The permission rules deny these edits too: this also logs them (R37).
+ * True when an Edit/Write/MultiEdit/NotebookEdit call writes a spec file (`specMatcher`: any spelling
+ * Windows reads as the spec). The permission rules deny these edits too: this also logs them (R37).
  */
 function editsSpec(toolName: string, input: Record<string, unknown>, ctx: GuardContext): boolean {
-  if (!EDIT_TOOLS.test(toolName) || !ctx.specFiles) return false;
-  for (const field of EDIT_PATH_FIELDS) {
+  if (!EDIT_TOOLS.test(toolName) || !ctx.specFiles || ctx.specFiles.length === 0) return false;
+  const namesSpec = specMatcher(ctx);
+  return EDIT_PATH_FIELDS.some((field) => {
     const f = input[field];
-    if (typeof f !== "string" || f === "") continue;
-    if (ctx.appDir !== undefined) {
-      const abs = norm(path.resolve(ctx.appDir, f));
-      if (ctx.specFiles.some((s) => norm(path.resolve(ctx.appDir!, s)) === abs)) return true;
-    } else if (namesSpec(f, ctx.specFiles.map(specPathOf))) return true;
-  }
-  return false;
+    return typeof f === "string" && f !== "" && namesSpec(f);
+  });
 }
 
 /**
@@ -260,7 +315,7 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
     if (humanCommand(s)) return { allow: false, reason: DENY_HUMAN };
-    if (ctx.specFiles && specWrite(s, ctx.specFiles)) return { allow: false, reason: DENY_SPEC, spec: "shell" };
+    if (specWrite(s, ctx)) return { allow: false, reason: DENY_SPEC, spec: "shell" };
   }
   return { allow: true };
 }

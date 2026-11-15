@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
-import { reseal, SEALED_DIR, specDiff } from "../src/loop/spec.js";
+import { escapeControls, reseal, SEALED_DIR, settleSpecChange, specDiff } from "../src/loop/spec.js";
+import { logSpecAttempt } from "../src/agent/attempts.js";
+import { tamperMarker } from "../src/tamper.js";
 import { loadProject, type Project } from "../src/project.js";
 
 const saved = { ...process.env };
@@ -39,6 +41,31 @@ describe("the sealed spec and its diff (R37)", { timeout: 60_000 }, () => {
     expect(d).toContain("+++ PRD.md (now)");
     expect(d).toContain("-Rule 2.");
     expect(d).toContain("+Rule 2 changed.");
+  });
+
+  it("escapes control characters in the diff, so a spec cannot drive the terminal (R38)", async () => {
+    await reseal(p, log);
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\n\u001b[2J\u001b]0;owned\u0007 hidden\u009b31m\tkept\n");
+    const d = (await specDiff(p, await manifest(), "PRD.md"))!;
+    expect(d).toContain("+\\x1b[2J\\x1b]0;owned\\x07 hidden\\x9b31m\tkept");
+    expect(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(d)).toBe(false);
+    expect(escapeControls("a\tb\nc\u0000")).toBe("a\tb\nc\\x00");
+  });
+
+  it("classes a spec change for the CLI: the human's before any turn, unverified after one, a tamper after a logged attempt (R38)", async () => {
+    await reseal(p, log);
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "none" });
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1 changed.\n");
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: false });
+    await log({ at: new Date().toISOString(), t: "turn.start", n: 1, owed: [] });
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: true });
+    const changes = (await readEvents(p.ledgerFile)).filter((e) => e.t === "spec.changed");
+    expect(changes.map((e) => e.t === "spec.changed" && e.duringAgentTurn)).toEqual([false, true]);
+    logSpecAttempt(p.home, { tool: "Edit", how: "edit" });
+    const t = await settleSpecChange(p, log);
+    expect(t.kind).toBe("tamper");
+    expect(await tamperMarker(p)).toMatch(/tried to write/);
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper" });
   });
 
   it("a re-seal that keeps the spec's old hash keeps its old copy too", async () => {

@@ -19,7 +19,7 @@ import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamp
 import { byAcId } from "./brief.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
-import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specChangeEvent, specFileOf, type Warn } from "./spec.js";
+import { appSealFiles, clarifiedFile, classifySpecChange, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specFileOf, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Verdict = Extract<LedgerEvent, { t: "mutant" }>["verdict"];
@@ -329,17 +329,26 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
    * Tier 1 and the repo's git config, against the seal and the baseline: what a tamper names. A
    * change to spec files alone is drift (`specDrift`), not a tamper: a spec file is no input to Kane's runs.
    */
-  const sealBroken = async (): Promise<string[]> => {
+  const sealBroken = async (): Promise<string | undefined> => {
     const bad = manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
     if (baseline && (await gitConfigHash(baseline.gitConfigFile, gitOpts)) !== baseline.gitConfig) bad.push(".git/config");
-    const drift = bad.every((k) => isSpecKey(p, k));
-    specDrift = drift ? bad.map(specFileOf) : [];
-    return drift ? [] : bad;
+    if (!bad.every((k) => isSpecKey(p, k))) {
+      specDrift = [];
+      return `sealed files changed: ${bad.join(", ")}`;
+    }
+    specDrift = bad.map(specFileOf);
+    return specDrift.length > 0 ? specChanged(specDrift) : undefined;
   };
-  /** Logs the spec drift just found as a `spec.changed` event (once per edit): no agent runs during a falsify pass. */
-  const noteDrift = async (files: string[]) => {
-    const e = manifest ? await specChangeEvent(p, events, manifest, files, false) : undefined;
-    if (e) await emit(e);
+  /**
+   * Spec files alone changed: classed (R38) and logged as `spec.changed`. The tamper detail when the
+   * guard logged a write at the spec since the seal.
+   */
+  const specChanged = async (files: string[]): Promise<string | undefined> => {
+    if (!manifest) return undefined;
+    const c = await classifySpecChange(p, events, manifest, files, false);
+    if ("tamper" in c) return c.tamper;
+    if (c.event) await emit(c.event);
+    return undefined;
   };
   /** After a Kane batch, with the app stopped: Kane's recordings as they are now are what the next run holds them to. */
   const closeKaneWindow = async () => {
@@ -480,9 +489,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
           await stopApp();
         }
         const bad = await sealBroken();
-        if (bad.length > 0) {
+        if (bad !== undefined) {
           // results produced against a changed test or variable never reach the ledger
-          await recordTamper(`sealed files changed: ${bad.join(", ")}`);
+          await recordTamper(bad);
           return "tamper";
         }
         const fileId = testIdsByFile();
@@ -603,8 +612,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     if (files.length === 0) return "done";
     assertTestsSealed(p.verifierDir, manifest, files);
     const bad = await sealBroken();
-    if (bad.length > 0) {
-      await recordTamper(`sealed files changed: ${bad.join(", ")}`);
+    if (bad !== undefined) {
+      await recordTamper(bad);
       return "tamper";
     }
     const port = p.config.start.port;
@@ -625,8 +634,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
         await stopApp();
       }
       const again = await sealBroken();
-      if (again.length > 0) {
-        await recordTamper(`sealed files changed: ${again.join(", ")}`);
+      if (again !== undefined) {
+        await recordTamper(again);
         return "tamper";
       }
       const fileId = testIdsByFile();
@@ -666,7 +675,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     if (!manifest) return result("error", NO_SEAL);
     const broken = await checkSeal(p.verifierDir, manifest, p.appDir);
     if (broken.length > 0 && broken.every((k) => isSpecKey(p, k))) {
-      await noteDrift(broken.map(specFileOf));
+      const why = await specChanged(broken.map(specFileOf));
+      if (why !== undefined) {
+        await recordTamper(why);
+        return result("tamper");
+      }
       return result("drift", driftHint(broken.map(specFileOf)));
     }
     if (broken.length > 0) {
@@ -727,8 +740,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     // a re-design re-seals the spec as it is: never over an edit Kane has not re-planned
     if (out.survived.length > 0 && !aborted && !drifted) {
       const bad = await sealBroken();
-      if (bad.length > 0) {
-        await recordTamper(`sealed files changed: ${bad.join(", ")}`);
+      if (bad !== undefined) {
+        await recordTamper(bad);
         return result("tamper");
       }
       drifted = specDrift.length > 0;
@@ -753,7 +766,6 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     // falsify runs left failing coverage in Kane's project store: replay the real build once
     if (attacked && (await replayRealBuild()) === "tamper") return result("tamper");
     if (drifted || specDrift.length > 0) {
-      if (specDrift.length > 0) await noteDrift(specDrift);
       return result("drift", driftHint(specDrift.length > 0 ? specDrift : driftFiles));
     }
     return result(aborted ? "aborted" : budgetOut ? "budget" : "done");
@@ -770,9 +782,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       if (mark) await verifiedLedger(p.ledgerFile, mark);
       if (r.reason === "error" || kaneWindow) {
         await stopApp().catch(() => {});
-        const bad = mark ? await sealBroken() : [];
-        if (bad.length > 0) {
-          await recordTamper(`sealed files changed: ${bad.join(", ")}`);
+        const bad = mark ? await sealBroken() : undefined;
+        if (bad !== undefined) {
+          await recordTamper(bad);
           return result("tamper");
         }
         if (kaneWindow) await closeKaneWindow();
