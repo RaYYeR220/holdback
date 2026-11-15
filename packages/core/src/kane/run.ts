@@ -48,6 +48,7 @@ export function runKane(args: string[], opts: RunKaneOptions): Promise<RunKaneRe
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
 
     const handleLine = (line: string) => {

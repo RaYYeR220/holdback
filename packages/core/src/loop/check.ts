@@ -8,7 +8,7 @@ import { reduce } from "../ledger/reduce.js";
 import type { LedgerEvent, LedgerState } from "../ledger/types.js";
 import type { LedgerMark } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
-import { checkSeal } from "../seal.js";
+import { appSealKey, checkSeal, isAppKeyOf } from "../seal.js";
 import { tamperMarker } from "../tamper.js";
 import { blameOf } from "./bisect.js";
 import { buildBrief, byAcId } from "./brief.js";
@@ -66,6 +66,12 @@ export type CheckState = Omit<CheckResult, "gate"> & {
 
 export const CHECK_STATE = "check.json";
 export const CHECK_LOCK = "check.lock";
+/**
+ * `<home>/edit.at`: when the agent last saved a file through Claude Code (Edit/Write), in ms. A
+ * verdict from a check that began before it no longer stands, even when the save touched a
+ * git-ignored file (`.env`) that the work-tree fingerprint cannot see.
+ */
+export const EDIT_MARK = "edit.at";
 /** The private git index the work-tree fingerprint is built in. */
 const CHECK_INDEX = "check.index";
 /** Never part of the fingerprint: Claude Code's own folder and Kane's copied screenshots. */
@@ -75,14 +81,14 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const oneLine = (t: string) => t.replace(/\s+/g, " ").trim();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const TAMPER_BRIEF = (detail: string) =>
-  [
-    "# Holdback — the gate is shut",
-    "",
-    `Something Holdback seals changed outside its control (${oneLine(detail)}), so nothing Kane checked since counts.`,
-    "Only a human can lift this. Stop here and tell them what you were doing; do not undo it, re-seal or work around it yourself.",
-    "",
-  ].join("\n");
+/** Never names what changed (Kane's tests the agent must not learn about): the detail goes to check.json, check.log and `holdback status`. */
+const TAMPER_BRIEF = [
+  "# Holdback — the gate is shut",
+  "",
+  "Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.",
+  "Nothing Kane checked since counts. Stop here and tell the human what you were doing; do not undo it, re-seal or work around it yourself.",
+  "",
+].join("\n");
 const DRIFT_BRIEF = (files: string[]) =>
   [
     "# Holdback — the spec changed",
@@ -95,6 +101,22 @@ const UNSEALED_BRIEF = ["# Holdback — nothing sealed yet", "", "This app has n
 const ERROR_BRIEF = (detail: string) =>
   ["# Holdback — the check did not run", "", `Holdback could not check the app: ${oneLine(detail)}`, "Tell the human; Kane has not checked your latest changes.", ""].join("\n");
 const ABORTED_BRIEF = ["# Holdback — the check was stopped", "", "The check stopped before Kane ran. Your latest changes are not checked yet.", ""].join("\n");
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Text fit for the agent: Holdback's home and verifier folders, and anything under a `.testmuai`
+ * or `.holdback` folder (Kane's tests and variables), are never named, in any slash style or case.
+ */
+export function forAgent(p: Pick<Project, "home" | "verifierDir">, text: string): string {
+  let out = text;
+  for (const dir of [p.home, p.verifierDir]) {
+    const parts = dir.split(/[\\/]+/).filter((x) => x !== "");
+    if (parts.length === 0) continue;
+    out = out.replace(new RegExp(`${parts.map(escapeRe).join("[\\\\/]+")}[^\\s"'\`),;]*`, "gi"), "<holdback>");
+  }
+  return out.replace(/[^\s"'`(]*\.(testmuai|holdback)[\\/][^\s"'`),;]*/gi, "<verification file>");
+}
 
 /** Owed criterion ids, regressed ones first (the brief's order). */
 function owedIds(state: LedgerState): string[] {
@@ -160,12 +182,12 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     }
     const logged = s.events.findLast((e) => e.t === "tamper");
     detail ??= logged?.t === "tamper" ? logged.detail : "the ledger records a tamper";
-    return closed("tamper", TAMPER_BRIEF(detail), detail);
+    return closed("tamper", TAMPER_BRIEF, detail);
   };
   const stopFor = async (r: SessionStop): Promise<CheckResult> => {
     if (r.reason === "tamper") return tamper();
     if (r.reason === "unsealed") return closed("unsealed", UNSEALED_BRIEF, r.error);
-    return closed("error", ERROR_BRIEF(r.error ?? "unknown error"), r.error);
+    return closed("error", ERROR_BRIEF(forAgent(p, r.error ?? "unknown error")), r.error);
   };
   const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined): CheckResult => {
     const state = reduce(s.events);
@@ -194,10 +216,10 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     const start = await s.open();
     if (start) return stopFor(start);
     // a spec file edited after the seal, and nothing else: drift for a human to apply, not a tamper
-    const specKeys = new Set(p.config.spec.map((f) => `app:${f.split("\\").join("/")}`));
+    // keys compared through the seal's own normaliser: `./PRD.md` in the config is `app:PRD.md`
     const bad = await checkSeal(p.verifierDir, lastSeal(s.events)!, p.appDir);
-    if (bad.length > 0 && bad.every((k) => specKeys.has(k))) {
-      const files = bad.map((k) => k.slice("app:".length));
+    if (bad.length > 0 && bad.every((k) => p.config.spec.some((f) => isAppKeyOf(k, f)))) {
+      const files = bad.map((k) => appSealKey(k).slice("app:".length));
       return closed("drift", DRIFT_BRIEF(files), `spec changed since the last seal: ${files.join(", ")}`);
     }
     const fresh = await s.refresh();
@@ -207,7 +229,14 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     let turn = openTurn(s.events);
     turnBase = turn ? (last?.turnBase ?? null) : undefined;
 
-    const stands = last !== null && (last.status === "checked" || last.status === "unchanged") && last.tree === tree && sameMark(last.ledger, s.mark);
+    // a save through Claude Code after the last check began counts too: it may have touched a git-ignored file
+    const editAt = await readEditAt(p.home);
+    const stands =
+      last !== null &&
+      (last.status === "checked" || last.status === "unchanged") &&
+      last.tree === tree &&
+      sameMark(last.ledger, s.mark) &&
+      last.startedAt > editAt;
     if (stands) {
       if (opts.reason === "stop" && turn) await endTurn(turn, last.appStartError === undefined);
       return verdict("unchanged", [], last.appStartError);
@@ -245,7 +274,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     const exit = result.status === "tamper" ? "tamper" : result.status === "error" ? "error" : "ok";
     if (await s.settle(exit)) result = await tamper();
   } catch (e) {
-    result = (await s.settle("error", e)) ? await tamper() : closed("error", ERROR_BRIEF(errText(e)), errText(e));
+    result = (await s.settle("error", e)) ? await tamper() : closed("error", ERROR_BRIEF(forAgent(p, errText(e))), errText(e));
   } finally {
     await s.stopApp().catch(() => {});
   }
@@ -260,6 +289,24 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     ...(openTurn(s.events) && turnBase !== undefined ? { turnBase } : {}),
   });
   return result;
+}
+
+/** Records an agent save (`EDIT_MARK`). */
+export async function markEdit(home: string, at: number = Date.now()): Promise<void> {
+  await mkdir(home, { recursive: true });
+  await writeFile(path.join(home, EDIT_MARK), String(at), "utf8");
+}
+
+/** The last agent save, in ms: 0 when there was none; a mark that cannot be read counts as a save after every check. */
+export async function readEditAt(home: string): Promise<number> {
+  let raw: string;
+  try {
+    raw = (await readFile(path.join(home, EDIT_MARK), "utf8")).trim();
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? 0 : Number.POSITIVE_INFINITY;
+  }
+  const at = Number(raw);
+  return raw !== "" && Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 }
 
 function isCheckState(v: unknown): v is CheckState {

@@ -9,7 +9,7 @@ import type { AcNode, TestNode } from "../src/kane/assurance.js";
 import type { TestRunResult } from "../src/kane/testmd.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
-import { acquireCheckLock, CHECK_LOCK, checkOnce, readCheckState, type CheckDeps } from "../src/loop/check.js";
+import { acquireCheckLock, CHECK_LOCK, checkOnce, EDIT_MARK, forAgent, markEdit, readCheckState, readEditAt, type CheckDeps } from "../src/loop/check.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { seal } from "../src/seal.js";
@@ -41,11 +41,11 @@ afterEach(() => {
 });
 
 /** An app repo with one commit, a verifier with t-1/t-3, and a ledger with a design and a seal. */
-async function setup(opts: { seal?: boolean; gitInit?: boolean } = {}) {
+async function setup(opts: { seal?: boolean; gitInit?: boolean; config?: Record<string, unknown> } = {}) {
   appDir = join(root, "app");
   mkdirSync(appDir);
   writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\n");
-  writeFileSync(join(appDir, "holdback.config.json"), "{}");
+  writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify(opts.config ?? {}));
   writeFileSync(join(appDir, "app.js"), "// v0\n");
   if (opts.gitInit !== false) {
     git(appDir, "init", "-q");
@@ -228,8 +228,10 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     const r = await checkOnce(p, deps, log, { reason: "stop" });
     expect(r).toMatchObject({ status: "tamper", tampered: true, allowStop: false, ran: [] });
     expect(r.detail).toContain(".testmuai/tests/t3_test.md");
-    expect(r.brief).toContain("Only a human can lift this");
-    expect(r.brief).not.toMatch(/holdback reseal/);
+    // the agent learns that something sealed changed, never which of Kane's files it was
+    expect(r.brief).toContain("Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.");
+    expect(r.brief).not.toMatch(/holdback reseal|t3_test|\.testmuai/);
+    expect(r.brief.toLowerCase()).not.toContain(p.home.toLowerCase());
     expect(calls.tests).toHaveLength(0);
     expect(existsSync(join(p.home, "TAMPERED"))).toBe(true);
     expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper" });
@@ -248,6 +250,64 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(calls.tests).toHaveLength(0);
     expect(existsSync(join(p.home, "TAMPERED"))).toBe(false);
     expect((await readEvents(p.ledgerFile)).some((e) => e.t === "tamper")).toBe(false);
+  });
+
+  it.each([
+    ["sealed by this version", false],
+    ["sealed under the older `app:./PRD.md` key", true],
+  ])("a spec listed as ./PRD.md is still drift, %s", async (_name, oldKey) => {
+    await setup({ config: { spec: ["./PRD.md"] }, seal: false });
+    const manifest = await seal(p.verifierDir, { appDir, files: appSealFiles(p) });
+    expect(Object.keys(manifest)).toContain("app:PRD.md");
+    if (oldKey) {
+      manifest["app:./PRD.md"] = manifest["app:PRD.md"]!;
+      delete manifest["app:PRD.md"];
+    }
+    await log({ at, t: "seal", manifest });
+    appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+    const r = await checkOnce(p, fakes({ kane: (_c, f) => f.map(pass) }).deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "drift", tampered: false, detail: "spec changed since the last seal: PRD.md" });
+  });
+
+  it("a save through Claude Code invalidates the verdict even when the file is git-ignored", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map(pass) });
+    writeFileSync(join(appDir, ".gitignore"), ".env\n");
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked" });
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "unchanged" });
+    writeFileSync(join(appDir, ".env"), "LIMIT=1\n"); // invisible to the work-tree fingerprint
+    await markEdit(p.home);
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked" });
+    expect(calls.tests).toHaveLength(2);
+    // the check that ran after the save covers it
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "unchanged" });
+    // an unreadable mark counts as a fresh save
+    rmSync(join(p.home, EDIT_MARK));
+    mkdirSync(join(p.home, EDIT_MARK));
+    expect(await readEditAt(p.home)).toBe(Number.POSITIVE_INFINITY);
+    expect(await checkOnce(p, deps, log, { reason: "stop" })).toMatchObject({ status: "checked" });
+  });
+
+  it("an error brief never names Holdback's folders or Kane's files; the detail keeps them", async () => {
+    await setup();
+    // a design names a test file that is not in the seal (and not on disk): the check refuses to run it
+    await log({
+      at,
+      t: "design",
+      useCase: "uc-2",
+      acs: [{ id: "ac-5", text: "x", useCase: "uc-2", cites: [], trust: "derived" }],
+      tests: [{ id: "t-5", title: "five", file: ".testmuai/tests/t5_test.md", verifies: ["ac-5"] }],
+      gaps: [],
+      credits: 0,
+    });
+    const r = await checkOnce(p, fakes({ kane: (_c, f) => f.map(pass) }).deps, log, { reason: "edit" });
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("t5_test.md");
+    expect(r.brief).toContain("Holdback could not check the app: test file not sealed: <holdback>");
+    expect(r.brief).not.toMatch(/t5_test|testmuai/i);
+    expect(forAgent(p, `open '${p.verifierDir.toUpperCase().replace(/\\/g, "/")}/x' and ~/.holdback/abc/ledger.jsonl and C:\\w\\.testmuai\\tests\\t1_test.md`)).toBe(
+      "open '<holdback>' and <verification file> and <verification file>",
+    );
   });
 
   it("a changed config file is still a tamper, not drift", async () => {

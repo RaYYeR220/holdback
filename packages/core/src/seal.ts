@@ -57,6 +57,20 @@ export type AppSeal = { appDir: string; files: string[] };
 
 const APP_PREFIX = "app:";
 
+/**
+ * How the seal keys an app-side file: `app:<rel>` with `/` separators and no `.` segments, so
+ * `./PRD.md`, `PRD.md` and `.\PRD.md` are one key. Also normalises a key from an older seal.
+ */
+export function appSealKey(relOrKey: string): string {
+  const rel = relOrKey.startsWith(APP_PREFIX) ? relOrKey.slice(APP_PREFIX.length) : relOrKey;
+  return APP_PREFIX + rel.split(/[\\/]+/).filter((s) => s !== "." && s !== "").join("/");
+}
+
+/** True when the seal key `key` is the app-side file `rel` (both normalised). */
+export function isAppKeyOf(key: string, rel: string): boolean {
+  return key.startsWith(APP_PREFIX) && appSealKey(key) === appSealKey(rel);
+}
+
 async function hashAppFile(appDir: string, rel: string): Promise<string> {
   try {
     return createHash("sha256").update(await readFile(path.join(appDir, ...rel.split("/")))).digest("hex");
@@ -88,8 +102,8 @@ export async function seal(verifierDir: string, app?: AppSeal): Promise<Record<s
   const manifest = await hashEntries(verifierDir, await tier1Entries(verifierDir));
   if (app) {
     for (const f of app.files) {
-      const rel = f.split(path.sep).join("/");
-      manifest[APP_PREFIX + rel] = await hashAppFile(app.appDir, rel);
+      const key = appSealKey(f);
+      manifest[key] = await hashAppFile(app.appDir, key.slice(APP_PREFIX.length));
     }
   }
   return manifest;

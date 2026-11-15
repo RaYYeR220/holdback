@@ -18,7 +18,7 @@ import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
 import type { EventBody } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
-import { checkSeal } from "../seal.js";
+import { checkSeal, isAppKeyOf } from "../seal.js";
 import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js";
 import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed } from "./falsify.js";
@@ -90,8 +90,9 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: { kane?:
   };
   const specs = p.config.spec.map(slash);
   const broken = await checkSeal(cwd, manifest, p.appDir);
-  const changed = specs.filter((rel) => broken.includes(`app:${rel}`));
-  const other = broken.filter((k) => !changed.some((rel) => k === `app:${rel}`));
+  // both sides through the seal's own key normaliser: `./PRD.md` and `app:PRD.md` are one file
+  const changed = specs.filter((rel) => broken.some((k) => isAppKeyOf(k, rel)));
+  const other = broken.filter((k) => !changed.some((rel) => isAppKeyOf(k, rel)));
   if (other.length > 0) {
     await recordTamper(`sealed files changed: ${other.join(", ")}`);
     throw new Error(`drift refused: sealed files changed: ${other.join(", ")}`);

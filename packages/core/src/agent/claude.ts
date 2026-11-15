@@ -85,6 +85,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     child.stdin?.on("error", () => {
       /* child exited before reading the prompt */

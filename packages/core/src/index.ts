@@ -47,7 +47,7 @@ export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
-export { seal, checkSeal, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
+export { seal, checkSeal, appSealKey, isAppKeyOf, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
 export { startApp, freePort, AppStartError, type StartAppOptions, type RunningApp } from "./app.js";
 export {
   guardDecision,
@@ -86,8 +86,12 @@ export {
   readCheckState,
   writeCheckState,
   acquireCheckLock,
+  markEdit,
+  readEditAt,
+  forAgent,
   CHECK_STATE,
   CHECK_LOCK,
+  EDIT_MARK,
   type CheckDeps,
   type CheckOptions,
   type CheckReason,
