@@ -229,7 +229,7 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(r).toMatchObject({ status: "tamper", tampered: true, allowStop: false, ran: [] });
     expect(r.detail).toContain(".testmuai/tests/t3_test.md");
     // the agent learns that something sealed changed, never which of Kane's files it was
-    expect(r.brief).toContain("Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.");
+    expect(r.brief).toContain("Holdback's sealed verification files changed — a human must re-seal; ask the human to run `holdback status`.");
     expect(r.brief).not.toMatch(/holdback reseal|t3_test|\.testmuai/);
     expect(r.brief.toLowerCase()).not.toContain(p.home.toLowerCase());
     expect(calls.tests).toHaveLength(0);

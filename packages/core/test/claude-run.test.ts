@@ -14,6 +14,7 @@ afterEach(() => {
   delete process.env.FAKE_CLAUDE_ARGS_FILE;
   delete process.env.FAKE_CLAUDE_STDIN_FILE;
   delete process.env.FAKE_CLAUDE_STDERR;
+  delete process.env.FAKE_CLAUDE_ENV_FILE;
 });
 const base = () => ({
   cwd: tmpdir(),
@@ -43,6 +44,14 @@ describe("runClaudeTurn", () => {
     for (const a of ["--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions",
       "--settings", "s.json", "--append-system-prompt-file", "c.md", "--max-turns", "3", "--model", "sonnet"])
       expect(args).toContain(a);
+  });
+  it("marks the agent's process (and so every hook Claude Code runs from it) as a headless turn", async () => {
+    process.env.HOLDBACK_CLAUDE_BIN = fake;
+    const envFile = join(mkdtempSync(join(tmpdir(), "hb-")), "env.json");
+    process.env.FAKE_CLAUDE_ENV_FILE = envFile;
+    // the caller's env cannot take the mark off
+    await runClaudeTurn({ ...base(), env: { HOLDBACK_HEADLESS: "" } });
+    expect(JSON.parse(readFileSync(envFile, "utf8"))).toEqual({ HOLDBACK_HEADLESS: "1" });
   });
   it("joins errors for error results", async () => {
     process.env.HOLDBACK_CLAUDE_BIN = fake;

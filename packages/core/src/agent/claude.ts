@@ -45,6 +45,13 @@ export function guardMainPath(): string {
 }
 
 /**
+ * Set on every headless agent process: Claude Code passes it to the hooks it runs, so the
+ * interactive hooks an app may also have installed (`init --agent claude`) stand aside inside a
+ * headless turn, whose run already holds the check lock. The agent cannot take it off its parent.
+ */
+export const HEADLESS_ENV = "HOLDBACK_HEADLESS";
+
+/**
  * Run one headless Claude Code turn and parse its final `result` line.
  * The binary is HOLDBACK_CLAUDE_BIN or `claude`; a `.mjs`/`.js` binary is run
  * through node (test fake).
@@ -83,7 +90,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
 
     const child = spawn(cmd, cmdArgs, {
       cwd: opts.cwd,
-      env: { ...process.env, ...opts.env },
+      env: { ...process.env, ...opts.env, [HEADLESS_ENV]: "1" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

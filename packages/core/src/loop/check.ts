@@ -85,7 +85,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const TAMPER_BRIEF = [
   "# Holdback — the gate is shut",
   "",
-  "Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.",
+  "Holdback's sealed verification files changed — a human must re-seal; ask the human to run `holdback status`.",
   "Nothing Kane checked since counts. Stop here and tell the human what you were doing; do not undo it, re-seal or work around it yourself.",
   "",
 ].join("\n");
