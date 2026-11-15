@@ -66,7 +66,8 @@ describe("app process manager", () => {
     // agent would have been briefed to "fix" it (or, had the probe won the race, Kane would have
     // tested the other server)
     const port = await freePort();
-    const other = createServer((s) => s.end("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"));
+    // the probe connects and hangs up at once: the reset that may follow on this side is expected
+    const other = createServer((s) => s.on("error", () => {}).end("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"));
     await new Promise<void>((r) => other.listen(port, "0.0.0.0", () => r()));
     const dir = mkdtempSync(join(tmpdir(), "hb-port-"));
     try {
