@@ -187,7 +187,7 @@ export function parseHumanScript(text: string, file: string): HumanScript {
  * takes Kane's recommended option for any question the file does not name; without it an
  * unnamed question fails the run.
  * The file is read and validated once, up front (`fromFile`), before any agent turn: a later
- * approval (a falsify re-design mid-run) answers from that snapshot, never from the file again.
+ * approval (a drift mid-run) answers from that snapshot, never from the file again.
  */
 export class ScriptedHumanIO implements HumanIO {
   private readonly script: HumanScript;

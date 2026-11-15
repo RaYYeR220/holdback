@@ -406,7 +406,7 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   emit: (e: EventBody) => Promise<void>,
   first: R,
   kane: ResumeCalls = { extractResume, resumeSession },
-  /** "spec": the spec stage proper. Later stages (drift, a falsify re-design) append no Clarifications when `loop.appendClarifications` is "spec-only". */
+  /** "spec": the spec stage proper. Later stages (drift) append no Clarifications when `loop.appendClarifications` is "spec-only". */
   stage: "spec" | "later" = "later",
   /** The spec bytes the stage will seal: each Clarification appended to a pinned file moves its pin by exactly that (N-I2). */
   pin?: SpecPin,
@@ -444,7 +444,7 @@ export async function clarifiedFile(p: Project): Promise<Buffer | null> {
 }
 
 /**
- * The Clarifications a stage (spec, drift, a falsify re-design) appended to PRD.md since `before`
+ * The Clarifications a stage (spec, drift) appended to PRD.md since `before`
  * go into the app repo as a commit of their own, before that stage's seal, so no agent turn
  * carries or lists them. Only that file is committed; nothing else the human has staged or not.
  * No repo, or an unborn HEAD (the build loop's first commit then takes the whole tree): nothing to

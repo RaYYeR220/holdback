@@ -195,7 +195,7 @@ async function readSources(dir: string, rels: string[]): Promise<SourceFile[]> {
 
 /**
  * The tier-1 entries as the seal lists them (file bytes, or a link's target) and the sealed app
- * files (null when absent), taken before a re-design so it can be rolled back.
+ * files (null when absent), taken before Kane changes the verifier (a drift, an evolve) so it can be rolled back.
  */
 export type SealedCopy = { verifier: Map<string, Buffer | string>; app: Map<string, Buffer | null> };
 
@@ -388,7 +388,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     meter.add(e);
   };
   const emit = (body: EventBody) => append({ at: at(), ...body } as LedgerEvent);
-  /** Each Kane batch (a mutant's replay, the closing replay, a re-design) is metered by Kane's balance. */
+  /** Each Kane batch (a mutant's replay, the closing replay, an evolve) is metered by Kane's balance. */
   const capCredits = kaneCapCredits(p.config, opts.kaneCap);
   const meter = new KaneMeter(deps.balance, emit, capCredits === undefined ? undefined : { credits: capCredits, spent: () => reduce(events).kaneCredits });
   const recordTamper = (detail: string) => recordTamperIn(p, emit, detail);
@@ -871,7 +871,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       .sort(byAcId);
     let budgetOut = false;
     let aborted = false;
-    /** The spec changed meanwhile: nothing more is attacked or re-designed until a human re-plans it. */
+    /** The spec changed meanwhile: nothing more is attacked or evolved until a human re-plans it. */
     let drifted = false;
     let driftFiles: string[] = [];
     for (const ac of passing) {

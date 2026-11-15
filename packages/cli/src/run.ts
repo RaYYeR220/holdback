@@ -7,7 +7,7 @@ export type RunOptions = {
   maxTurns?: string | number;
   /** `--no-falsify` sets this to false. */
   falsify?: boolean;
-  /** Scripted answers and approvals (drift and falsify re-designs) instead of the terminal. */
+  /** Scripted answers and approvals (drift) instead of the terminal. */
   answers?: string;
   /** Answer in the browser dashboard (started in this process) instead of the terminal. */
   dashboard?: boolean;

@@ -14,8 +14,8 @@ export type HoldbackConfig = {
   breaker: { model: string; capUsd: number };
   /**
    * denyWeb: remove WebFetch/WebSearch from the agent (eval arms run without web access).
-   * appendClarifications: "spec-only" appends answers to PRD.md only in the spec stage; the answers of drift and
-   * falsify re-designs stay on the ledger (the eval keeps the PRD it registered).
+   * appendClarifications: "spec-only" appends answers to PRD.md only in the spec stage; the answers of
+   * a drift stay on the ledger (the eval keeps the PRD it registered).
    */
   loop: { maxTurns: number; denyWeb?: boolean; appendClarifications?: "always" | "spec-only" };
 };

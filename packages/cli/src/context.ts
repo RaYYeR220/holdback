@@ -164,7 +164,7 @@ export function defaultCtx(): Ctx {
 /**
  * Opens the human in the loop when a command starts, before any agent turn: the terminal, or the
  * `--answers <file>` script (a path relative to the app folder). The script is read and checked
- * here, once; later approvals (a falsify re-design mid-run) answer from that snapshot. A file
+ * here, once; later approvals (a drift mid-run) answer from that snapshot. A file
  * inside the app folder is refused, links resolved: the coding agent can edit anything there.
  */
 export async function openHumanIO(ctx: Ctx, p: Project, answers: string | undefined, dash?: DashboardOptions): Promise<ClosableIO> {
