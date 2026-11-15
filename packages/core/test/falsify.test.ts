@@ -334,12 +334,12 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       ["ac-3", [T3]],
     ]);
     expect(falsify[0]!.cwd).toBe(p.verifierDir);
-    expect(falsify[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:5178/", noHeal: true, timeoutS: 420, parallel: 3 });
+    expect(falsify[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:5178/", noHeal: true, timeoutS: 120, parallel: 3 });
 
     // then every test once against the real build (heal on), to restore Kane's own coverage
     const replay = calls.tests.filter((t) => !t.opts.noHeal);
     expect(replay.map((t) => t.files)).toEqual([[T1, T3]]);
-    expect(replay[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 420, parallel: 3 });
+    expect(replay[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 120, parallel: 3 });
     expect(calls.apps.filter((a) => a.cwd === appDir)).toEqual([expect.objectContaining({ port: 3100, cmd: "npm start" })]);
     expect(calls.stops).toBe(calls.apps.length);
 

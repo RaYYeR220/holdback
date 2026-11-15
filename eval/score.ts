@@ -263,7 +263,7 @@ export async function scoreApp(appDir: string, armId: ArmId, opts: ScoreOptions 
           "utf8",
         );
         before = await read().catch(() => undefined);
-        results = await (opts.tests ?? runTests)(verifier, files, { startUrl: app.url, parallel: opts.parallel ?? 2, timeoutS: opts.timeoutS });
+        results = await (opts.tests ?? runTests)(verifier, files, { startUrl: `${app.url}/`, parallel: opts.parallel ?? 2, timeoutS: opts.timeoutS });
         after = await read().catch(() => undefined);
       } finally {
         await app.stop();

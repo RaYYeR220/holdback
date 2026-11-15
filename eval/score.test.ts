@@ -128,6 +128,8 @@ describe("scoreApp", () => {
     const vars = JSON.parse(readFileSync(path.join(verifier, ".testmuai", "variables", "exam.json"), "utf8"));
     expect(vars.start_url.value).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(calls[0]!.argv).toContain("--override-start-url");
+    // like every other caller: the app's root URL with its trailing slash (M13)
+    expect(calls[0]!.argv[calls[0]!.argv.indexOf("--override-start-url") + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
   });
 
   it("starts the app on an empty DATA_DIR with HOLDBACK_TODAY and HOLDBACK_NOW", async () => {

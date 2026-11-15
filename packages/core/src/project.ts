@@ -25,7 +25,8 @@ const DEFAULTS: HoldbackConfig = {
   specUrls: [],
   start: { cmd: "npm start", port: 3100, readyPath: "/" },
   agent: { kind: "claude", maxTurnsPerCall: 60 },
-  kane: { parallel: 3, timeoutS: 420, designMax: 5, capCredits: null },
+  // timeoutS bounds each step: Kane is killed after timeoutS x steps (+30 s), so a hang costs minutes, not an hour (M14)
+  kane: { parallel: 3, timeoutS: 120, designMax: 5, capCredits: null },
   breaker: { model: "deepseek-v4-flash", capUsd: 2 },
   loop: { maxTurns: 15, appendClarifications: "always" },
 };
@@ -68,7 +69,8 @@ async function loadConfig(appDir: string): Promise<HoldbackConfig> {
 export async function loadProject(appDir: string) {
   const abs = path.resolve(appDir);
   const projectId = computeProjectId(abs);
-  const parent = process.env.HOLDBACK_HOME || path.join(os.homedir(), ".holdback");
+  // resolved once: hooks run in the app dir, the CLI wherever it is called (M7)
+  const parent = path.resolve(process.env.HOLDBACK_HOME || path.join(os.homedir(), ".holdback"));
   const home = path.join(parent, projectId);
   const verifierDir = path.join(home, "verifier");
   await mkdir(verifierDir, { recursive: true });

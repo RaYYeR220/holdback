@@ -222,7 +222,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
       [2, [T1]],
     ]);
     expect(calls.tests[0]!.cwd).toBe(p.verifierDir);
-    expect(calls.tests[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 420, parallel: 3 });
+    expect(calls.tests[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 120, parallel: 3 });
     expect(calls.starts).toBe(2);
     expect(calls.stops).toBe(2);
     // the breaker's key never reaches the app; every start gets its own data dir

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm, stat, symlink } from "node:fs/promises";
+import fs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadProject, seal, checkSeal, sealRecordings, checkRecordings } from "../src/index.js";
@@ -53,6 +54,23 @@ describe("loadProject", () => {
     expect((await stat(p.verifierDir)).isDirectory()).toBe(true);
   });
 
+  it("resolves a relative HOLDBACK_HOME against the cwd once, so every process finds the same home (M7)", async () => {
+    const saved = process.env.HOLDBACK_HOME;
+    process.env.HOLDBACK_HOME = "rel-home";
+    try {
+      const p = await loadProject(await mkApp("rel"));
+      expect(path.isAbsolute(p.home)).toBe(true);
+      expect(p.home.startsWith(path.resolve("rel-home"))).toBe(true);
+    } finally {
+      process.env.HOLDBACK_HOME = saved;
+      fs.rmSync(path.resolve("rel-home"), { recursive: true, force: true });
+    }
+  });
+
+  it("defaults Kane's per-step timeout to 120 s (M14)", async () => {
+    expect((await loadProject(await mkApp("t"))).config.kane.timeoutS).toBe(120);
+  });
+
   it("returns defaults when config is missing", async () => {
     const p = await loadProject(await mkApp("a"));
     expect(p.config).toEqual({
@@ -60,7 +78,7 @@ describe("loadProject", () => {
       specUrls: [],
       start: { cmd: "npm start", port: 3100, readyPath: "/" },
       agent: { kind: "claude", maxTurnsPerCall: 60 },
-      kane: { parallel: 3, timeoutS: 420, designMax: 5 },
+      kane: { parallel: 3, timeoutS: 120, designMax: 5, capCredits: null },
       breaker: { model: "deepseek-v4-flash", capUsd: 2 },
       loop: { maxTurns: 15, appendClarifications: "always" },
     });
@@ -74,7 +92,7 @@ describe("loadProject", () => {
     const { config } = await loadProject(a);
     expect(config.spec).toEqual(["docs/spec.md"]);
     expect(config.start).toEqual({ cmd: "npm start", port: 3100, readyPath: "/" });
-    expect(config.kane).toEqual({ parallel: 1, timeoutS: 420, designMax: 5 });
+    expect(config.kane).toEqual({ parallel: 1, timeoutS: 120, designMax: 5, capCredits: null });
     expect(config.loop.maxTurns).toBe(15);
   });
 
