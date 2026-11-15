@@ -50,6 +50,8 @@ export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { reduce } from "./ledger/reduce.js";
 export { KaneMeter, eventCredits, type BalanceReader } from "./ledger/credits.js";
 export { gate } from "./ledger/gate.js";
+export { snapshot, type Snapshot } from "./snapshot.js";
+export { serve, DashboardHumanIO, DEFAULT_PORT, PromptRejected, type ServeOptions, type Served, type PendingPrompt } from "./server.js";
 export { loadProject, type Project, type HoldbackConfig } from "./project.js";
 export { seal, checkSeal, appSealKey, isAppKeyOf, sealRecordings, checkRecordings, tier1Entries, type AppSeal, type SealEntry } from "./seal.js";
 export { startApp, freePort, AppStartError, PortInUse, type StartAppOptions, type RunningApp } from "./app.js";
