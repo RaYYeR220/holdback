@@ -53,6 +53,11 @@ describe("guard-main", () => {
     const r = run(JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: "/h/p1/verifier" }));
     expect(r.status).toBe(2);
   });
+  it("denies a shell write onto a spec file named with --spec", () => {
+    const args = ["--home", "/h/p1", "--verifier", "/h/p1/verifier", "--spec", "PRD.md"];
+    expect(run(call("Bash", { command: "echo x >> PRD.md" }), args).status).toBe(2);
+    expect(run(call("Bash", { command: "cat PRD.md" }), args).status).toBe(0);
+  });
   it("writes the marker log", () => {
     const log = join(mkdtempSync(join(tmpdir(), "hb-")), "g.log");
     run(call("Bash", { command: "npm test" }), undefined, { HOLDBACK_GUARD_LOG: log });

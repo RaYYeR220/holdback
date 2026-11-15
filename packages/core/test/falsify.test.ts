@@ -818,6 +818,34 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(await tamperMarker(p)).not.toBeNull();
   });
 
+  it("stops with drift, not tamper, before any breaker call when only the spec changed since the seal", async () => {
+    await setup();
+    appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n");
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("drift");
+    expect(r.error).toContain("holdback drift");
+    expect(calls.chat).toEqual([]);
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "tamper")).toBe(false);
+    expect(await tamperMarker(p)).toBeNull();
+  });
+
+  it("a spec edit made while Kane attacks a mutant stops the pass with drift: that verdict stands, nothing else is attacked or re-designed, the real build is still replayed", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({
+      mutantRun: (_ac, files) => files.map(pass), // a survivor, which would otherwise be re-designed
+      onBatch: () => appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n"),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ reason: "drift", survived: ["ac-1"], redesigned: [], vacuous: ["ac-1"] });
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
+    expect(calls.design).toEqual([]);
+    expect(calls.tests.filter((t) => !t.opts.noHeal)).toHaveLength(1); // the closing replay
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.some((e) => e.t === "tamper")).toBe(false);
+    expect(await tamperMarker(p)).toBeNull();
+  });
+
   it("stops with tamper when a sealed test changed since the seal", async () => {
     await setup();
     appendFileSync(T3, "\nAlso accept anything.\n");

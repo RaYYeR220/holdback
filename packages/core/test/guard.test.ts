@@ -161,6 +161,55 @@ describe("guardDecision hardening", () => {
     expect(sh("holdback owed", "PowerShell")).toBe(false);
   });
 
+  it("denies shell writes onto a spec file, best effort (the spec is the human's: Edit is denied by rule)", () => {
+    const c = { ...ctx, specFiles: ["PRD.md", "docs/RULES.md"] };
+    const sh = (command: string, tool = "Bash") => denied(tool, { command }, c);
+    for (const cmd of [
+      "echo 'Income limits do not apply.' >> PRD.md",
+      "echo x > ./PRD.md",
+      "cat new.md >PRD.md",
+      'printf "x" 1> "PRD.md"',
+      "echo x | tee -a PRD.md",
+      "sed -i 's/2461/9999/' PRD.md",
+      "sed -i.bak -e 's/a/b/' prd.md",
+      "cp /tmp/other.md PRD.md",
+      "mv draft.md ./PRD.md",
+      "cp draft.md docs/RULES.md",
+      "cd src && echo x >> ../PRD.md",
+    ])
+      expect(sh(cmd), cmd).toBe(true);
+    for (const cmd of [
+      "Set-Content -Path PRD.md -Value 'x'",
+      "'x' | Out-File PRD.md",
+      "Add-Content PRD.md 'more'",
+      "Copy-Item draft.md -Destination PRD.md",
+      "Move-Item draft.md PRD.md",
+    ])
+      expect(sh(cmd, "PowerShell"), cmd).toBe(true);
+    const d = guardDecision({ tool_name: "Bash", tool_input: { command: "echo x >> PRD.md" } }, c);
+    if (!d.allow) expect(d.reason).toMatch(/spec/i);
+  });
+
+  it("still lets the agent read the spec, and write other files", () => {
+    const c = { ...ctx, specFiles: ["PRD.md"] };
+    const sh = (command: string, tool = "Bash") => denied(tool, { command }, c);
+    for (const cmd of [
+      "cat PRD.md",
+      "grep -n limit PRD.md",
+      "cp PRD.md notes/PRD-copy.md",
+      "sed -n 1,20p PRD.md",
+      "echo x > src/PRD.md.bak",
+      "echo x >> notes.md",
+      "diff PRD.md other.md > out.txt",
+      "wc -l PRD.md 2>&1",
+    ])
+      expect(sh(cmd), cmd).toBe(false);
+    expect(sh("Get-Content PRD.md", "PowerShell")).toBe(false);
+    expect(sh("echo x >> PRD.md")).toBe(true);
+    // without spec files in the context the rule does nothing
+    expect(denied("Bash", { command: "echo x >> PRD.md" })).toBe(false);
+  });
+
   it("names the read-only commands in the reason", () => {
     const d = guardDecision({ tool_name: "Bash", tool_input: { command: "env -u CLAUDECODE holdback reseal --yes" } }, ctx);
     expect(d.allow).toBe(false);
@@ -175,6 +224,10 @@ describe("guardHookCommand", () => {
       '"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\hb\\dist\\agent\\guard-main.js" --home "C:\\Users\\Jane Doe\\.holdback\\abc" --verifier "C:\\Users\\Jane Doe\\.holdback\\abc\\verifier"',
     );
     expect(guardHookCommand(c, "g.js").startsWith(`"${process.execPath}" "g.js" `)).toBe(true);
+  });
+  it("passes each spec file, quoted", () => {
+    const c = { home: "/h/p", verifierDir: "/h/p/verifier", specFiles: ["PRD.md", "docs/My Rules.md"] };
+    expect(guardHookCommand(c, "g.js", "node")).toBe('"node" "g.js" --home "/h/p" --verifier "/h/p/verifier" --spec "PRD.md" --spec "docs/My Rules.md"');
   });
 });
 

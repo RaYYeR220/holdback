@@ -19,7 +19,7 @@ import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamp
 import { byAcId } from "./brief.js";
 import { assertTestsSealed, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
-import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, reseal, type Warn } from "./spec.js";
+import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specFileOf, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Verdict = Extract<LedgerEvent, { t: "mutant" }>["verdict"];
@@ -56,7 +56,8 @@ export const defaultFalsifyDeps: FalsifyDeps = {
   balance,
 };
 
-export type FalsifyStopReason = "done" | "budget" | "tamper" | "error" | "aborted";
+/** `drift`: a spec file (and nothing else sealed) changed: the pass stopped attacking, for a human to re-plan the spec. */
+export type FalsifyStopReason = "done" | "budget" | "tamper" | "error" | "aborted" | "drift";
 
 export type FalsifyResult = {
   /** ACs whose mutant Kane caught: now `proved`. */
@@ -322,11 +323,18 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     running = undefined;
     await a?.stop();
   };
-  /** Tier 1 and the repo's git config, against the seal and the baseline. */
+  /** The spec files changed since the seal when nothing else sealed did (drift, not a tamper), as of the last check. */
+  let specDrift: string[] = [];
+  /**
+   * Tier 1 and the repo's git config, against the seal and the baseline: what a tamper names. A
+   * change to spec files alone is drift (`specDrift`), not a tamper: a spec file is no input to Kane's runs.
+   */
   const sealBroken = async (): Promise<string[]> => {
     const bad = manifest ? await checkSeal(p.verifierDir, manifest, p.appDir) : [];
     if (baseline && (await gitConfigHash(baseline.gitConfigFile, gitOpts)) !== baseline.gitConfig) bad.push(".git/config");
-    return bad;
+    const drift = bad.every((k) => isSpecKey(p, k));
+    specDrift = drift ? bad.map(specFileOf) : [];
+    return drift ? [] : bad;
   };
   /** After a Kane batch, with the app stopped: Kane's recordings as they are now are what the next run holds them to. */
   const closeKaneWindow = async () => {
@@ -652,6 +660,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     manifest = lastSeal(events);
     if (!manifest) return result("error", NO_SEAL);
     const broken = await checkSeal(p.verifierDir, manifest, p.appDir);
+    if (broken.length > 0 && broken.every((k) => isSpecKey(p, k))) return result("drift", driftHint(broken.map(specFileOf)));
     if (broken.length > 0) {
       await recordTamper(`sealed files changed: ${broken.join(", ")}`);
       return result("tamper");
@@ -673,9 +682,17 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       .sort(byAcId);
     let budgetOut = false;
     let aborted = false;
+    /** The spec changed meanwhile: nothing more is attacked or re-designed until a human re-plans it. */
+    let drifted = false;
+    let driftFiles: string[] = [];
     for (const ac of passing) {
       if (opts.signal?.aborted) {
         aborted = true;
+        break;
+      }
+      if (specDrift.length > 0) {
+        drifted = true;
+        driftFiles = specDrift;
         break;
       }
       if (budgetOut) {
@@ -693,8 +710,19 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       }
     }
 
+    // a re-design re-seals the spec as it is: never over an edit Kane has not re-planned
+    if (out.survived.length > 0 && !aborted && !drifted) {
+      const bad = await sealBroken();
+      if (bad.length > 0) {
+        await recordTamper(`sealed files changed: ${bad.join(", ")}`);
+        return result("tamper");
+      }
+      drifted = specDrift.length > 0;
+      if (drifted) driftFiles = specDrift;
+    }
+    if (drifted) out.vacuous.push(...out.survived);
     // survivors: one re-design per use case and pass; a use case already re-designed for a survivor stays vacuous
-    if (out.survived.length > 0 && !aborted) {
+    if (out.survived.length > 0 && !aborted && !drifted) {
       const again = redesignedAfterSurvival(events);
       const ucOf = new Map(out.survived.map((id) => [id, state.acs[id]!.useCase]));
       const ucs = [...new Set(ucOf.values())].filter((uc) => !again.has(uc)).sort();
@@ -710,6 +738,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
 
     // falsify runs left failing coverage in Kane's project store: replay the real build once
     if (attacked && (await replayRealBuild()) === "tamper") return result("tamper");
+    if (drifted || specDrift.length > 0) return result("drift", driftHint(specDrift.length > 0 ? specDrift : driftFiles));
     return result(aborted ? "aborted" : budgetOut ? "budget" : "done");
   };
 

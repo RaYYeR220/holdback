@@ -187,6 +187,23 @@ describe("runDrift", () => {
     expect(events[1]).toMatchObject({ source: "drift", delta: 5, perRunSum: 5 });
   });
 
+  it("commits the human's spec edit on its own before the re-seal, so no agent turn carries it (M8)", async () => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: p.appDir, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("add", "-A");
+    git("commit", "-q", "-m", "spec");
+    await reseal(p, log);
+    writeFileSync(join(p.appDir, "app.js"), "// the agent's work in progress\n");
+    editPrd();
+    const r = await runDrift(p, { answer: async () => ({}), approve: async (items) => all(items) }, log, { kane: fakeKane([]) });
+    expect(r).toEqual({ changed: true, applied: true });
+    expect(git("log", "--format=%s")).toBe("spec: PRD.md\nspec");
+    expect(git("show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
+    expect(git("status", "--porcelain")).toBe("?? app.js"); // nothing else of the work tree went in
+  }, 60_000);
+
   it("commits the Clarifications it added to PRD.md before the re-seal; a declined drift commits nothing", async () => {
     const git = (...args: string[]) => execFileSync("git", args, { cwd: p.appDir, encoding: "utf8" }).trim();
     git("init", "-q");
@@ -226,7 +243,7 @@ describe("runDrift", () => {
 
     const r = await runDrift(p, answering(all), log, { kane: pausing([]) });
     expect(r).toEqual({ changed: true, applied: true });
-    expect(git("log", "--format=%s")).toBe("spec: clarifications\nspec");
+    expect(git("log", "--format=%s")).toBe("spec: PRD.md\nspec");
     expect(git("show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
     const committed = git("show", "HEAD:PRD.md");
     expect(committed).toContain("Rule 2."); // the human's spec edit goes in with them

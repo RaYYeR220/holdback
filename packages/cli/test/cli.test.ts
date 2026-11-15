@@ -2,12 +2,13 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendEvent,
   appSealFiles,
   CliHumanIO,
   loadProject,
+  readEvents,
   ScriptedHumanIO,
   seal,
   type BuildResult,
@@ -41,6 +42,7 @@ afterEach(() => {
 });
 
 const log = (e: LedgerEvent) => appendEvent(p.ledgerFile, e);
+const readEventsOf = () => readEvents(p.ledgerFile);
 
 const result = (testId: string, status: "passed" | "failed", extra: Partial<TestRunResult> = {}): TestRunResult => ({
   testFile: `${testId}.md`,
@@ -577,6 +579,35 @@ describe("run", () => {
     expect(s.calls).toEqual(["drift", "build", "falsify"]);
   });
 
+  it("tells the human the spec change may not be theirs before drift asks them to approve it (M9)", async () => {
+    await greenFixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    const r = await cli(["run"], stages().deps);
+    expect(r.out).toContain("PRD.md");
+    expect(r.out).toMatch(/may not be yours/);
+    expect(r.out).toContain("git diff -- PRD.md");
+  });
+
+  it("stops with exit 3 and points at `holdback drift` when the spec changed while the build loop ran, without falsifying", async () => {
+    await greenFixture();
+    const s = stages({ build: [{ allowStop: false, turns: 1, reason: "drift", error: "the spec changed since the last seal (PRD.md): run `holdback drift`" }] });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("Spec changed");
+    expect(r.err).toContain("holdback drift");
+    expect(r.err).not.toContain("TAMPER");
+    expect(s.calls).toEqual(["build"]);
+  });
+
+  it("stops with exit 3 the same way when the spec changed during falsify", async () => {
+    await greenFixture();
+    const s = stages({ falsify: [{ ...falsifyOk, reason: "drift", error: "the spec changed since the last seal (PRD.md): run `holdback drift`" }] });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("holdback drift");
+    expect(s.calls).toEqual(["build", "falsify"]);
+  });
+
   it("does not run drift when the spec still matches the seal", async () => {
     await greenFixture();
     const s = stages();
@@ -753,6 +784,7 @@ describe("drift and watch", () => {
     const ctl = new AbortController();
     let onChange: () => void = () => {};
     let stopped = 0;
+    let watching = false;
     const calls: string[] = [];
     const run = cli(
       ["watch", "--no-falsify"],
@@ -760,21 +792,61 @@ describe("drift and watch", () => {
         humanIO: () => io as never,
         watchSpec: ((_p, cb) => {
           onChange = cb;
+          watching = true;
           return () => void stopped++;
         }) as Deps["watchSpec"],
         runBuildLoop: async () => (calls.push("build"), buildOk),
       },
       { signals: () => ({ signal: ctl.signal, dispose() {} }) },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() => expect(watching).toBe(true), { timeout: 10_000 });
     onChange();
-    await new Promise((r) => setTimeout(r, 200));
-    expect(calls).toEqual(["build"]);
+    await vi.waitFor(() => expect(calls).toEqual(["build"]), { timeout: 10_000 });
     ctl.abort();
     const r = await run;
     expect(r.code).toBe(130);
     expect(stopped).toBe(1);
     expect(io.closed).toBe(1);
+  });
+
+  it("watch routes a spec edit made mid-build into drift: the next pass re-plans with the human, then builds", async () => {
+    await greenFixture();
+    const io = fakeIO();
+    const ctl = new AbortController();
+    let onChange: () => void = () => {};
+    let watching = false;
+    const calls: string[] = [];
+    const builds: BuildResult[] = [{ allowStop: false, turns: 1, reason: "drift", error: "the spec changed since the last seal (PRD.md): run `holdback drift`" }, buildOk];
+    const run = cli(
+      ["watch", "--no-falsify"],
+      {
+        humanIO: () => io as never,
+        watchSpec: ((_p, cb) => {
+          onChange = cb;
+          watching = true;
+          return () => {};
+        }) as Deps["watchSpec"],
+        runDrift: async () => {
+          calls.push("drift");
+          // drift applied: the edit is sealed
+          await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+          return { changed: true, applied: true };
+        },
+        runBuildLoop: async () => {
+          calls.push("build");
+          const b = builds.shift() ?? buildOk;
+          // the human edits the spec while this build runs (the watcher's own event is not relied on)
+          if (b.reason === "drift") writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+          return b;
+        },
+      },
+      { signals: () => ({ signal: ctl.signal, dispose() {} }) },
+    );
+    await vi.waitFor(() => expect(watching).toBe(true), { timeout: 10_000 });
+    onChange();
+    await vi.waitFor(() => expect(calls).toEqual(["build", "drift", "build"]), { timeout: 10_000 });
+    ctl.abort();
+    expect((await run).code).toBe(130);
   });
 });
 
@@ -791,11 +863,28 @@ describe("reseal", () => {
     expect(r.err).toContain("Not re-sealed");
   });
 
-  it("lists an edited spec file among the entries that differ", async () => {
+  it("refuses when only the spec changed: that is drift for Kane to re-plan, never a re-seal", async () => {
     await fixture();
     writeFileSync(join(appDir, "PRD.md"), "# edited\n");
-    const r = await cli(["reseal"], { confirm: async () => false });
-    expect(r.out).toContain("app:PRD.md");
+    let resealed = 0;
+    const r = await cli(["reseal", "--yes"], { reseal: (async () => void resealed++) as never });
+    expect(r.code).toBe(1);
+    expect(resealed).toBe(0);
+    expect(r.err).toContain("app:PRD.md");
+    expect(r.err).toContain("holdback drift");
+  });
+
+  it("after a tamper, re-seals everything but a changed spec, whose old hash it keeps so drift still re-plans it", async () => {
+    await fixture();
+    const sealed = (await readEventsOf()).findLast((e) => e.t === "seal")!;
+    await log({ at, t: "tamper", detail: "sealed files changed: .testmuai/tests/t1_test.md" });
+    writeFileSync(join(appDir, "PRD.md"), "# edited\n");
+    const kept: unknown[] = [];
+    const reseal = (async (_p: Project, _l: unknown, _g: unknown, o?: { keep?: Record<string, string> }) => void kept.push(o?.keep)) as never;
+    const r = await cli(["reseal", "--yes"], { reseal });
+    expect(r.code).toBe(0);
+    expect(kept).toEqual([{ "app:PRD.md": (sealed as { manifest: Record<string, string> }).manifest["app:PRD.md"] }]);
+    expect(r.out).toContain("holdback drift");
   });
 
   it("re-seals after an interactive yes, and with --yes", async () => {

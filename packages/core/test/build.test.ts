@@ -558,17 +558,82 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.claude).toHaveLength(0);
   });
 
-  it.each([
-    ["PRD.md", () => appendFileSync(join(appDir, "PRD.md"), "\nIncome limits do not apply.\n")],
-    ["holdback.config.json", () => writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ start: { cmd: "node fake.js" } }))],
-  ])("stops with tamper when the agent edits the app-side %s", async (file, edit) => {
+  it("stops with tamper when the agent edits the app-side holdback.config.json", async () => {
     await setup();
+    const edit = () => writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ start: { cmd: "node fake.js" } }));
     const { deps, calls } = fakes({ edit, kane: (_t, files) => files.map(pass) });
     const r = await runBuildLoop(p, deps, log);
     expect(r).toMatchObject({ allowStop: false, turns: 1, reason: "tamper" });
     expect(calls.tests).toHaveLength(0);
     const tamper = (await loopEvents()).find((e) => e.t === "tamper");
-    expect(tamper && tamper.t === "tamper" && tamper.detail).toContain(`app:${file}`);
+    expect(tamper && tamper.t === "tamper" && tamper.detail).toContain("app:holdback.config.json");
+  });
+
+  it("a spec edit during the agent's turn is drift: the turn is committed without it, and the run stops before Kane runs", async () => {
+    await setup();
+    const edit = () => {
+      writeFileSync(join(appDir, "app.js"), "// turn 1\n");
+      appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+    };
+    const { deps, calls } = fakes({ edit, kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 1, reason: "drift" });
+    expect(r.error).toContain("holdback drift");
+    expect(r.error).toContain("PRD.md");
+    expect(calls.tests).toHaveLength(0);
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.some((e) => e.t === "tamper")).toBe(false);
+    expect(await tamperMarker(p)).toBeNull();
+    expect(ev.find((e) => e.t === "turn.end")).toMatchObject({ n: 1, filesChanged: ["app.js"] });
+    // the human's edit stays theirs: in the work tree, out of the agent's commit
+    expect(git(appDir, "show", "--name-only", "--format=", "HEAD")).toBe("app.js");
+    expect(git(appDir, "status", "--porcelain")).toContain("PRD.md");
+  });
+
+  it("a spec edit made while Kane runs is drift: Kane's results stand, nothing more runs, and nothing is marked tampered", async () => {
+    await setup();
+    let edited = false;
+    const { deps, calls } = fakes({
+      kane: (turn, files) => {
+        if (turn === 1 && !edited) {
+          edited = true; // the human edits the spec while Kane checks turn 1
+          appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+        }
+        return files.map(pass);
+      },
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 1, reason: "drift" });
+    expect(calls.tests.map((t) => t.files)).toEqual([[T1, T3]]); // no replay batch after the edit
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.some((e) => e.t === "tamper")).toBe(false);
+    expect(ev.filter((e) => e.t === "run")).toHaveLength(2);
+    expect(reduce(ev).acs["ac-1"]!.status).toBe("passing");
+    expect(await tamperMarker(p)).toBeNull();
+  });
+
+  it("a spec edit between runs stops at the start with drift, before any agent turn", async () => {
+    await setup();
+    appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+    const { deps, calls } = fakes({ kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, turns: 0, reason: "drift" });
+    expect(calls.claude).toHaveLength(0);
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "tamper")).toBe(false);
+  });
+
+  it("a spec edit next to any other sealed change is still a tamper, naming both", async () => {
+    await setup();
+    const edit = () => {
+      appendFileSync(join(appDir, "PRD.md"), "\nIncome limits do not apply.\n");
+      writeFileSync(T1, "---\nassurance:\n  id: t-1\n---\n# weakened\n");
+    };
+    const { deps } = fakes({ edit, kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("tamper");
+    const tamper = (await loopEvents()).find((e) => e.t === "tamper");
+    expect(tamper && tamper.t === "tamper" && tamper.detail).toContain("app:PRD.md");
+    expect(tamper && tamper.t === "tamper" && tamper.detail).toContain("t1_test.md");
   });
 
   it("fails closed with reason error when the ledger cannot be read", async () => {

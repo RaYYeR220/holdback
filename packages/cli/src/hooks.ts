@@ -172,7 +172,7 @@ async function guardHook(ctx: Ctx, o: HookOptions): Promise<number> {
   try {
     const input = await readInput(ctx);
     p = await projectOf(ctx, input, o);
-    const d = guardPayload(input, { home: p.home, verifierDir: p.verifierDir });
+    const d = guardPayload(input, { home: p.home, verifierDir: p.verifierDir, specFiles: p.config.spec });
     if (d.allow) return EXIT.ok;
     await note(p, "guard.log", `deny ${String(input.tool_name)}: ${d.reason}`);
     ctx.err(d.reason);

@@ -20,7 +20,7 @@ import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
 import type { EventBody } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
-import { seal } from "../seal.js";
+import { appSealKey, isAppKeyOf, seal } from "../seal.js";
 import { clearTamper, logRecordings, tamperMarker } from "../tamper.js";
 import type { HumanIO } from "./human.js";
 
@@ -55,6 +55,21 @@ export function appSealFiles(p: Project): string[] {
   return [CONFIG_FILE, ...p.config.spec.map((f) => f.split(path.sep).join("/"))];
 }
 
+/** True when the seal key `key` is one of the config's spec files (`app:PRD.md`). */
+export function isSpecKey(p: Pick<Project, "config">, key: string): boolean {
+  return p.config.spec.some((f) => isAppKeyOf(key, f));
+}
+
+/** The spec file a seal key names (`app:PRD.md` -> `PRD.md`). */
+export const specFileOf = (key: string): string => appSealKey(key).slice("app:".length);
+
+/**
+ * What a spec edit after the seal means: drift for a human to re-plan with Kane, never a tamper,
+ * and never something a re-seal or the coding agent settles.
+ */
+export const driftHint = (files: string[]): string =>
+  `the spec changed since the last seal (${files.join(", ")}): run \`holdback drift\` so Kane re-plans the criteria with you`;
+
 /**
  * Re-hash the sealed app files (call after any later Holdback append to the
  * spec, e.g. more Clarifications) and return the updated manifest.
@@ -75,18 +90,26 @@ export async function resealAppFiles(p: Project, manifest: Record<string, string
  * 3. When the app dir is a git repo, Kane's recordings and the git config are anchored as they are
  *    now, so the next build loop holds the disk to this moment instead of seeding from it later.
  */
-export async function reseal(p: Project, log: Log, git?: GitOptions): Promise<Record<string, string>> {
+export async function reseal(p: Project, log: Log, git?: GitOptions, opts: ResealOptions = {}): Promise<Record<string, string>> {
   const at = () => new Date().toISOString();
   const gitOpts = git ?? (await holdbackGitOptions(p.home));
   const marker = await tamperMarker(p);
   // an unreadable ledger throws here: nothing is sealed and the marker stays
   if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
-  const manifest = await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) });
+  const manifest = { ...(await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) })), ...opts.keep };
   await log({ at: at(), t: "seal", manifest });
   await clearTamper(p);
   if (await isRepoRoot(p.appDir, gitOpts)) await logRecordings(p, log, gitOpts);
   return manifest;
 }
+
+export type ResealOptions = {
+  /**
+   * Seal entries kept as the last seal had them instead of re-hashed: a human re-seal after a tamper
+   * keeps a changed spec file's old hash, so the edit still reads as drift for Kane to re-plan.
+   */
+  keep?: Record<string, string>;
+};
 
 /** Append-only: creates the heading once, then only adds lines. */
 async function appendClarifications(appDir: string, lines: string[]): Promise<void> {
@@ -188,6 +211,26 @@ export async function commitClarifications(p: Project, before: Buffer | null, wa
     await commitPaths(p.appDir, "spec: clarifications", [CLARIFIED_FILE], gitOpts);
   } catch (e) {
     warn(`warning: could not commit the Clarifications Holdback added to ${CLARIFIED_FILE} (${e instanceof Error ? e.message : String(e)}); they will go into the next commit`);
+  }
+}
+
+/**
+ * A drift's spec edit (the human's) and the Clarifications it appended to PRD.md since `before` go
+ * into the app repo as one commit of their own (`spec: <files>`), before the re-seal, so no agent
+ * turn carries or lists them. Only those files are committed. No repo, or an unborn HEAD: nothing to
+ * do. A commit that fails is a warning, never a failed drift.
+ */
+export async function commitSpec(p: Project, changed: string[], before: Buffer | null, warn: Warn = stderrWarn): Promise<void> {
+  try {
+    const now = await clarifiedFile(p);
+    const clarified = now !== null && (before === null || !now.equals(before));
+    const paths = [...new Set([...changed.map((f) => f.split(path.sep).join("/")), ...(clarified ? [CLARIFIED_FILE] : [])])];
+    if (paths.length === 0) return;
+    const gitOpts = await holdbackGitOptions(p.home);
+    if (!(await isRepoRoot(p.appDir, gitOpts)) || (await headSha(p.appDir, gitOpts)) === null) return;
+    await commitPaths(p.appDir, `spec: ${paths.join(", ")}`, paths, gitOpts);
+  } catch (e) {
+    warn(`warning: could not commit the spec change (${e instanceof Error ? e.message : String(e)}); it will go into the next commit`);
   }
 }
 

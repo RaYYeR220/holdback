@@ -1,5 +1,6 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, withCheckLock, type Ctx } from "./context.js";
+import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { driftNotice } from "./messages.js";
 
 /** After a spec edit: Kane plans what changed, the human approves, the new criteria are owed. */
 export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: boolean; port?: string } = {}): Promise<number> {
@@ -9,6 +10,8 @@ export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: bool
   try {
     let r!: Awaited<ReturnType<typeof ctx.deps.runDrift>>;
     const locked = await withCheckLock(ctx, p, async () => {
+      const s = await snapshot(p);
+      if (s.tamper === null && s.specChanged.length > 0) ctx.out(driftNotice(s.specChanged));
       r = await ctx.deps.runDrift(p, io, ledgerLog(p), { balance: ctx.deps.balance, warn: ctx.err });
       return EXIT.ok;
     });

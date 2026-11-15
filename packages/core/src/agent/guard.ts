@@ -8,6 +8,8 @@ export interface GuardInput {
 export interface GuardContext {
   verifierDir: string;
   home: string;
+  /** The app's spec files (`config.spec`, relative to the app dir): a shell write onto one is denied. */
+  specFiles?: string[];
 }
 export type GuardDecision = { allow: true } | { allow: false; reason: string };
 
@@ -65,6 +67,8 @@ const DENY_GIT =
   "Holdback owns git history. Only read-only git commands (status, diff, log, show, ls-files, blame, rev-parse, branch --list) are allowed.";
 const DENY_INPUT = "Holdback guard could not read this tool call, so it was blocked.";
 const DENY_GIT_INTERNALS = "Holdback owns this repository's git hooks and config. Leave .git/hooks and .git/config alone.";
+const DENY_SPEC =
+  "The spec is the human's: Holdback re-plans the criteria with them when it changes. Do not write to it; if it looks wrong or unclear, tell the human.";
 const DENY_HUMAN =
   "Re-sealing, the spec stage, drift, runs, cleanup, the dashboard and the hooks are the human's Holdback commands. You may run `holdback status` and `holdback owed` to read what is owed.";
 
@@ -128,6 +132,58 @@ function gitViolation(text: string): string | undefined {
   return undefined;
 }
 
+/** Lowercase, `/`-separated, no `./` or `../` prefixes, no quotes: how a shell token is matched to a spec path. */
+function specPathOf(token: string): string {
+  return unquote(token)
+    .toLowerCase()
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.{1,2}\/)+/, "");
+}
+
+/** True when `token` names one of `specs` (normalised): the path itself, or one ending in `/<spec>`. */
+function namesSpec(token: string, specs: string[]): boolean {
+  const t = specPathOf(token);
+  return t !== "" && specs.some((s) => t === s || t.endsWith(`/${s}`));
+}
+
+/** Commands that write the file named by any of their arguments (PowerShell's, and `tee`). */
+const WRITES_ANY_ARG = /^(?:tee|set-content|add-content|out-file|sc|ac)$/i;
+/** Commands whose last argument is the file they write (`cp a b`, `Move-Item a b`). */
+const WRITES_LAST_ARG = /^(?:cp|mv|copy|move|copy-item|move-item|cpi|mi|install|ln|rename-item|ren)$/i;
+
+/**
+ * Best effort: true when `text` writes onto a spec file from a shell: a `>`/`>>` redirect, `tee`,
+ * `Set-Content`/`Add-Content`/`Out-File`, `sed -i`, or `cp`/`mv` (and their PowerShell forms) onto it.
+ * Reading the spec stays open. An agent set on getting round it still can (R15); the seal then
+ * sees the change, which reads as drift a human looks at.
+ */
+function specWrite(text: string, specFiles: string[]): boolean {
+  const specs = specFiles.map(specPathOf).filter((s) => s !== "");
+  if (specs.length === 0) return false;
+  // a redirect: `> PRD.md`, `>>PRD.md`, `1> "PRD.md"`, `&> PRD.md`
+  for (const m of text.matchAll(/>{1,2}\|?\s*("[^"]*"|'[^']*'|[^\s;&|<>()]+)/g)) if (namesSpec(m[1]!, specs)) return true;
+  for (const seg of text.split(/;|&&|\|\||\||\r?\n|`|\$\(|\(|\)/)) {
+    const toks = seg
+      .trim()
+      .split(/\s+/)
+      .map(unquote)
+      .filter((t) => t.length > 0);
+    const at = toks.findIndex((t) => !/^\w+=/.test(t) && t !== "sudo" && t !== "env"); // past env prefixes
+    if (at < 0) continue;
+    const cmd = toks[at]!.replace(/^.*[/\\]/, "").replace(/\.exe$/i, "");
+    const args = toks.slice(at + 1);
+    const operands = args.filter((a) => !a.startsWith("-"));
+    if (WRITES_ANY_ARG.test(cmd) && operands.some((a) => namesSpec(a, specs))) return true;
+    if (/^sed$/i.test(cmd) && args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith("--in-place")) && operands.some((a) => namesSpec(a, specs))) return true;
+    if (WRITES_LAST_ARG.test(cmd)) {
+      const dest = args.findIndex((a) => /^-destination$/i.test(a));
+      const target = dest >= 0 ? args[dest + 1] : operands.at(-1);
+      if (operands.length >= 2 || dest >= 0) if (target !== undefined && namesSpec(target, specs)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * True when `text` runs one of the human's Holdback commands: the `holdback` binary (any path,
  * any shim, behind npx, an env prefix, `cmd /c` or `powershell -c`) or the CLI's entry file,
@@ -178,6 +234,7 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
     if (humanCommand(s)) return { allow: false, reason: DENY_HUMAN };
+    if (ctx.specFiles && specWrite(s, ctx.specFiles)) return { allow: false, reason: DENY_SPEC };
   }
   return { allow: true };
 }
@@ -221,10 +278,22 @@ function protectRules(p: { appDir: string; files: string[] }): string[] {
   });
 }
 
-/** `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>"`: every path quoted. */
-export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath): string {
+/**
+ * `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>" [--spec "<file>"]вЂ¦
+ * [--log "<file>"]`: every path quoted. `log`: where the guard appends its decisions (debugging).
+ */
+export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath, log?: string): string {
   const q = (s: string) => `"${s}"`;
-  return [q(nodeBin), q(guardMain), "--home", q(ctx.home), "--verifier", q(ctx.verifierDir)].join(" ");
+  return [
+    q(nodeBin),
+    q(guardMain),
+    "--home",
+    q(ctx.home),
+    "--verifier",
+    q(ctx.verifierDir),
+    ...(ctx.specFiles ?? []).flatMap((f) => ["--spec", q(f)]),
+    ...(log ? ["--log", q(log)] : []),
+  ].join(" ");
 }
 
 /**

@@ -20,7 +20,7 @@ import { checkRecordings, checkSeal } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { bisectRegression, BisectTampered, blameOf, lastGoodTurn } from "./bisect.js";
 import { buildBrief, byAcId, type AcFailure } from "./brief.js";
-import { appSealFiles } from "./spec.js";
+import { appSealFiles, driftHint, isSpecKey, specFileOf } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Manifest = Record<string, string>;
@@ -47,16 +47,23 @@ export type BuildOptions = {
   signal?: AbortSignal;
 };
 
-/** `inconclusive`: only Kane runs that proved nothing keep the gate shut, and a re-check proved nothing again. */
-export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive";
+/**
+ * `inconclusive`: only Kane runs that proved nothing keep the gate shut, and a re-check proved nothing again.
+ * `drift`: a spec file (and nothing else sealed) changed since the seal: a human re-plans it with `holdback drift`.
+ */
+export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift";
 /**
  * `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on
  * record); `inconclusive` the tests that keep the gate shut, for an `inconclusive` stop.
  */
 export type BuildResult = { allowStop: boolean; turns: number; reason: BuildStopReason; error?: string; inconclusive?: LedgerState["inconclusive"] };
 
-/** What a session's Kane batches did. `tampered`: a sealed file changed meanwhile, and nothing but `tamper` was logged for that batch. */
-export type Verified = { tampered: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[] };
+/**
+ * What a session's Kane batches did. `tampered`: a sealed file changed meanwhile, and nothing but
+ * `tamper` was logged for that batch. `drift`: a spec file (only) changed: the batch's results stand,
+ * and nothing more ran.
+ */
+export type Verified = { tampered: boolean; drift: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[] };
 
 const TURN_TIMEOUT_MS = 30 * 60_000;
 /** Every Nth turn (and on the turn that empties the owed list) the passing ACs' tests are replayed too. */
@@ -72,7 +79,8 @@ function defaultGuardCommand(p: Project): string {
   const main = guardMainPath();
   // a hook command that cannot start exits 1, which Claude Code treats as "allow": refuse to run without it
   if (!existsSync(main)) throw new Error(`guard entry not found at ${main}: build @holdback/core first`);
-  return guardHookCommand({ home: p.home, verifierDir: p.verifierDir }, main);
+  // the agent's environment carries no HOLDBACK_* variable: a guard log path goes on the command line
+  return guardHookCommand({ home: p.home, verifierDir: p.verifierDir, specFiles: p.config.spec }, main, process.execPath, process.env.HOLDBACK_GUARD_LOG || undefined);
 }
 
 function lastIndex(events: LedgerEvent[], t: LedgerEvent["t"]): number {
@@ -129,8 +137,11 @@ export function evidencePath(turn: number, testId: string, step: number | undefi
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Why a session cannot go on before (or between) Kane batches. `unsealed`: no seal or no criteria yet. */
-export type SessionStop = { reason: "tamper" | "unsealed" | "error"; error?: string };
+/**
+ * Why a session cannot go on before (or between) Kane batches. `unsealed`: no seal or no criteria
+ * yet. `drift`: a spec file, and nothing else sealed, changed since the seal.
+ */
+export type SessionStop = { reason: "tamper" | "unsealed" | "error" | "drift"; error?: string };
 
 /**
  * The Kane-facing half of the build loop, shared with the single-shot check (`checkOnce`): the
@@ -149,6 +160,8 @@ export class VerifySession {
   baseline: RecordingsSnapshot | undefined;
   /** True from the start of a Kane batch until the recordings are snapshotted again. */
   kaneWindow = false;
+  /** The spec files changed since the seal when nothing else sealed did (drift, not a tamper), as of the last check. */
+  specDrift: string[] = [];
   app: RunningApp | undefined;
   /** The port and data-dir label the app was last started with (a re-run starts it the same way). */
   private started: { port: number; label: string } | undefined;
@@ -204,13 +217,19 @@ export class VerifySession {
   /**
    * Logs `tamper` and returns true when anything sealed changed: tier 1 (tests, variables, app
    * spec/config), the repo's git config, and, unless Kane may just have written them, its recordings.
+   * A change to spec files alone is drift, not a tamper: false, with `specDrift` naming them (a spec
+   * file is no input to Kane's runs; a human re-plans it). Next to any other change it is a tamper too.
    */
   async tampered(withRecordings: boolean): Promise<boolean> {
     const { p, baseline } = this;
     const bad = this.manifest ? await checkSeal(p.verifierDir, this.manifest, p.appDir) : [];
     if (baseline && (await gitConfigHash(baseline.gitConfigFile, this.gitOpts)) !== baseline.gitConfig) bad.push(".git/config");
     if (withRecordings && baseline) bad.push(...(await checkRecordings(p.verifierDir, baseline.manifest)));
-    if (bad.length === 0) return false;
+    if (bad.every((k) => isSpecKey(p, k))) {
+      this.specDrift = bad.map(specFileOf);
+      return false;
+    }
+    this.specDrift = [];
     await this.recordTamper(`sealed files changed: ${bad.join(", ")}`);
     return true;
   }
@@ -308,6 +327,7 @@ export class VerifySession {
     if (state.tampered) return { reason: "tamper", error: RESEAL_HINT };
     if (Object.keys(state.acs).length === 0) return { reason: "unsealed", error: NO_ACS };
     if (await this.tampered(true)) return { reason: "tamper" };
+    if (this.specDrift.length > 0) return { reason: "drift", error: driftHint(this.specDrift) };
     return { state };
   }
 
@@ -372,6 +392,8 @@ export class VerifySession {
         await this.keepEvidence(result, turn);
         await this.emit({ t: "run", kind: "build", turn, result });
       }
+      // a spec edit meanwhile changes nothing Kane ran: the results stand, and the batches stop here
+      if (this.specDrift.length > 0) done.drift = true;
       const now = reduce(this.events);
       for (const ac of Object.values(now.acs).sort(byAcId)) {
         const prev = was.acs[ac.id]?.status;
@@ -384,11 +406,16 @@ export class VerifySession {
     });
   }
 
-  /** With the app up: the seal checked, then `batches` (each true on a tamper); the app is stopped afterwards whatever happens. */
+  /**
+   * With the app up: the seal checked, then `batches` (each true on a tamper), unless the spec has
+   * drifted; the app is stopped afterwards whatever happens.
+   */
   private async withApp(batches: (done: Verified) => Promise<boolean>): Promise<Verified> {
-    const done: Verified = { tampered: false, ran: new Set(), regressed: [] };
+    const done: Verified = { tampered: false, drift: false, ran: new Set(), regressed: [] };
     try {
-      done.tampered = (await this.tampered(true)) || (await batches(done));
+      if (await this.tampered(true)) done.tampered = true;
+      else if (this.specDrift.length > 0) done.drift = true;
+      else done.tampered = await batches(done);
       return done;
     } finally {
       await this.stopApp();
@@ -405,6 +432,7 @@ export class VerifySession {
   async verify(turn: number, owedFiles: string[], fileOf: Map<string, string>, replay: boolean): Promise<Verified> {
     return this.withApp(async (done) => {
       if (await this.runLogged(turn, owedFiles, fileOf, done)) return true;
+      if (done.drift) return false;
       const state = reduce(this.events);
       const left = gate(state);
       if (!replay && (left.owed.length > 0 || left.regressed.length > 0)) return false;
@@ -540,9 +568,9 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         startError = await s.startApp(p.config.start.port, `recheck-${state.turn}`);
         if (s.app) {
           const v = await s.recheck(state.turn, [...new Set(g.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []))], fileOf);
-          if (v.tampered || (await blame(v.regressed))) return done(false, "tamper");
+          if (v.tampered || (!v.drift && (await blame(v.regressed)))) return done(false, "tamper");
           if (s.kaneWindow) await s.closeKaneWindow();
-          continue;
+          continue; // a drift stops at the top
         }
         // the app does not start: that is the agent's to fix, and the next brief says so
       }
@@ -573,14 +601,17 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       });
       // right after the agent, before any git command of Holdback's reads what it may have planted
       if (await s.tampered(true)) return done(false, "tamper");
+      // a spec edit meanwhile (the human's, or one that slipped past the guard): the turn still goes on
+      // record, without it, and the run stops for a human to re-plan the spec before Kane checks anything
+      const drifted = s.specDrift.length > 0 ? driftHint(s.specDrift) : undefined;
       if (agent.subtype === undefined && !agent.timedOut && agent.exitCode !== 0 && !opts.signal?.aborted) {
         // no result line at all (bad auth, bad flags, crash): another turn would fail the same way
         const why = agent.stderrTail.trim().slice(-500) || agent.resultText || "no output";
         return done(false, "error", `claude exited with code ${agent.exitCode} without a result: ${why}`);
       }
 
-      // 2. commit the turn, restart the app
-      const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, s.gitOpts);
+      // 2. commit the turn (never the spec files: they are the human's), restart the app
+      const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, s.gitOpts, p.config.spec);
       const filesChanged = commit && before ? await changedFiles(p.appDir, before, commit, s.gitOpts) : [];
       startError = await s.startApp(p.config.start.port, `turn-${n}`);
       await s.emit({
@@ -595,11 +626,13 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         ...(agent.numTurns !== undefined ? { agentTurns: agent.numTurns } : {}),
       });
       if (opts.signal?.aborted) return done(false, "aborted"); // the turn is committed and on record; the app stops in `finally`
+      if (drifted !== undefined) return done(false, "drift", drifted);
       if (!s.app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top
 
       // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then
       const v = await s.verify(n, owedFiles, fileOf, n % REPLAY_EVERY === 0);
-      if (v.tampered || (await blame(v.regressed))) return done(false, "tamper");
+      // a drift stops the run at the top: no bisect (its credits) for criteria a human is about to re-plan
+      if (v.tampered || (!v.drift && (await blame(v.regressed)))) return done(false, "tamper");
       // this turn already ran (and re-ran) every test that still proves nothing: no separate re-check
       const left = gate(reduce(s.events)).inconclusive;
       if (left.length > 0 && left.every((u) => v.ran.has(fileOf.get(u.test) ?? ""))) rechecked = true;

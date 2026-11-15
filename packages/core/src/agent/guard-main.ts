@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse hook entry point:
-//   node guard-main.js --home <home> --verifier <verifierDir>
+//   node guard-main.js --home <home> --verifier <verifierDir> [--spec <file>]... [--log <file>]
 // Reads the hook JSON on stdin. Exit 0 = allow; exit 2 + reason on stderr = deny.
 // Any failure (bad args, bad stdin, crash) is a deny: exit 1 would let the call through.
 import { appendFileSync } from "node:fs";
@@ -12,8 +12,19 @@ function arg(name: string): string | undefined {
   return v && !v.startsWith("--") ? v : undefined;
 }
 
+/** Every value given for a repeatable flag. */
+function args(name: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    const v = process.argv[i + 1];
+    if (process.argv[i] === name && v !== undefined && !v.startsWith("--")) out.push(v);
+  }
+  return out;
+}
+
 function log(line: string): void {
-  const f = process.env.HOLDBACK_GUARD_LOG;
+  // the agent's environment carries no HOLDBACK_* variable: the log path comes on the command line
+  const f = arg("--log") ?? process.env.HOLDBACK_GUARD_LOG;
   if (!f) return;
   try {
     appendFileSync(f, line + "\n");
@@ -61,7 +72,7 @@ async function main(): Promise<void> {
     log("deny unparseable");
     deny("Holdback guard could not parse the tool call, so it was blocked.");
   }
-  const d = guardPayload(payload, { home, verifierDir });
+  const d = guardPayload(payload, { home, verifierDir, specFiles: args("--spec") });
   log(`${d.allow ? "allow" : "deny"} ${(payload as { tool_name?: string })?.tool_name ?? "?"}`);
   if (!d.allow) deny(d.reason);
   process.exit(0);

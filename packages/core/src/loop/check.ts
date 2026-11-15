@@ -8,11 +8,12 @@ import { reduce } from "../ledger/reduce.js";
 import type { LedgerEvent, LedgerState } from "../ledger/types.js";
 import type { LedgerMark } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
-import { appSealKey, checkSeal, isAppKeyOf } from "../seal.js";
+import { checkSeal } from "../seal.js";
 import { tamperMarker } from "../tamper.js";
 import { blameOf } from "./bisect.js";
 import { buildBrief, byAcId } from "./brief.js";
 import { EVIDENCE_DIR, filesOf, lastSeal, testFileMap, VerifySession, type BuildDeps, type SessionStop } from "./build.js";
+import { isSpecKey, specFileOf } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Gate = ReturnType<typeof gate>;
@@ -190,8 +191,10 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     detail ??= logged?.t === "tamper" ? logged.detail : "the ledger records a tamper";
     return closed("tamper", TAMPER_BRIEF, detail);
   };
+  const drift = (files: string[]) => closed("drift", DRIFT_BRIEF(files), `spec changed since the last seal: ${files.join(", ")}`);
   const stopFor = async (r: SessionStop): Promise<CheckResult> => {
     if (r.reason === "tamper") return tamper();
+    if (r.reason === "drift") return drift(s.specDrift);
     if (r.reason === "unsealed") return closed("unsealed", UNSEALED_BRIEF, r.error);
     return closed("error", ERROR_BRIEF(forAgent(p, r.error ?? "unknown error")), r.error);
   };
@@ -226,10 +229,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     // a spec file edited after the seal, and nothing else: drift for a human to apply, not a tamper
     // keys compared through the seal's own normaliser: `./PRD.md` in the config is `app:PRD.md`
     const bad = await checkSeal(p.verifierDir, lastSeal(s.events)!, p.appDir);
-    if (bad.length > 0 && bad.every((k) => p.config.spec.some((f) => isAppKeyOf(k, f)))) {
-      const files = bad.map((k) => appSealKey(k).slice("app:".length));
-      return closed("drift", DRIFT_BRIEF(files), `spec changed since the last seal: ${files.join(", ")}`);
-    }
+    if (bad.length > 0 && bad.every((k) => isSpecKey(p, k))) return drift(bad.map(specFileOf));
     const fresh = await s.refresh();
     if (!("state" in fresh)) return stopFor(fresh);
     // only now (git config checked above) may git run in the repo
@@ -278,6 +278,8 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     // the app is down: Kane's recordings as they are now are what the next check holds them to
     if (s.kaneWindow) await s.closeKaneWindow();
     if (opts.reason === "stop") await endTurn(turn, appStartError === undefined);
+    // the spec changed while Kane ran: what it checked stands, and the agent hands over to a human
+    if (s.specDrift.length > 0) return drift(s.specDrift);
     return verdict("checked", ran, appStartError);
   };
 

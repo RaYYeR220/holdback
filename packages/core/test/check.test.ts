@@ -273,6 +273,25 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect((await readEvents(p.ledgerFile)).some((e) => e.t === "tamper")).toBe(false);
   });
 
+  it("a spec edit made while Kane runs is drift too: no tamper, and the agent is sent to a human", async () => {
+    await setup();
+    const { deps, calls } = fakes({
+      kane: (_c, files) => {
+        appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+        return files.map(pass);
+      },
+    });
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "drift", tampered: false, allowStop: false });
+    expect(r.brief).toContain("`holdback drift`");
+    expect(calls.tests).toHaveLength(1);
+    expect(existsSync(join(p.home, "TAMPERED"))).toBe(false);
+    const ev = await readEvents(p.ledgerFile);
+    expect(ev.some((e) => e.t === "tamper")).toBe(false);
+    expect(ev.filter((e) => e.t === "run")).toHaveLength(2); // Kane's results stand
+    expect(ev.at(-1)).toMatchObject({ t: "turn.end" }); // the stop still closes the turn
+  });
+
   it.each([
     ["sealed by this version", false],
     ["sealed under the older `app:./PRD.md` key", true],

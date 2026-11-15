@@ -1,6 +1,6 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
 import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
-import { inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage } from "./messages.js";
+import { driftNotice, driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage } from "./messages.js";
 
 export type RunOptions = {
   maxTurns?: string | number;
@@ -29,6 +29,8 @@ function buildStop(b: BuildResult): Stop {
     case "inconclusive":
       // Kane's to redo, not the agent's: more turns would not help
       return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []) };
+    case "drift":
+      return { code: EXIT.unfinished, why: driftStop(b.error) };
     case "max-turns":
       return { code: EXIT.error, why: `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}: some criteria are still owed (raise it with --max-turns or loop.maxTurns)` };
     default:
@@ -44,6 +46,8 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
       return { code: EXIT.aborted, why: "stopped" };
     case "error":
       return { code: EXIT.error, why: f.error ?? "falsify failed" };
+    case "drift":
+      return { code: EXIT.unfinished, why: driftStop(f.error) };
     default:
       return undefined;
   }
@@ -69,20 +73,26 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
   return s.gate.allowStop && Object.keys(s.state.acs).length > 0 && count("vacuous", "needs-spec", "owed", "regressed") === 0;
 }
 
+/** What a caller of the pipeline (`watch`) hears about besides the exit code. */
+export type PipelineEvents = {
+  /** The spec changed while the pass ran: it stopped for a human to re-plan it (`holdback drift`). */
+  drifted?: () => void;
+};
+
 /**
  * One pass of `holdback run`: drift check, build loop, falsify, and back to the build loop while
  * falsify re-opens work. Holds the check lock throughout, so the Claude Code hooks' background
  * check never races it on the ledger. Returns the exit code; never throws.
  */
-export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions): Promise<number> {
+export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions, on: PipelineEvents = {}): Promise<number> {
   try {
-    return await withCheckLock(ctx, p, () => pipeline(ctx, p, io, signal, o));
+    return await withCheckLock(ctx, p, () => pipeline(ctx, p, io, signal, o, on));
   } catch (e) {
     return await explainFailure(ctx, e, p);
   }
 }
 
-async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions): Promise<number> {
+async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, o: RunOptions, on: PipelineEvents): Promise<number> {
   const log = ledgerLog(p);
   let turns = 0;
   let falsified: FalsifyResult | undefined;
@@ -109,6 +119,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
     // the spec was edited after the last seal: Kane re-plans with the human before anything is built
     if (before.specChanged.length > 0) {
       ctx.out("spec changed since the last seal — running drift");
+      ctx.out(driftNotice(before.specChanged));
       const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err });
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
@@ -128,6 +139,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       turns += b.turns;
       if (b.reason !== "gate-open") {
         stop = buildStop(b);
+        if (b.reason === "drift") on.drifted?.();
         break;
       }
       if (o.falsify === false) break;
@@ -135,6 +147,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err });
       falsified = f;
       stop = falsifyStop(f);
+      if (f.reason === "drift") on.drifted?.();
       if (stop) break;
       if (f.redesigned.length === 0) break;
       ctx.out(`Falsify re-opened ${f.redesigned.join(", ")}: building again`);

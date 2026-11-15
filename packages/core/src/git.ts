@@ -87,10 +87,14 @@ async function commitStaged(cwd: string, message: string, opts: GitOptions, path
   return (await gitOk(cwd, ["rev-parse", "--short", "HEAD"], opts)).trim();
 }
 
-/** Stage everything not ignored and commit. Returns the new short SHA, or null when nothing changed. */
-export async function commitAll(cwd: string, message: string, opts: GitOptions = {}): Promise<string | null> {
-  await gitOk(cwd, ["add", "-A", "--", "."], opts);
-  return commitStaged(cwd, message, opts);
+/**
+ * Stage everything not ignored and commit, except the `exclude` paths (relative to `cwd`), which
+ * stay as they are in the work tree. Returns the new short SHA, or null when nothing changed.
+ */
+export async function commitAll(cwd: string, message: string, opts: GitOptions = {}, exclude: string[] = []): Promise<string | null> {
+  const but = exclude.map((f) => `:(exclude)${f.split("\\").join("/")}`);
+  await gitOk(cwd, ["add", "-A", "--", ".", ...but], opts);
+  return commitStaged(cwd, message, opts, but.length > 0 ? [".", ...but] : []);
 }
 
 /**

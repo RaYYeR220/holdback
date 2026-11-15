@@ -10,6 +10,26 @@ export function tamperMessage(detail: string): string {
   ].join("\n");
 }
 
+/** Why `holdback run` stopped when the spec changed while it ran: drift for the human, never a tamper. */
+export function driftStop(detail: string | undefined): string {
+  return [
+    `Spec changed while the run went on${detail ? ` (${detail})` : ""}.`,
+    "Kane's results so far stand. Run `holdback drift` so Kane re-plans the criteria with you, then `holdback run` again.",
+  ].join("\n");
+}
+
+/**
+ * Said before drift asks the human to approve a spec change: the coding agent cannot edit the spec,
+ * but a shell write can slip past the guard, so the change may not be the human's.
+ */
+export function driftNotice(changed: string[]): string {
+  const files = changed.map((k) => k.replace(/^app:/, ""));
+  return [
+    `Changed since the last seal: ${files.join(", ")}.`,
+    `This change may not be yours (a coding agent can slip a shell write past Holdback's guard): review it before you approve the plan (\`git diff -- ${files.join(" ")}\`).`,
+  ].join("\n");
+}
+
 /** A command only the human may run, refused inside a Claude Code session. */
 export const HUMAN_ONLY = (cmd: string) =>
   `\`${cmd}\` is for you, not the coding agent: run it in your own terminal, outside Claude Code.`;

@@ -2,7 +2,11 @@ import { loadProject } from "@holdback/core";
 import { EXIT, openHumanIO, refuseInsideClaudeCode, type Ctx } from "./context.js";
 import { runPipeline, type RunOptions } from "./run.js";
 
-/** Watches the spec files: every edit goes through drift and then the run loop, until Ctrl-C. */
+/**
+ * Watches the spec files: every edit goes through drift and then the run loop, until Ctrl-C. An
+ * edit made while a pass runs stops that pass (drift, never a tamper), and the next pass re-plans it
+ * with the human before it builds on.
+ */
 export async function watchCmd(ctx: Ctx, o: RunOptions): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback watch")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
@@ -23,7 +27,7 @@ export async function watchCmd(ctx: Ctx, o: RunOptions): Promise<number> {
     do {
       pending = false;
       ctx.out("spec changed: checking for drift, then building");
-      const c = await runPipeline(ctx, p, io, sig.signal, o);
+      const c = await runPipeline(ctx, p, io, sig.signal, o, { drifted: () => void (pending = true) });
       if (c === EXIT.tamper || c === EXIT.aborted) return fail(c);
     } while (pending && !sig.signal.aborted);
   };
