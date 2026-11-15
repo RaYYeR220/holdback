@@ -22,6 +22,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
     switch (e.t) {
       case "design": {
         state.credits += e.credits;
+        for (const ac of e.acs) latest.delete(ac.id); // AC may move between use cases: drop stale results
         for (const old of Object.values(state.acs)) {
           if (old.useCase === e.useCase) {
             delete state.acs[old.id];
@@ -65,15 +66,24 @@ export function reduce(events: LedgerEvent[]): LedgerState {
               verdict: r.verdict,
               screenshot: r.screenshot,
               turn: e.turn,
+              ...(r.reason !== undefined ? { reason: r.reason } : {}),
             };
           } else if ((ac.status === "owed" || ac.status === "regressed") && allPass(ac)) {
             ac.status = "passing";
             delete ac.lastFailure;
           }
         };
-        // passes first so a contradictory result listing an AC in both lists ends up failed
-        for (const id of r.criteriaPassed) mark(id, true);
-        for (const id of r.criteriaFailed) mark(id, false);
+        if (r.criteriaPassed.length === 0 && r.criteriaFailed.length === 0) {
+          // no coverage info (timeout, crash, skipped coverage): fall back to the test's own verifies
+          const verified = Object.values(state.acs)
+            .filter((a) => a.tests.includes(testId))
+            .map((a) => a.id);
+          for (const id of verified) mark(id, r.status === "passed");
+        } else {
+          // passes first so a contradictory result listing an AC in both lists ends up failed
+          for (const id of r.criteriaPassed) mark(id, true);
+          for (const id of r.criteriaFailed) mark(id, false);
+        }
         break;
       }
       case "mutant": {

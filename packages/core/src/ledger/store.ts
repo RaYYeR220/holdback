@@ -11,8 +11,10 @@ export async function readEvents(file: string): Promise<LedgerEvent[]> {
   let raw: string;
   try {
     raw = await readFile(file, "utf8");
-  } catch {
-    return [];
+  } catch (err) {
+    // only "no ledger yet" is empty; any other error must not look like an empty (all-clear) ledger
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
   }
   const out: LedgerEvent[] = [];
   for (const line of raw.split("\n")) {

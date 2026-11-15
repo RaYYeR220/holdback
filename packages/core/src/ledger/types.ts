@@ -52,6 +52,7 @@ export type AcState = {
     verdict?: BugVerdict;
     screenshot?: string;
     turn?: number;
+    reason?: string;
   };
 };
 

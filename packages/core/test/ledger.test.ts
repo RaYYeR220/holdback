@@ -205,6 +205,44 @@ describe("build runs", () => {
   });
 });
 
+describe("build runs without coverage lists (fallback to test verifies)", () => {
+  const d = design(["ac-1", "ac-2"], [["t-1", ["ac-1", "ac-2"]]]);
+  it("timeout result on a passing AC -> regressed with reason", () => {
+    const evs = [
+      d,
+      run(result("t-1", ["ac-1", "ac-2"], [])),
+      run(result("t-1", [], [], { status: "error", reason: "timeout" }), "build", 2),
+    ];
+    const s = reduce(evs);
+    expect(s.acs["ac-1"]!.status).toBe("regressed");
+    expect(s.acs["ac-2"]!.status).toBe("regressed");
+    expect(s.acs["ac-1"]!.lastFailure).toMatchObject({ test: "t-1", reason: "timeout", turn: 2 });
+  });
+  it("passed with empty lists -> passing via fallback", () => {
+    const s = reduce([d, run(result("t-1", [], [], { status: "passed" }))]);
+    expect(s.acs["ac-1"]!.status).toBe("passing");
+    expect(s.acs["ac-2"]!.status).toBe("passing");
+  });
+  it.each(["failed", "broken", "error"] as const)("%s with empty lists on owed AC -> owed + lastFailure", (st) => {
+    const s = reduce([d, run(result("t-1", [], [], { status: st, failedStep: 2, failedStepText: "x", screenshot: "s.png" }))]);
+    expect(s.acs["ac-1"]!.status).toBe("owed");
+    expect(s.acs["ac-1"]!.lastFailure).toMatchObject({ test: "t-1", step: 2, stepText: "x", screenshot: "s.png" });
+  });
+  it("non-empty lists keep precise behaviour (no fallback)", () => {
+    const s = reduce([d, run(result("t-1", ["ac-1"], [], { status: "failed" }))]);
+    expect(s.acs["ac-1"]!.status).toBe("passing");
+    expect(s.acs["ac-2"]!.status).toBe("owed");
+  });
+  it("AC moving between use cases drops stale results", () => {
+    const evs = [
+      design(["ac-1"], [["t-1", ["ac-1"]]], { useCase: "uc-1" }),
+      run(result("t-1", ["ac-1"], [])),
+      design(["ac-1"], [["t-1", ["ac-1"]]], { useCase: "uc-2" }),
+    ];
+    expect(status(evs, "ac-1")).toBe("owed");
+  });
+});
+
 describe("mutants", () => {
   const d = design(["ac-1"], [["t-1", ["ac-1"]]]);
   const green = [d, run(result("t-1", ["ac-1"], []))];
@@ -358,6 +396,10 @@ describe("store", () => {
     await appendEvent(f, { t: "tamper", at, detail: "b" });
     const got = await readEvents(f);
     expect(got.map((e) => (e as { detail: string }).detail)).toEqual(["a", "b"]);
+  });
+
+  it("rethrows non-ENOENT read errors (directory path) instead of returning an empty ledger", async () => {
+    await expect(readEvents(mkdtempSync(join(tmpdir(), "holdback-dir-")))).rejects.toThrow();
   });
 
   it("handles CRLF line endings", async () => {
