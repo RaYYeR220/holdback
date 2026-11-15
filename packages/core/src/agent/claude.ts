@@ -55,6 +55,17 @@ export function guardMainPath(): string {
 export const HEADLESS_ENV = "HOLDBACK_HEADLESS";
 
 /**
+ * `env` with every `HOLDBACK_*` variable taken out (set to undefined, which a spawn leaves out) but
+ * the headless mark: `HOLDBACK_HOME` names where the sealed tests live, and none of the others is
+ * the agent's business either (I8). The names come from this process's environment and from `env`.
+ */
+export function withoutHoldbackEnv(env: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const k of [...Object.keys(process.env), ...Object.keys(env)]) if (/^HOLDBACK_/i.test(k) && k.toUpperCase() !== HEADLESS_ENV) out[k] = undefined;
+  return out;
+}
+
+/**
  * Run one headless Claude Code turn and parse its final `result` line.
  * The binary is HOLDBACK_CLAUDE_BIN or `claude`; a `.mjs`/`.js` binary is run
  * through node (test fake).
@@ -99,7 +110,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
 
     const child = spawn(cmd, cmdArgs, {
       cwd: opts.cwd,
-      env: { ...process.env, ...opts.env, [HEADLESS_ENV]: "1" },
+      env: { ...process.env, ...withoutHoldbackEnv(opts.env), [HEADLESS_ENV]: "1" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

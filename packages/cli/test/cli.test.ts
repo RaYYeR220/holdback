@@ -864,6 +864,23 @@ describe("run", () => {
     expect(process.env.VENICE_API_KEY).toBe("secret");
   });
 
+  it("scrubAgentEnv also drops every HOLDBACK_* variable but the headless mark (I8)", async () => {
+    process.env.HOLDBACK_KANE_BIN = "kane.js";
+    try {
+      const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+      const deps = scrubAgentEnv({ claude: async (o) => (seen.push(o.env), {} as never), tests: notCalled("t") as never, app: notCalled("a") as never });
+      await deps.claude({ env: { HOLDBACK_GUARD_LOG: "g.log", FOO: "1" } } as never);
+      const env = seen[0]!;
+      expect(env.FOO).toBe("1");
+      for (const k of ["HOLDBACK_HOME", "HOLDBACK_KANE_BIN", "HOLDBACK_GUARD_LOG"]) {
+        expect(k in env, k).toBe(true);
+        expect(env[k], k).toBeUndefined();
+      }
+    } finally {
+      delete process.env.HOLDBACK_KANE_BIN;
+    }
+  });
+
   it("scrubAgentEnv blanks the key even when no env was given", async () => {
     const seen: (NodeJS.ProcessEnv | undefined)[] = [];
     const deps = scrubAgentEnv({ claude: async (o) => (seen.push(o.env), {} as never), tests: notCalled("t") as never, app: notCalled("a") as never });

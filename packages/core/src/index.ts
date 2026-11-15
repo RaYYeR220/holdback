@@ -68,7 +68,7 @@ export {
   type GuardDecision,
   type AgentSettingsOptions,
 } from "./agent/guard.js";
-export { runClaudeTurn, contractPath, guardMainPath, HEADLESS_ENV, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
+export { runClaudeTurn, contractPath, guardMainPath, HEADLESS_ENV, withoutHoldbackEnv, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO, parseHumanScript, type HumanScript } from "./loop/human.js";
 export {

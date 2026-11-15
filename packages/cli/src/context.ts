@@ -21,6 +21,7 @@ import {
   runTests,
   serve,
   snapshot as coreSnapshot,
+  withoutHoldbackEnv,
   killTrackedChildrenSync,
   escapeControls,
   specDiff,
@@ -87,9 +88,12 @@ export type Ctx = {
 
 export type CtxOverrides = Partial<Omit<Ctx, "deps">> & { deps?: Partial<Deps> };
 
-/** The coding agent never sees the breaker's key: the loop's agent turns run with it blanked. */
+/**
+ * The coding agent never sees the breaker's key, nor any of Holdback's own variables (`HOLDBACK_HOME`
+ * names where the sealed tests live): the loop's agent turns run with them taken out (I8).
+ */
 export function scrubAgentEnv(base: BuildDeps): BuildDeps {
-  return { ...base, claude: (o) => base.claude({ ...o, env: { ...o.env, VENICE_API_KEY: "" } }) };
+  return { ...base, claude: (o) => base.claude({ ...o, env: { ...withoutHoldbackEnv(o.env), VENICE_API_KEY: "" } }) };
 }
 
 /**

@@ -95,6 +95,8 @@ const HOME_REFS: RegExp[] = [
   /\bUSERPROFILE\b/i,
   /\bHOMEPATH\b/i,
   /\bHOMEDRIVE\b/i,
+  // Holdback's own home, in any shell's form ($HOLDBACK_HOME, ${HOLDBACK_HOME}, %HOLDBACK_HOME%, $env:HOLDBACK_HOME)
+  /\bHOLDBACK_HOME\b/i,
 ];
 
 const GIT_OK = new Set(["status", "diff", "log", "show", "ls-files", "blame", "rev-parse"]);

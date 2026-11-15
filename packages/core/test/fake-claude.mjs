@@ -5,7 +5,11 @@ import { writeFileSync } from "node:fs";
 const mode = process.env.FAKE_CLAUDE_MODE ?? "ok";
 if (process.env.FAKE_CLAUDE_ARGS_FILE) writeFileSync(process.env.FAKE_CLAUDE_ARGS_FILE, JSON.stringify(process.argv.slice(2)));
 // FAKE_CLAUDE_ENV_FILE: record the environment Holdback marks the agent with
-if (process.env.FAKE_CLAUDE_ENV_FILE) writeFileSync(process.env.FAKE_CLAUDE_ENV_FILE, JSON.stringify({ HOLDBACK_HEADLESS: process.env.HOLDBACK_HEADLESS ?? null }));
+if (process.env.FAKE_CLAUDE_ENV_FILE)
+  writeFileSync(
+    process.env.FAKE_CLAUDE_ENV_FILE,
+    JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k]) => /^HOLDBACK_/i.test(k) && k !== "HOLDBACK_CLAUDE_BIN" ? true : k === "HOLDBACK_HEADLESS"))),
+  );
 if (mode === "hang") setInterval(() => {}, 1000);
 else {
   let stdin = "";

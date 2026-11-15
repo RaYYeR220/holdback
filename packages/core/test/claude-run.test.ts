@@ -73,6 +73,23 @@ describe("runClaudeTurn", () => {
     await runClaudeTurn({ ...base(), env: { HOLDBACK_HEADLESS: "" } });
     expect(JSON.parse(readFileSync(envFile, "utf8"))).toEqual({ HOLDBACK_HEADLESS: "1" });
   });
+  it("never hands the agent Holdback's own variables: no HOLDBACK_HOME, kane binary or guard log (I8)", async () => {
+    process.env.HOLDBACK_CLAUDE_BIN = fake;
+    const envFile = join(mkdtempSync(join(tmpdir(), "hb-")), "env.json");
+    process.env.FAKE_CLAUDE_ENV_FILE = envFile;
+    const saved = { home: process.env.HOLDBACK_HOME, guard: process.env.HOLDBACK_GUARD_LOG };
+    process.env.HOLDBACK_HOME = join(tmpdir(), "hb-secret-home");
+    process.env.HOLDBACK_GUARD_LOG = join(tmpdir(), "g.log");
+    try {
+      await runClaudeTurn({ ...base(), env: { HOLDBACK_KANE_BIN: "kane.js" } });
+      expect(JSON.parse(readFileSync(envFile, "utf8"))).toEqual({ HOLDBACK_HEADLESS: "1" });
+    } finally {
+      if (saved.home === undefined) delete process.env.HOLDBACK_HOME;
+      else process.env.HOLDBACK_HOME = saved.home;
+      if (saved.guard === undefined) delete process.env.HOLDBACK_GUARD_LOG;
+      else process.env.HOLDBACK_GUARD_LOG = saved.guard;
+    }
+  });
   it("joins errors for error results", async () => {
     process.env.HOLDBACK_CLAUDE_BIN = fake;
     process.env.FAKE_CLAUDE_MODE = "error";

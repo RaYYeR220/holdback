@@ -71,6 +71,10 @@ describe("guardDecision hardening", () => {
       expect(sh(c), c).toBe(true);
     expect(sh("Get-ChildItem $env:USERPROFILE", "PowerShell")).toBe(true);
   });
+  it("denies a shell reference to Holdback's home variable in every shell's form (I8)", () => {
+    for (const command of ["cat $HOLDBACK_HOME/*/verifier/*/tests/*_test.md", "ls ${HOLDBACK_HOME}", "type %HOLDBACK_HOME%\\x", "Get-ChildItem $env:HOLDBACK_HOME", "printenv HOLDBACK_HOME"])
+      expect(denied("Bash", { command }), command).toBe(true);
+  });
   it("does not trip on ordinary tildes", () => {
     expect(sh("npm i left-pad@~1.2.0")).toBe(false);
     expect(sh("echo a~b")).toBe(false);
