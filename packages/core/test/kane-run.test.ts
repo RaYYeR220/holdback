@@ -71,6 +71,18 @@ describe("runKane", () => {
     expect(res.timedOut).toBe(false);
   });
 
+  it("exposes raw stdout including non-JSON lines while events hold only parsed ones", async () => {
+    process.env.HOLDBACK_KANE_BIN = fakeBin;
+    const res = await runKane(["balance"], {
+      cwd: tmpdir(),
+      timeoutMs: 20_000,
+      env: { FAKE_KANE_FIXTURE: fixture("noise.txt") },
+    });
+    expect(res.stdout).toContain("Available credits: 42.5");
+    expect(res.stdout).toContain('{"type":"done","exit_code":0}');
+    expect(res.events).toEqual([{ type: "done", exit_code: 0 }]);
+  });
+
   it("passes argv through", async () => {
     process.env.HOLDBACK_KANE_BIN = fakeBin;
     const log = join(mkdtempSync(join(tmpdir(), "hb-")), "argv.log");
@@ -94,7 +106,17 @@ describe("runKane", () => {
     expect(res.timedOut).toBe(true);
     const pid = Number(readFileSync(pidFile, "utf8"));
     expect(pid).toBeGreaterThan(0);
-    expect(() => process.kill(pid, 0)).toThrow();
+    // taskkill is asynchronous on Windows, so poll briefly for the process to disappear.
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 30 && alive(); i++) await new Promise((r) => setTimeout(r, 100));
+    expect(alive()).toBe(false);
     expect(Date.now() - t0).toBeLessThan(10_000);
   });
 });
