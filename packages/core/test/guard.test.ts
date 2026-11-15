@@ -136,4 +136,23 @@ describe("writeAgentSettings", () => {
     const s = JSON.parse(readFileSync(f, "utf8"));
     expect(s.permissions.deny).toEqual(expect.arrayContaining(["WebFetch", "WebSearch"]));
   });
+  it("protect denies edits to app files in the relative and the absolute rule form", async () => {
+    const f = join(mkdtempSync(join(tmpdir(), "hb-")), "s.json");
+    await writeAgentSettings(f, ctx, {
+      guardCommand: "x",
+      protect: { appDir: "C:\\Users\\x\\app", files: ["holdback.config.json", "docs\\PRD.md", "./NOTES.md"] },
+    });
+    const deny: string[] = JSON.parse(readFileSync(f, "utf8")).permissions.deny;
+    expect(deny).toEqual(
+      expect.arrayContaining([
+        "Edit(./holdback.config.json)",
+        "Edit(//c/Users/x/app/holdback.config.json)",
+        "Edit(./docs/PRD.md)",
+        "Edit(//c/Users/x/app/docs/PRD.md)",
+        "Edit(./NOTES.md)",
+        "Edit(//c/Users/x/app/NOTES.md)",
+      ]),
+    );
+    expect(deny.some((r) => r.startsWith("Read(./"))).toBe(false); // the agent still reads its spec
+  });
 });

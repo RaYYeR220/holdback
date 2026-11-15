@@ -168,6 +168,17 @@ export interface AgentSettingsOptions {
   guardCommand: string;
   /** Also remove WebFetch / WebSearch from the agent. */
   denyWeb?: boolean;
+  /** App-repo files the agent may read but not edit (spec, config), relative to `appDir`. */
+  protect?: { appDir: string; files: string[] };
+}
+
+/** `Edit(...)` deny rules for app files, in both the cwd-relative and the absolute rule form. */
+function protectRules(p: { appDir: string; files: string[] }): string[] {
+  const abs = posixAbs(p.appDir);
+  return p.files.flatMap((f) => {
+    const rel = f.replace(/\\/g, "/").replace(/^\.\//, "");
+    return [`Edit(./${rel})`, `Edit(${abs}/${rel})`];
+  });
 }
 
 /** Write the settings file passed to `claude --settings`: deny rules plus the guard hook. */
@@ -178,6 +189,7 @@ export async function writeAgentSettings(file: string, ctx: GuardContext, opts: 
     "Edit(~/.holdback/**)",
     `Read(${home}/**)`,
     `Edit(${home}/**)`,
+    ...(opts.protect ? protectRules(opts.protect) : []),
     ...(opts.denyWeb ? ["WebFetch", "WebSearch"] : []),
   ];
   const settings = {

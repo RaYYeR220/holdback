@@ -11,7 +11,8 @@ export type HoldbackConfig = {
   agent: { kind: "claude"; model?: string; maxTurnsPerCall: number };
   kane: { parallel: number; timeoutS: number; designMax: number };
   breaker: { model: string; capUsd: number };
-  loop: { maxTurns: number };
+  /** denyWeb: remove WebFetch/WebSearch from the agent (eval arms run without web access). */
+  loop: { maxTurns: number; denyWeb?: boolean };
 };
 
 const DEFAULTS: HoldbackConfig = {

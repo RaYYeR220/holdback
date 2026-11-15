@@ -37,6 +37,11 @@ export function contractPath(): string {
   return fileURLToPath(new URL("./contract.md", import.meta.url));
 }
 
+/** Absolute path of the compiled PreToolUse guard entry (exists once the package is built). */
+export function guardMainPath(): string {
+  return fileURLToPath(new URL("./guard-main.js", import.meta.url));
+}
+
 /**
  * Run one headless Claude Code turn and parse its final `result` line.
  * The binary is HOLDBACK_CLAUDE_BIN or `claude`; a `.mjs`/`.js` binary is run

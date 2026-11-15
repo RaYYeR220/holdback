@@ -57,7 +57,27 @@ export {
   type GuardDecision,
   type AgentSettingsOptions,
 } from "./agent/guard.js";
-export { runClaudeTurn, contractPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
+export { runClaudeTurn, contractPath, guardMainPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
 export { runSpecStage, resealAppFiles, appSealFiles } from "./loop/spec.js";
+export { buildBrief, type BriefOptions } from "./loop/brief.js";
+export {
+  runBuildLoop,
+  defaultBuildDeps,
+  type BuildDeps,
+  type BuildResult,
+  type BuildStopReason,
+} from "./loop/build.js";
+export {
+  git,
+  isRepoRoot,
+  headSha,
+  commitAll,
+  ensureHead,
+  changedFiles,
+  checkout,
+  worktreeAdd,
+  worktreeRemove,
+  type GitResult,
+} from "./git.js";
