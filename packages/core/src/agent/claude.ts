@@ -13,6 +13,8 @@ export interface ClaudeTurnOptions {
   env?: NodeJS.ProcessEnv;
   /** After a timeout kill, resolve anyway once this many ms pass without `close`. Default 2000. */
   killGraceMs?: number;
+  /** Aborting kills the agent's process tree; the turn then resolves with whatever it had printed. */
+  signal?: AbortSignal;
 }
 
 export interface ClaudeTurnResult {
@@ -114,8 +116,8 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
       stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_BYTES);
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const killTree = () => {
+      if (settled || graceTimer) return;
       if (child.pid !== undefined) treeKill(child.pid, "SIGKILL");
       else child.kill("SIGKILL");
       graceTimer = setTimeout(() => {
@@ -123,13 +125,21 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
         child.stderr?.destroy();
         finish(124);
       }, opts.killGraceMs ?? 2000);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree();
     }, opts.timeoutMs);
+    const onAbort = () => killTree();
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts.signal?.aborted) onAbort();
 
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      opts.signal?.removeEventListener("abort", onAbort);
       if (buf.length > 0) handleLine(buf);
       buf = "";
       const r = result;
@@ -154,6 +164,7 @@ export function runClaudeTurn(opts: ClaudeTurnOptions): Promise<ClaudeTurnResult
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      opts.signal?.removeEventListener("abort", onAbort);
       reject(err);
     });
     child.on("close", (code) => finish(code ?? (timedOut ? 124 : 1)));

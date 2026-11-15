@@ -8,6 +8,10 @@ export async function specCmd(ctx: Ctx): Promise<number> {
   try {
     await ctx.deps.runSpecStage(p, io, ledgerLog(p));
     const s = await snapshot(p);
+    if (!s.manifest) {
+      ctx.err("Spec stage ended without a seal — nothing to build yet.");
+      return EXIT.error;
+    }
     const n = Object.keys(s.state.acs).length;
     ctx.out(`Sealed ${n} acceptance ${n === 1 ? "criterion" : "criteria"}. Next: \`holdback run\`.`);
     return EXIT.ok;

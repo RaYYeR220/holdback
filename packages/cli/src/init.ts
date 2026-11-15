@@ -25,9 +25,7 @@ export async function initCmd(ctx: Ctx, o: InitOptions): Promise<number> {
     ctx.err(`--port must be a number between 1 and 65535, got ${String(o.port)}`);
     return EXIT.error;
   }
-  const urls = o.url ?? [];
-  // only links, no file: nothing to copy from the app folder
-  const spec = o.spec && o.spec.length > 0 ? o.spec : urls.length > 0 ? [] : ["PRD.md"];
+  const hadConfig = await exists(file);
 
   try {
     // with --force the old config is still read here: a broken one must not block the overwrite
@@ -36,6 +34,10 @@ export async function initCmd(ctx: Ctx, o: InitOptions): Promise<number> {
       await writeFile(file, "{}\n", "utf8");
       return loadProject(ctx.cwd);
     });
+    // --force keeps what the old config said unless a flag says otherwise
+    const urls = o.url ?? p.config.specUrls;
+    // only links, no file: nothing to copy from the app folder
+    const spec = o.spec && o.spec.length > 0 ? o.spec : !hadConfig && urls.length > 0 ? [] : p.config.spec;
     const config = {
       ...p.config,
       spec,

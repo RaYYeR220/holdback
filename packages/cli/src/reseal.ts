@@ -1,4 +1,4 @@
-import { checkSeal, holdbackGitOptions, loadProject } from "@holdback/core";
+import { holdbackGitOptions, loadProject } from "@holdback/core";
 import { EXIT, explainFailure, ledgerLog, snapshot, type Ctx } from "./context.js";
 
 /** The human re-seal: accepts what is on disk now as the sealed state, which lifts a tamper. */
@@ -10,7 +10,7 @@ export async function resealCmd(ctx: Ctx, o: { yes?: boolean }): Promise<number>
       ctx.err("Nothing is sealed yet: run `holdback spec` first.");
       return EXIT.error;
     }
-    const differ = await checkSeal(p.verifierDir, s.manifest, p.appDir);
+    const differ = [...s.specChanged, ...s.changed].sort();
     if (s.marker !== null) ctx.out(`Tamper on record: ${s.marker}`);
     ctx.out(differ.length > 0 ? `Sealed entries that differ from the last seal:\n${differ.map((d) => `  ${d}`).join("\n")}` : "No sealed entry differs from the last seal.");
     ctx.out("Before you re-seal, inspect those files and restore anything you did not change yourself, including .git/config and any changed test or spec files.");

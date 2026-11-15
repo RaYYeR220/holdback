@@ -10,6 +10,9 @@ export function tamperMessage(detail: string): string {
 
 export const HELP_FOOTER = [
   "",
+  "Exit codes: 0 done (gate open, every criterion proved or passing); 1 error or not finished;",
+  "2 tamper; 3 `run` finished but the gate is not fully green (owed, vacuous or needs-spec remain); 130 interrupted.",
+  "",
   "Never delete the mut/ or bisect/ folders under ~/.holdback/<id>/ by hand: they hold",
   "links into your app's node_modules, and removing them with a plain delete can wipe it.",
   "Use `holdback clean` instead.",

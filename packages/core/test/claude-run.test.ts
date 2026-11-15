@@ -65,4 +65,19 @@ describe("runClaudeTurn", () => {
     expect(r.resultText).toBe("");
     expect(r.durationMs).toBeLessThan(8000);
   });
+
+  it("kills the agent when the signal aborts, promptly and without timing out", async () => {
+    process.env.HOLDBACK_CLAUDE_BIN = fake;
+    process.env.FAKE_CLAUDE_MODE = "hang";
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 200);
+    const started = Date.now();
+    const r = await runClaudeTurn({ ...base(), timeoutMs: 60_000, killGraceMs: 500, signal: ctl.signal });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(r.timedOut).toBe(false);
+    expect(r.exitCode).not.toBe(0);
+    // already aborted: killed at once
+    const r2 = await runClaudeTurn({ ...base(), timeoutMs: 60_000, killGraceMs: 500, signal: ctl.signal });
+    expect(r2.exitCode).not.toBe(0);
+  });
 });

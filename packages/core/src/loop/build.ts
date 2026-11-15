@@ -298,6 +298,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
         maxTurns: p.config.agent.maxTurnsPerCall,
         model: p.config.agent.model,
         timeoutMs: TURN_TIMEOUT_MS,
+        signal: opts.signal,
       });
       // right after the agent, before any git command of Holdback's reads what it may have planted
       if (await tampered(true)) return done(false, "tamper");

@@ -27,8 +27,8 @@ import {
 } from "@holdback/core";
 import { tamperMessage } from "./messages.js";
 
-/** Process exit codes: 2 is only ever a tamper, 130 an interrupt. */
-export const EXIT = { ok: 0, error: 1, tamper: 2, aborted: 130 } as const;
+/** Process exit codes: 2 is only ever a tamper, 3 a finished run that is not fully green, 130 an interrupt. */
+export const EXIT = { ok: 0, error: 1, tamper: 2, unfinished: 3, aborted: 130 } as const;
 
 export type ClosableIO = HumanIO & { close(): void };
 export type Signals = { signal: AbortSignal; dispose(): void };
@@ -185,7 +185,13 @@ export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise
   }
   ctx.err(`error: ${msg}`);
   if (p) {
-    const marker = await tamperMarker(p).catch(() => null);
+    let marker: string | null;
+    try {
+      marker = await tamperMarker(p);
+    } catch (m) {
+      // never swallowed: a marker that cannot be read is itself a reason to stop
+      marker = `tamper marker unreadable: ${m instanceof Error ? m.message : String(m)}`;
+    }
     if (marker !== null) {
       ctx.err(tamperMessage(marker));
       return EXIT.tamper;

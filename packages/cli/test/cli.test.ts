@@ -81,6 +81,12 @@ async function fixture(opts: { seal?: boolean } = {}) {
   await log({ at, t: "run", kind: "build", turn: 1, result: result("t-2", "failed", { failedStep: 2, verdict: { bugTitle: "Limit off by one" } }) });
 }
 
+/** Like `fixture`, but ac-2 has passed too: every criterion is green. */
+async function greenFixture() {
+  await fixture();
+  await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "passed") });
+}
+
 type Out = { code: number; out: string; err: string };
 type Fakes = Partial<Deps>;
 
@@ -134,6 +140,25 @@ describe("init", () => {
     expect(readFileSync(join(appDir, "holdback.config.json"), "utf8")).toBe('{"start":{"port":1}}');
     expect((await cli(["init", "--force", "--port", "abc"])).code).toBe(1);
     expect((await cli(["init", "--force"])).code).toBe(0);
+  });
+});
+
+describe("init --force", () => {
+  it("keeps spec, specUrls and start from the old config unless a flag overrides them", async () => {
+    writeFileSync(
+      join(appDir, "holdback.config.json"),
+      JSON.stringify({ spec: ["docs/A.md"], specUrls: ["https://example.com/x"], start: { cmd: "node a.js", port: 4000, readyPath: "/health" } }),
+    );
+    await cli(["init", "--force"]);
+    let cfg = JSON.parse(readFileSync(join(appDir, "holdback.config.json"), "utf8"));
+    expect(cfg.spec).toEqual(["docs/A.md"]);
+    expect(cfg.specUrls).toEqual(["https://example.com/x"]);
+    expect(cfg.start).toEqual({ cmd: "node a.js", port: 4000, readyPath: "/health" });
+    await cli(["init", "--force", "--port", "4500", "--spec", "B.md"]);
+    cfg = JSON.parse(readFileSync(join(appDir, "holdback.config.json"), "utf8"));
+    expect(cfg.spec).toEqual(["B.md"]);
+    expect(cfg.specUrls).toEqual(["https://example.com/x"]);
+    expect(cfg.start).toEqual({ cmd: "node a.js", port: 4500, readyPath: "/health" });
   });
 });
 
@@ -251,6 +276,14 @@ describe("spec", () => {
     expect(io.closed).toBe(1);
   });
 
+  it("exits 1 when the stage ends without a seal, and does not claim one", async () => {
+    await fixture({ seal: false });
+    const r = await cli(["spec"], { humanIO: () => fakeIO() as never, runSpecStage: async () => {} });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("Spec stage ended without a seal — nothing to build yet.");
+    expect(r.out).not.toContain("Sealed");
+  });
+
   it("closes the human IO when the spec stage fails, and exits 1 with the reason", async () => {
     await fixture({ seal: false });
     const io = fakeIO();
@@ -307,21 +340,34 @@ describe("run", () => {
   });
 
   it("builds, falsifies, and prints the one-screen summary", async () => {
-    await fixture();
+    await greenFixture();
     const s = stages();
     const r = await cli(["run"], s.deps);
     expect(r.code).toBe(0);
     expect(s.calls).toEqual(["build", "falsify"]);
-    expect(r.out).toMatch(/Gate: closed/); // the fake loops changed nothing in the ledger
-    expect(r.out).toContain("Criteria: 1 owed, 1 passing, 0 proved, 0 vacuous, 0 needs-spec");
+    expect(r.out).toMatch(/Gate: open/);
+    expect(r.out).toContain("Criteria: 0 owed, 2 passing, 0 proved, 0 vacuous, 0 needs-spec");
     expect(r.out).toContain("Turns this run: 2");
-    expect(r.out).toContain("Kane credits: 15");
+    expect(r.out).toContain("Kane credits: 16.5");
     expect(r.out).toContain("Breaker spend: $0.0000 of $2");
     expect(s.io.closed).toBe(1);
   });
 
+  it("exits 3 when the run finishes with the gate not fully green (owed, vacuous or needs-spec left)", async () => {
+    await fixture(); // ac-2 is still owed
+    const owed = await cli(["run"], stages().deps);
+    expect(owed.code).toBe(3);
+    expect(owed.out).toContain("Criteria: 1 owed");
+    expect(owed.err).toContain("not fully green");
+    await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "passed") });
+    await log({ at, t: "mutant", id: "m-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "survived" });
+    const vacuous = await cli(["run"], stages().deps);
+    expect(vacuous.code).toBe(3);
+    expect(vacuous.out).toContain("1 vacuous");
+  });
+
   it("skips falsify with --no-falsify and passes --max-turns on", async () => {
-    await fixture();
+    await greenFixture();
     const s = stages();
     const r = await cli(["run", "--no-falsify", "--max-turns", "7"], s.deps);
     expect(r.code).toBe(0);
@@ -331,7 +377,7 @@ describe("run", () => {
   });
 
   it("goes back to the build loop while falsify re-opens criteria", async () => {
-    await fixture();
+    await greenFixture();
     const s = stages({ falsify: [{ ...falsifyOk, redesigned: ["uc-1"] }, falsifyOk] });
     const r = await cli(["run"], s.deps);
     expect(r.code).toBe(0);
@@ -340,7 +386,7 @@ describe("run", () => {
   });
 
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {
-    await fixture();
+    await greenFixture();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
     const s = stages();
     const r = await cli(["run"], s.deps);
@@ -350,14 +396,14 @@ describe("run", () => {
   });
 
   it("does not run drift when the spec still matches the seal", async () => {
-    await fixture();
+    await greenFixture();
     const s = stages();
     await cli(["run"], s.deps);
     expect(s.calls).not.toContain("drift");
   });
 
   it("stops with drift's reason, never starting the build loop, when drift applied nothing", async () => {
-    await fixture();
+    await greenFixture();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
     const s = stages({ drift: { changed: true, applied: false, reason: "the human declined the plan" } });
     const r = await cli(["run"], s.deps);
@@ -368,7 +414,7 @@ describe("run", () => {
   });
 
   it("stops on a tamper with the explanation and exit 2, without falsifying", async () => {
-    await fixture();
+    await greenFixture();
     const s = stages({
       build: [{ allowStop: false, turns: 1, reason: "tamper" }],
       onBuild: () => appendEvent(p.ledgerFile, { at, t: "tamper", detail: "sealed files changed: PRD.md" }),
@@ -381,7 +427,7 @@ describe("run", () => {
   });
 
   it("refuses to start while a tamper is on record", async () => {
-    await fixture();
+    await greenFixture();
     await log({ at, t: "tamper", detail: "recordings changed" });
     const s = stages();
     const r = await cli(["run"], s.deps);
@@ -390,7 +436,7 @@ describe("run", () => {
   });
 
   it("stops on max-turns and on a build error, non-zero, with the reason", async () => {
-    await fixture();
+    await greenFixture();
     const turns = await cli(["run"], stages({ build: [{ allowStop: false, turns: 3, reason: "max-turns" }] }).deps);
     expect(turns.code).toBe(1);
     expect(turns.err).toContain("turn limit reached after 3 turns");
@@ -404,14 +450,14 @@ describe("run", () => {
   });
 
   it("reports a falsify budget stop as done, listing what was not attacked", async () => {
-    await fixture();
+    await greenFixture();
     const r = await cli(["run"], stages({ falsify: [{ ...falsifyOk, reason: "budget", skipped: ["ac-1"] }] }).deps);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Not attacked (breaker budget): ac-1");
   });
 
   it("passes one AbortSignal to the build loop and falsify, and exits 130 when it fires", async () => {
-    await fixture();
+    await greenFixture();
     const ctl = new AbortController();
     let disposed = 0;
     const s = stages({ build: [{ allowStop: false, turns: 1, reason: "aborted" }] });
@@ -426,7 +472,7 @@ describe("run", () => {
   });
 
   it("closes the human IO and the signal handlers when a stage throws", async () => {
-    await fixture();
+    await greenFixture();
     const io = fakeIO();
     let disposed = 0;
     const r = await cli(
@@ -446,7 +492,7 @@ describe("run", () => {
   });
 
   it("hands the build loop deps whose agent turns run without VENICE_API_KEY", async () => {
-    await fixture();
+    await greenFixture();
     process.env.VENICE_API_KEY = "secret";
     const envs: (NodeJS.ProcessEnv | undefined)[] = [];
     const s = stages();
@@ -469,7 +515,7 @@ describe("run", () => {
   });
 
   it("gives the loops a log that appends exactly one JSON line per event to the ledger", async () => {
-    await fixture();
+    await greenFixture();
     const s = stages();
     await cli(["run", "--no-falsify"], s.deps);
     const before = readFileSync(p.ledgerFile, "utf8");
@@ -563,6 +609,13 @@ describe("reseal", () => {
     expect(r.err).toContain("Not re-sealed");
   });
 
+  it("lists an edited spec file among the entries that differ", async () => {
+    await fixture();
+    writeFileSync(join(appDir, "PRD.md"), "# edited\n");
+    const r = await cli(["reseal"], { confirm: async () => false });
+    expect(r.out).toContain("app:PRD.md");
+  });
+
   it("re-seals after an interactive yes, and with --yes", async () => {
     await fixture();
     const calls: string[] = [];
@@ -596,11 +649,25 @@ describe("clean, serve and help", () => {
     expect(swept?.appDir).toBe(p.appDir);
   });
 
+  it("reports a tamper marker in an odd state when a command fails, instead of swallowing it", async () => {
+    await fixture();
+    mkdirSync(join(p.home, "TAMPERED")); // a directory where the marker file belongs
+    const r = await cli(["clean"], {
+      sweepStaleWorktrees: (async () => {
+        throw new Error("git went away");
+      }) as never,
+    });
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("git went away");
+    expect(r.err).toContain("tamper marker is a directory");
+  });
+
   it("help warns against deleting mut/ and bisect/ by hand and points to `holdback clean`", async () => {
     const r = await cli(["--help"]);
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/Never delete the mut\/ or bisect\//);
     expect(r.out).toContain("`holdback clean`");
+    expect(r.out).toMatch(/3 `run` finished but the gate is not fully green/);
     for (const c of ["init", "spec", "run", "drift", "watch", "status", "owed", "reseal", "clean"]) expect(r.out).toContain(c);
   });
 
@@ -613,6 +680,6 @@ describe("clean, serve and help", () => {
 
 describe("exit codes", () => {
   it("keeps 2 for tampers only", () => {
-    expect(EXIT).toEqual({ ok: 0, error: 1, tamper: 2, aborted: 130 });
+    expect(EXIT).toEqual({ ok: 0, error: 1, tamper: 2, unfinished: 3, aborted: 130 });
   });
 });

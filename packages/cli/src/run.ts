@@ -40,7 +40,8 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
   }
 }
 
-async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyResult | undefined): Promise<void> {
+/** Prints the summary; true when the gate is open and nothing is owed, vacuous or without a spec. */
+async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyResult | undefined): Promise<boolean> {
   const s = await snapshot(p);
   const count = (...st: string[]) => Object.values(s.state.acs).filter((a) => st.includes(a.status)).length;
   const regressed = count("regressed");
@@ -54,6 +55,7 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
   ctx.out(`Breaker spend: $${s.state.breakerUsd.toFixed(4)} of $${p.config.breaker.capUsd}`);
   if (falsified && falsified.skipped.length > 0) ctx.out(`Not attacked (breaker budget): ${falsified.skipped.join(", ")}`);
   if (count("vacuous") > 0) ctx.out("Vacuous means a planted bug in that criterion's code got past its tests: the criterion proves nothing yet.");
+  return s.gate.allowStop && Object.keys(s.state.acs).length > 0 && count("vacuous", "needs-spec", "owed", "regressed") === 0;
 }
 
 /**
@@ -122,8 +124,10 @@ export async function runPipeline(ctx: Ctx, p: Project, io: HumanIO, signal: Abo
       const after = await snapshot(p);
       ctx.err(after.tamper ?? tamperMessage(stop.why || "sealed files changed"));
     } else if (stop) ctx.err(stop.why);
-    await summary(ctx, p, turns, falsified);
-    return stop?.code ?? EXIT.ok;
+    const green = await summary(ctx, p, turns, falsified);
+    if (stop) return stop.code;
+    if (!green) ctx.err("Finished, but the gate is not fully green: see the counts above.");
+    return green ? EXIT.ok : EXIT.unfinished;
   } catch (e) {
     return await explainFailure(ctx, e, p);
   }

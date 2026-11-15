@@ -355,6 +355,7 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     const r = await runBuildLoop(p, deps, log, { signal: ctl.signal });
     expect(r).toEqual({ allowStop: false, turns: 1, reason: "aborted" });
     expect(calls.claude).toHaveLength(1);
+    expect(calls.claude[0]!.signal).toBe(ctl.signal); // the agent turn itself can be killed
     expect(calls.tests).toHaveLength(0); // no Kane batch after the abort
     expect(calls.stops).toBe(calls.starts); // the app is down
     expect((await loopEvents()).map((e) => e.t)).toEqual(["turn.start", "turn.end"]);
