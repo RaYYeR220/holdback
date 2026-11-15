@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -410,6 +411,96 @@ describe("runDrift", { timeout: 60_000 }, () => {
     expect(ok).toEqual({ changed: true, applied: true });
     expect(Object.keys(reduce(await readEvents(p.ledgerFile)).acs).sort()).toEqual(["ac-1", "ac-2"]);
     expect(existsSync(join(p.verifierDir, T3))).toBe(false);
+  });
+
+  describe("seals the spec the human reviewed (N-I2)", () => {
+    const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
+    const prd = () => readFileSync(join(p.appDir, "PRD.md"));
+    const reviewedNow = () => ({ "PRD.md": sha(prd()) });
+    const lastSealIndex = async () => (await readEvents(p.ledgerFile)).findLastIndex((e) => e.t === "seal");
+
+    it("a spec that moved after the review stops drift before any Kane call, as an unverified change, nothing sealed", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\nA line nobody reviewed.\n");
+      const sealAt = await lastSealIndex();
+      const calls: Calls = [];
+      const r = await runDrift(p, human(calls, all), log, { kane: fakeKane(calls), reviewed });
+      expect(r).toMatchObject({ changed: true, applied: false, specMoved: ["PRD.md"], reason: expect.stringMatching(/after you reviewed it/) });
+      expect(calls).toEqual([]);
+      const events = await readEvents(p.ledgerFile);
+      expect(events.findLastIndex((e) => e.t === "seal")).toBe(sealAt);
+      expect(events.at(-1)).toMatchObject({ t: "spec.changed", files: ["PRD.md"], duringAgentTurn: true, after: { "PRD.md": sha(prd()) } });
+      expect(verifierPrd()).toBe(OLD_PRD);
+    });
+
+    it("a spec edited while Kane re-plans it rolls the re-plan back, keeps the newer edit, and is recorded as unverified", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const sealAt = await lastSealIndex();
+      const calls: Calls = [];
+      const kane = fakeKane(calls);
+      const design = kane.designTests;
+      kane.designTests = async (...a) => {
+        writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\nSlipped in while Kane designed.\n");
+        return design(...a);
+      };
+      const r = await runDrift(p, human(calls, all), log, { kane, reviewed });
+      expect(r).toMatchObject({ changed: true, applied: false, specMoved: ["PRD.md"] });
+      const events = await readEvents(p.ledgerFile);
+      expect(events.findLastIndex((e) => e.t === "seal")).toBe(sealAt);
+      expect(events.slice(sealAt).some((e) => e.t === "design")).toBe(false);
+      expect(events.findLast((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true });
+      expect(existsSync(join(p.verifierDir, T2))).toBe(false);
+      await verifierClean();
+      // the newer edit is the human's to review: never overwritten by the rollback
+      expect(prd().toString()).toContain("Slipped in while Kane designed.");
+      expect(calls).not.toContain("review:ac-2,t-2");
+    });
+
+    it("the seal holds the reviewed bytes plus Holdback's own Clarifications, and its sealed copy is those bytes", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const calls: Calls = [];
+      const kane = fakeKane(calls);
+      const reconcile = kane.reconcile;
+      kane.reconcile = async (cwd, file, id, mode) =>
+        mode === "plan"
+          ? {
+              status: "paused",
+              verb: "reconcile",
+              sid: "r1",
+              resume: "kane-cli maintain reconcile --resume r1 --mode agent",
+              questions: [{ id: "q1", text: "Does rule 2 apply to SNAP households?", risk: "low", rationale: "", options: [{ label: "Yes" }], recommendedIndex: 0, allowFreeText: false }],
+              credits: 1,
+            }
+          : reconcile(cwd, file, id, mode);
+      kane.resumeSession = async () => ({ status: "complete", rows: [MODIFY], summary: {}, credits: 4 });
+      const io = { ...human(calls, all), answer: async () => ({ q1: "Yes" }) };
+      const r = await runDrift(p, io, log, { kane, reviewed });
+      expect(r).toEqual({ changed: true, applied: true });
+      expect(prd().toString()).toContain("- Q: Does rule 2 apply to SNAP households? — A: Yes");
+      const manifest = (await sealed()).manifest;
+      expect(manifest["app:PRD.md"]).toBe(sha(prd()));
+      expect(readFileSync(join(p.home, "sealed", "PRD.md")).equals(prd())).toBe(true);
+    });
+
+    it("an edit that lands after the last check is not sealed: the seal keeps the reviewed hash and the change stays unverified", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const reviewedHash = reviewed["PRD.md"];
+      const calls: Calls = [];
+      const late = async (e: LedgerEvent) => {
+        await log(e);
+        if (e.t === "design") writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\nToo late to be reviewed.\n");
+      };
+      const r = await runDrift(p, human(calls, all), late, { kane: fakeKane(calls), reviewed });
+      expect(r).toEqual({ changed: true, applied: true });
+      const events = await readEvents(p.ledgerFile);
+      const sealAt = events.findLastIndex((e) => e.t === "seal");
+      expect((events[sealAt] as Extract<LedgerEvent, { t: "seal" }>).manifest["app:PRD.md"]).toBe(reviewedHash);
+      expect(events.slice(sealAt).find((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true, after: { "PRD.md": sha(prd()) } });
+    });
   });
 
   describe("preflight", () => {

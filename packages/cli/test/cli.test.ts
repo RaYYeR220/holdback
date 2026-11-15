@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1034,6 +1035,28 @@ describe("drift and watch", () => {
     expect(drifts).toBe(1);
   });
 
+  it("a re-seal after a tamper never launders the spec change: drift --answers still needs a yes typed in the terminal (N-I1)", async () => {
+    await fixture();
+    await resealNow(); // no agent turn since this seal
+    // the agent tries the spec, the spec changes, a run records the tamper
+    logSpecAttempt(p.home, { tool: "Bash", how: "shell" });
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\nA rule nobody vouches for.\n");
+    expect((await cli(["run", "--no-falsify"], { runBuildLoop: notCalled("build") as never })).code).toBe(2);
+    // the human re-seals the rest; the spec keeps its old seal
+    const resealed = await cli(["reseal", "--yes"]);
+    expect(resealed.code).toBe(0);
+    const after = (await readEventsOf()).slice((await readEventsOf()).findLastIndex((e) => e.t === "seal"));
+    expect(after.find((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true });
+    // no turn and no attempt since that seal: the change still counts as unverified
+    const answers = join(root, "answers.json");
+    writeFileSync(answers, JSON.stringify({ answers: {}, approve: "all" }));
+    const asked: string[] = [];
+    const r = await cli(["drift", "--answers", answers], { runDrift: notCalled("drift") as never, confirm: async (q) => (asked.push(q), false) });
+    expect(r.code).toBe(1);
+    expect(asked).toHaveLength(1);
+    expect(r.err).toContain("origin unverified");
+  });
+
   it("drift of a change made with no agent turn since the seal shows the diff and asks nothing more (R38)", async () => {
     await fixture();
     await resealNow();
@@ -1041,6 +1064,23 @@ describe("drift and watch", () => {
     const r = await cli(["drift"], { humanIO: () => fakeIO() as never, runDrift: async () => ({ changed: true, applied: true }), confirm: notCalled("confirm") as never });
     expect(r.code).toBe(0);
     expect(r.out).toContain("PRD.md");
+  });
+
+  it.each([["drift"], ["run"]])("%s hands drift the hash of the spec bytes whose diff it showed, and a spec that moved after that review stops it with exit 3 (N-I2)", async (cmd) => {
+    await greenFixture();
+    await resealNow();
+    const edited = "# Pantry\n\nSNAP households are eligible.\nA reviewed rule.\n";
+    writeFileSync(join(appDir, "PRD.md"), edited);
+    const seen: (Record<string, string> | undefined)[] = [];
+    const runDrift = (async (_p: Project, _io: unknown, _l: unknown, d: { reviewed?: Record<string, string> }) => {
+      seen.push(d.reviewed);
+      return { changed: true, applied: false, reason: "the spec changed again after you reviewed it (PRD.md): nothing was re-planned; review it again", specMoved: ["PRD.md"] };
+    }) as never;
+    const r = await cli([cmd, ...(cmd === "run" ? ["--no-falsify"] : [])], { humanIO: () => fakeIO() as never, runDrift, runBuildLoop: notCalled("build") as never });
+    expect(seen).toEqual([{ "PRD.md": createHash("sha256").update(edited).digest("hex") }]);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("SPEC CHANGED — origin unverified (PRD.md)");
+    expect(r.err).toContain("after you reviewed it");
   });
 
   it.each([

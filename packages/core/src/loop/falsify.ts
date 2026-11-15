@@ -197,8 +197,12 @@ async function removeEntry(file: string): Promise<void> {
   }
 }
 
-/** Put the sealed files back as `copy` holds them (links are only removed, never written through). */
-export async function restoreSealed(p: Project, copy: SealedCopy): Promise<void> {
+/**
+ * Put the sealed files back as `copy` holds them (links are only removed, never written through).
+ * `appFiles: false` leaves the app side (config and spec) alone: a caller that must not overwrite a
+ * newer spec edit puts back only what it wrote itself (N-I2).
+ */
+export async function restoreSealed(p: Project, copy: SealedCopy, opts: { appFiles?: boolean } = {}): Promise<void> {
   for (const e of await tier1Entries(p.verifierDir)) {
     const was = copy.verifier.get(e.rel);
     if (was === undefined || e.kind !== "file" || !Buffer.isBuffer(was)) {
@@ -211,6 +215,7 @@ export async function restoreSealed(p: Project, copy: SealedCopy): Promise<void>
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, bytes);
   }
+  if (opts.appFiles === false) return;
   for (const [rel, bytes] of copy.app) {
     const file = path.join(p.appDir, ...rel.split("/"));
     await removeEntry(file);

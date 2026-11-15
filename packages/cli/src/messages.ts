@@ -36,11 +36,14 @@ export function driftNotice(changed: string[]): string {
  * not that the agent was working when the change landed (N-m8). Only the human, through
  * `holdback drift`, may accept it.
  */
-export function unverifiedDrift(files: string[]): string {
+export function unverifiedDrift(files: string[], movedAfterReview?: string): string {
   const f = files.map((k) => k.replace(/^app:/, ""));
+  const why = movedAfterReview
+    ? `${movedAfterReview}. Holdback cannot tell who made that change, so it sealed nothing.`
+    : "Holdback cannot tell who made it: an agent turn has run since the last seal, so it may be the coding agent's.";
   return [
     `SPEC CHANGED — origin unverified (${f.join(", ")}).`,
-    `Holdback cannot tell who made it: an agent turn has run since the last seal, so it may be the coding agent's. Review the diff (\`git diff -- ${f.join(" ")}\`), then run \`holdback drift\`: it asks you to accept the change as yours before Kane re-plans anything.`,
+    `${why} Review the diff (\`git diff -- ${f.join(" ")}\`), then run \`holdback drift\`: it asks you to accept the change as yours before Kane re-plans anything.`,
     "Undo it instead if you did not make it.",
   ].join("\n");
 }

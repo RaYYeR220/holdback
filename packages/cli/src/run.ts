@@ -1,7 +1,7 @@
 import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
 import { EXIT, explainFailure, humanView, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
-import { reviewSpecChange } from "./specchange.js";
+import { reviewSpecChange, specMovedStop } from "./specchange.js";
 
 export type RunOptions = {
   maxTurns?: string | number;
@@ -144,9 +144,11 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       ctx.out("spec changed since the last seal — running drift");
       // the diff first; one not known to be the human's stops `run` (exit 3) and, in `watch`, waits
       // for the human's yes in the terminal (R37, R38); a logged write at the spec is a tamper
-      const stopped = await reviewSpecChange(ctx, p, { allowUnverified: on.allowUnverified === true });
-      if (stopped !== undefined) return stopped;
-      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err, ...capped });
+      const review = await reviewSpecChange(ctx, p, { allowUnverified: on.allowUnverified === true });
+      if ("stop" in review) return review.stop;
+      // Kane re-plans, and the seal holds, the spec bytes whose diff was just shown (N-I2)
+      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err, ...capped, ...(review.reviewed ? { reviewed: review.reviewed } : {}) });
+      if (d.changed && !d.applied && d.specMoved) return specMovedStop(ctx, d.specMoved, d.reason);
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
         ctx.err("Nothing was built. Fix or revert the spec edit, then run `holdback drift` or `holdback run` again.");

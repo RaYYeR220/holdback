@@ -79,6 +79,7 @@ export {
   classifySpecChange,
   settleSpecChange,
   specDiff,
+  reviewSpecFile,
   type SpecChangeNow,
   SEALED_DIR,
   type ResealOptions,

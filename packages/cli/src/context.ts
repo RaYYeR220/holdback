@@ -24,7 +24,7 @@ import {
   withoutHoldbackEnv,
   killTrackedChildrenSync,
   escapeControls,
-  specDiff,
+  reviewSpecFile,
   type Snapshot as CoreSnapshot,
   startApp,
   sweepStaleWorktrees,
@@ -241,16 +241,20 @@ export type Snapshot = Omit<CoreSnapshot, "tamperDetail"> & {
 
 /**
  * Prints the unified diff of each changed spec file, from the sealed version to the one on disk,
- * before drift asks the human to approve anything (R37).
+ * before drift asks the human to approve anything (R37). Returns the sha256 of the bytes each diff
+ * showed, by spec file: what drift may then re-plan and seal, and nothing written after it (N-I2).
  */
-export async function showSpecDiff(ctx: Ctx, p: Project, s: Pick<Snapshot, "manifest" | "specChanged">): Promise<void> {
-  if (!s.manifest) return;
+export async function showSpecDiff(ctx: Ctx, p: Project, s: Pick<Snapshot, "manifest" | "specChanged">): Promise<Record<string, string>> {
+  const reviewed: Record<string, string> = {};
+  if (!s.manifest) return reviewed;
   for (const key of s.specChanged) {
     const rel = key.replace(/^app:/, "");
-    const d = await specDiff(p, s.manifest, rel);
+    const { diff: d, hash } = await reviewSpecFile(p, s.manifest, rel);
+    reviewed[rel] = hash;
     if (d === null) ctx.out(`(no sealed copy of ${rel} to compare with: see \`git diff -- ${rel}\`)`);
     else if (d !== "") ctx.out(d);
   }
+  return reviewed;
 }
 
 /** The core snapshot, with the tamper worded for the human. A ledger that cannot be read throws. */

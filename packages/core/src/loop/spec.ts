@@ -175,20 +175,60 @@ export { escapeControls };
 /** `<home>/sealed/<spec>`: each spec file as the latest seal hashed it, for the diff drift shows the human (R37). */
 export const SEALED_DIR = "sealed";
 
-/** Keeps a copy of each spec file the seal just hashed (never one whose old hash it kept). Best effort: the diff falls back to git. */
-async function keepSealedCopies(p: Project, manifest: Record<string, string>, kept: Record<string, string>): Promise<void> {
+/**
+ * Keeps a copy of each spec file the seal just hashed: the bytes `copies` gives for its key, else the
+ * file as it is (never one whose old hash it kept without its bytes). Best effort: the diff falls
+ * back to git.
+ */
+async function keepSealedCopies(p: Project, manifest: Record<string, string>, kept: Record<string, string>, copies: Record<string, Buffer>): Promise<void> {
   for (const f of p.config.spec) {
     const key = appSealKey(f);
-    if (key in kept || manifest[key] === "absent") continue;
+    const bytes = copies[key];
+    if ((key in kept && bytes === undefined) || manifest[key] === "absent") continue;
     const rel = specFileOf(key);
     const dest = path.join(p.home, SEALED_DIR, ...rel.split("/"));
     try {
       await mkdir(path.dirname(dest), { recursive: true });
-      await copyFile(path.join(p.appDir, ...rel.split("/")), dest);
+      if (bytes !== undefined) await writeFile(dest, bytes);
+      else await copyFile(path.join(p.appDir, ...rel.split("/")), dest);
     } catch {
       await rm(dest, { force: true }).catch(() => {});
     }
   }
+}
+
+/**
+ * The spec bytes a stage re-plans and seals, by spec file (as `specFileOf` names it): the bytes the
+ * human reviewed, plus the Clarifications Holdback itself appends meanwhile (N-I2). Whatever else
+ * lands in a spec file while the stage runs is not in here, so it is never sealed unseen.
+ */
+export type SpecPin = { bytes: Map<string, Buffer> };
+
+/**
+ * The spec files that are not what the stage expects: a pinned file whose bytes differ from its pin,
+ * or another spec file whose bytes differ from what `manifest` holds for it.
+ */
+export async function specMovedFrom(p: Project, pin: SpecPin, manifest: Record<string, string>): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of p.config.spec) {
+    const key = appSealKey(f);
+    const rel = specFileOf(key);
+    const pinned = pin.bytes.get(rel);
+    const want = pinned !== undefined ? sha256(pinned) : (manifest[key] ?? "absent");
+    if ((await hashOf(path.join(p.appDir, ...rel.split("/")))) !== want) out.push(rel);
+  }
+  return out;
+}
+
+/** What a reseal keeps for the pinned spec files: their hashes (`keep`) and bytes (`copies`). */
+export function pinnedSeal(pin: SpecPin): Required<Pick<ResealOptions, "keep" | "copies">> {
+  const keep: Record<string, string> = {};
+  const copies: Record<string, Buffer> = {};
+  for (const [rel, bytes] of pin.bytes) {
+    keep[appSealKey(rel)] = sha256(bytes);
+    copies[appSealKey(rel)] = bytes;
+  }
+  return { keep, copies };
 }
 
 /** The bytes of `rel` as the seal in `manifest` hashed them: the kept copy, else HEAD's when it matches; null when neither does. */
@@ -216,27 +256,44 @@ async function sealedBytes(p: Project, manifest: Record<string, string>, rel: st
  * is no longer at hand.
  */
 export async function specDiff(p: Project, manifest: Record<string, string>, rel: string): Promise<string | null> {
+  return (await reviewSpecFile(p, manifest, rel)).diff;
+}
+
+/**
+ * `specDiff`, and the sha256 of the very bytes it diffed ("absent" for a missing file): what the
+ * human reviews is what a drift then re-plans and seals, and nothing written after it (N-I2).
+ */
+export async function reviewSpecFile(p: Project, manifest: Record<string, string>, rel: string): Promise<{ diff: string | null; hash: string }> {
+  const now = await readFile(path.join(p.appDir, ...rel.split("/"))).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? null : Promise.reject(e)));
+  const hash = now === null ? "absent" : sha256(now);
   const sealed = await sealedBytes(p, manifest, rel);
-  if (sealed === null) return null;
+  if (sealed === null) return { diff: null, hash };
   const tmp = await mkdtemp(path.join(os.tmpdir(), "holdback-diff-"));
   try {
     const old = path.join(tmp, "sealed");
+    const nowFile = path.join(tmp, "now");
     await writeFile(old, sealed);
-    const now = path.join(p.appDir, ...rel.split("/"));
-    let nowFile = now;
-    if ((await hashOf(now)) === "absent") {
-      nowFile = path.join(tmp, "absent");
-      await writeFile(nowFile, "");
-    }
+    await writeFile(nowFile, now ?? "");
     const r = await git(tmp, ["diff", "--no-index", "--no-color", "--no-ext-diff", "-U3", "--", old, nowFile]);
-    if (r.code === 0) return "";
-    if (r.code !== 1) return null;
+    if (r.code === 0) return { diff: "", hash };
+    if (r.code !== 1) return { diff: null, hash };
     const lines = r.stdout.split(/\r?\n/);
     const hunk = lines.findIndex((l) => l.startsWith("@@"));
-    return escapeControls([`--- ${rel} (sealed)`, `+++ ${rel} (now)`, ...(hunk < 0 ? [] : lines.slice(hunk))].join("\n").trimEnd());
+    return { diff: escapeControls([`--- ${rel} (sealed)`, `+++ ${rel} (now)`, ...(hunk < 0 ? [] : lines.slice(hunk))].join("\n").trimEnd()), hash };
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** The spec files (as `specFileOf` names them) whose bytes on disk are not what `manifest` holds for them. */
+async function specFilesDiffering(p: Project, manifest: Record<string, string>): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of p.config.spec) {
+    const key = appSealKey(f);
+    const rel = specFileOf(key);
+    if ((await hashOf(path.join(p.appDir, ...rel.split("/")))) !== (manifest[key] ?? "absent")) out.push(rel);
+  }
+  return out;
 }
 
 /**
@@ -256,7 +313,13 @@ export async function reseal(p: Project, log: Log, git?: GitOptions, opts: Resea
   if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
   const manifest = { ...(await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) })), ...opts.keep };
   await log({ at: at(), t: "seal", manifest });
-  await keepSealedCopies(p, manifest, opts.keep ?? {});
+  // a spec that differs from what this seal holds for it (a kept old hash, or bytes that moved while
+  // it sealed) was never accepted by it: its change stays unverified past this seal, until a drift
+  // the human approves in the terminal re-plans it (N-I1)
+  const differing = await specFilesDiffering(p, manifest);
+  const unaccepted = differing.length > 0 ? await specChangeEvent(p, [], manifest, differing, true) : undefined;
+  if (unaccepted) await log({ at: at(), ...unaccepted });
+  await keepSealedCopies(p, manifest, opts.keep ?? {}, opts.copies ?? {});
   await clearTamper(p);
   if (await isRepoRoot(p.appDir, gitOpts)) await logRecordings(p, log, gitOpts);
   return manifest;
@@ -268,10 +331,19 @@ export type ResealOptions = {
    * keeps a changed spec file's old hash, so the edit still reads as drift for Kane to re-plan.
    */
   keep?: Record<string, string>;
+  /**
+   * The bytes a kept spec entry was sealed from (by seal key), kept as its sealed copy for the next
+   * drift's diff: a stage that seals the spec the human reviewed (N-I2) passes them with `keep`.
+   */
+  copies?: Record<string, Buffer>;
 };
 
-/** Append-only: creates the heading once, then only adds lines. */
-async function appendClarifications(appDir: string, lines: string[]): Promise<void> {
+/**
+ * Append-only: creates the heading once, then only adds lines. With a `pin` that holds the file, the
+ * pin moves on by exactly what was appended to the pinned bytes (N-I2): a change someone else made
+ * before the append is never folded into it.
+ */
+async function appendClarifications(appDir: string, lines: string[], pin?: SpecPin): Promise<void> {
   if (lines.length === 0) return;
   const file = path.join(appDir, CLARIFIED_FILE);
   let existing = "";
@@ -280,13 +352,21 @@ async function appendClarifications(appDir: string, lines: string[]): Promise<vo
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
+  const add = clarificationsText(existing, lines);
+  await appendFile(file, add, "utf8");
+  const pinned = pin?.bytes.get(CLARIFIED_FILE);
+  if (pin && pinned !== undefined) pin.bytes.set(CLARIFIED_FILE, Buffer.concat([pinned, Buffer.from(clarificationsText(pinned.toString("utf8"), lines), "utf8")]));
+}
+
+/** What `appendClarifications` adds after `existing`. */
+function clarificationsText(existing: string, lines: string[]): string {
   let add = "";
   if (!existing.split("\n").some((l) => l.trim() === CLARIFICATIONS)) {
     if (existing !== "") add += existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
     add += CLARIFICATIONS + "\n\n";
   } else if (!existing.endsWith("\n")) add += "\n";
   add += lines.join("\n") + "\n";
-  await appendFile(file, add, "utf8");
+  return add;
 }
 
 async function writeStartUrl(verifierDir: string, url: string): Promise<void> {
@@ -321,6 +401,8 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   kane: ResumeCalls = { extractResume, resumeSession },
   /** "spec": the spec stage proper. Later stages (drift, a falsify re-design) append no Clarifications when `loop.appendClarifications` is "spec-only". */
   stage: "spec" | "later" = "later",
+  /** The spec bytes the stage will seal: each Clarification appended to a pinned file moves its pin by exactly that (N-I2). */
+  pin?: SpecPin,
 ): Promise<Exclude<R, Paused>> {
   const cwd = p.verifierDir;
   let r: R = first;
@@ -334,6 +416,7 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
       await appendClarifications(
         p.appDir,
         paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
+        pin,
       );
     }
     r = (paused.verb === "extract" ? await kane.extractResume(cwd, paused.sid, answers) : await kane.resumeSession(cwd, paused, answers)) as R;
