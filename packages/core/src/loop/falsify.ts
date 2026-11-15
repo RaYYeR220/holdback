@@ -6,7 +6,7 @@ import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
 import { Budget, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
-import { balance, evolve, readGraph, type Graph } from "../kane/assurance.js";
+import { balance, evolve, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
 import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneCapReached, KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
@@ -673,7 +673,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       else if (capped) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
       else {
         const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
-        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list);
+        // the follow-up may retire what the first evolve minted, as it may the sealed tests
+        const minted1 = g.tests.filter((t) => first.minted.includes(t.id));
+        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list, minted1);
         if ("stray" in again) return strayTamper(uc, again.stray, again.credits);
         if ("failed" in again) {
           // the first evolve stands; the follow-up's spend is still on record
@@ -724,6 +726,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     uc: string,
     because: string,
     list: Survivor[],
+    /** Tests an earlier evolve of this use case minted in this pass (not sealed yet): this one may retire them too. */
+    prior: TestNode[] = [],
   ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
     evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
     const rel = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
@@ -734,6 +738,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     const state = reduce(events);
     const ucAcs = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).map((a) => a.id));
     const ucTests = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).flatMap((a) => a.tests));
+    for (const t of prior) {
+      sealedTests.set(t.id, { file: rel(t.file), verifies: t.verifies });
+      ucTests.add(t.id);
+    }
     return meter.batch("evolve", async () => {
       const copy = await copySealed(p);
       kaneWindow = true; // Kane writes into the verifier while it evolves

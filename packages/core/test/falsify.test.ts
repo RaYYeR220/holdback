@@ -884,6 +884,29 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(Object.keys(sealEv.manifest)).toEqual(expect.arrayContaining([".testmuai/tests/t4_test.md", ".testmuai/tests/t5_test.md"]));
   });
 
+  it("a follow-up evolve may retire, and remove, the test the first evolve minted in the same pass (R40)", async () => {
+    await setup();
+    const { deps, io } = fakes({
+      mutantRun: survives3,
+      evolve: (n, kit) => {
+        if (n === 0) {
+          kit.mint("t-4", ["ac-3"]);
+          kit.retire("t-1", "t-3");
+          return EVOLVED;
+        }
+        kit.mint("t-5", ["ac-1", "ac-3"]);
+        kit.retire("t-4");
+        rmSync(testFile("t-4"));
+        return { ...EVOLVED, minted: [{ scenario: "sc-5", test: "t-5" }], superseded: [{ scenario: "sc-4", test: "t-4" }], credits: 7.33 };
+      },
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ redesigned: ["uc-1"], reason: "done" });
+    const s = reduce(await readEvents(p.ledgerFile));
+    expect(s.acs["ac-1"]).toMatchObject({ tests: ["t-5"] });
+    expect(s.acs["ac-3"]).toMatchObject({ tests: ["t-5"] });
+  });
+
   it("checks the Kane credit cap before an evolve: at the cap, Kane is not called and the pass stops", async () => {
     await setup();
     const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-3" ? failOn("ac-3") : pass) });
