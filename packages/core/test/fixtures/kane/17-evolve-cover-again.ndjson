@@ -1,0 +1,12 @@
+{"type":"evolve_target","v":1,"verb":"evolve","ref":"uc-1","use_case":"uc-1","pairs":1,"because":"cover ac-2 (\"income above the limit without SNAP is Not eligible.\"), ac-3 (\"SNAP overrides the limit\"), ac-4 (\"the limit for 1 to 8 people\") again"}
+{"type":"child_start","v":1,"verb":"evolve","child":"design","subject":"uc-1"}
+{"type":"run_start","v":1,"verb":"design","mode":"agent","trace":"~\\.testmuai\\kaneai\\assurance\\ctx-8fa0f0be591c\\logs\\design-as-20261115T1942-cover000.log","use_case":"uc-1","session":"as-20261115T1942-cover000"}
+{"type":"message_sent","v":1,"verb":"design","sid":"design-20261115T194200-cover000","chars":171}
+{"type":"usage","v":1,"verb":"design","credits":4.02,"total_credits":4.02}
+{"type":"commit","v":1,"verb":"design","acs":0,"scenarios":2,"tests":0,"gaps":0,"warnings":0,"minted":[{"temp_ref":"s1","cid":"sha256:5a0e0000000000000000000000000000000000000000000000000000000000a5","logical_id":"sc-5"},{"temp_ref":"s2","cid":"sha256:5a0e0000000000000000000000000000000000000000000000000000000000a6","logical_id":"sc-6"}]}
+{"type":"usage","v":1,"verb":"design","credits":3.31,"total_credits":7.33}
+{"type":"commit","v":1,"verb":"design","acs":0,"scenarios":0,"tests":2,"gaps":0,"warnings":0,"minted":[{"temp_ref":"t1","cid":"sha256:7e0e0000000000000000000000000000000000000000000000000000000000b5","logical_id":"t-5"},{"temp_ref":"t2","cid":"sha256:7e0e0000000000000000000000000000000000000000000000000000000000b6","logical_id":"t-6"}]}
+{"type":"session_complete","v":1,"verb":"design","sid":"design-20261115T194200-cover000"}
+{"type":"child_end","v":1,"verb":"evolve","ok":true,"dur_s":44,"exit_code":0}
+{"type":"evolve_diff","v":1,"verb":"evolve","use_case":"uc-1","generation":{"before":18,"after":27},"superseded":[{"scenario":"sc-4","test":"t-4"}],"minted":[{"scenario":"sc-5","test":"t-5"},{"scenario":"sc-6","test":"t-6"}],"retained":[],"moves":[{"ac":"ac-1","before":["t-4"],"after":["t-6"]},{"ac":"ac-2","before":[],"after":["t-5"]},{"ac":"ac-3","before":[],"after":["t-5"]},{"ac":"ac-4","before":[],"after":["t-5"]}]}
+{"type":"done","v":1,"verb":"evolve","status":"complete","exit_code":0}

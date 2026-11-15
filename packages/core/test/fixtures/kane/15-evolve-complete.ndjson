@@ -1,0 +1,62 @@
+{"type":"evolve_target","v":1,"verb":"evolve","ref":"uc-1","use_case":"uc-1","pairs":3,"because":"A version of the app where household size 9 is checked against the 8-person limit passed every test. Add a scenario and test that distinguishes it: household of 9, income 9000 (between 8591 and 9467), no SNAP, must be Eligible with limit 9467."}
+{"type":"child_start","v":1,"verb":"evolve","child":"design","subject":"uc-1"}
+{"type":"run_start","v":1,"verb":"design","mode":"agent","trace":"~\\.testmuai\\kaneai\\assurance\\ctx-8fa0f0be591c\\logs\\design-as-20261115T1927-yly523em.log","use_case":"uc-1","session":"as-20261115T1927-yly523em"}
+{"type":"message_sent","v":1,"verb":"design","sid":"design-20261115T192736-5974ea53","chars":498}
+{"type":"agent_activity","v":1,"verb":"design","kind":"thinking_done","label":"thought for 1.6s"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ read source…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ list sources…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ read an item…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ find similar items…"}
+{"type":"usage","v":1,"verb":"design","credits":3.9,"total_credits":3.9}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"checking what the source says"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ read source"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"checking which sources there are"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ list sources"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"checking what's already there"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ read an item"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"checking a possible duplicate"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ find similar items"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"thinking_done","label":"thought for 1.8s"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ find edge values…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ find edge values…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ combine the options…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ drop duplicates…"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ search source…"}
+{"type":"usage","v":1,"verb":"design","credits":1.82,"total_credits":5.72}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"working out the scenarios"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ find edge values"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"working out the scenarios"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ find edge values"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"working out the scenarios"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ combine the options"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"working out the scenarios"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ drop duplicates"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"searching the source"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ search source"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ find similar items…"}
+{"type":"usage","v":1,"verb":"design","credits":0.99,"total_credits":6.71}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"checking a possible duplicate"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ find similar items"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ propose design…"}
+{"type":"usage","v":1,"verb":"design","credits":1.44,"total_credits":8.14}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"putting the result together"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ propose design"}
+{"type":"commit","v":1,"verb":"design","acs":0,"scenarios":1,"tests":0,"gaps":0,"warnings":0,"minted":[{"temp_ref":"s1","cid":"sha256:0faeaaf304fc322bba11955f8ff233a48b147af3d8f3efb7a085c2afadd62ccb","logical_id":"sc-4"}]}
+{"type":"receipt","v":1,"verb":"design","commit_n":1,"phase":"scenarios","committed":[{"temp_ref":"s1","cid":"sha256:0faeaaf304fc322bba11955f8ff233a48b147af3d8f3efb7a085c2afadd62ccb","logical_id":"sc-4"}],"reused":0,"rejected":[],"warnings":[],"parity":{"live_scenarios":1,"live_tests":0,"missing":["sc-4"],"blocked":[],"unresolved_blockers":[]}}
+{"type":"agent_activity","v":1,"verb":"design","kind":"thinking_done","label":"thought for 1.4s"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ propose design…"}
+{"type":"usage","v":1,"verb":"design","credits":1.67,"total_credits":9.81}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"putting the result together"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ propose design"}
+{"type":"commit","v":1,"verb":"design","acs":0,"scenarios":0,"tests":0,"gaps":0,"warnings":0,"minted":[]}
+{"type":"receipt","v":1,"verb":"design","commit_n":2,"phase":"wiring","committed":[],"reused":0,"rejected":[],"warnings":[],"parity":{"live_scenarios":1,"live_tests":0,"missing":["sc-4"],"blocked":[],"unresolved_blockers":[]}}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"→ propose design…"}
+{"type":"usage","v":1,"verb":"design","credits":1.57,"total_credits":11.38}
+{"type":"agent_activity","v":1,"verb":"design","kind":"decision","label":"putting the result together"}
+{"type":"agent_activity","v":1,"verb":"design","kind":"tool","label":"✓ propose design"}
+{"type":"commit","v":1,"verb":"design","acs":0,"scenarios":0,"tests":1,"gaps":0,"warnings":0,"minted":[{"temp_ref":"t1","cid":"sha256:ccabcc2813c4a2ddb7c33aacbbc0e705bf36218f7dd86df2b132503390cdd1b9","logical_id":"t-4"}]}
+{"type":"receipt","v":1,"verb":"design","commit_n":3,"phase":"tests","committed":[{"temp_ref":"t1","cid":"sha256:ccabcc2813c4a2ddb7c33aacbbc0e705bf36218f7dd86df2b132503390cdd1b9","logical_id":"t-4"}],"reused":0,"rejected":[],"warnings":[],"parity":{"live_scenarios":1,"live_tests":1,"missing":[],"blocked":[],"unresolved_blockers":[]}}
+{"type":"session_complete","v":1,"verb":"design","sid":"design-20261115T192736-5974ea53"}
+{"type":"child_end","v":1,"verb":"evolve","ok":true,"dur_s":37,"exit_code":0}
+{"type":"evolve_diff","v":1,"verb":"evolve","use_case":"uc-1","generation":{"before":7,"after":18},"superseded":[{"scenario":"sc-1","test":"t-1"},{"scenario":"sc-2","test":"t-2"},{"scenario":"sc-3","test":"t-3"}],"minted":[{"scenario":"sc-4","test":"t-4"}],"retained":[],"moves":[{"ac":"ac-1","before":["t-3"],"after":["t-4"]},{"ac":"ac-2","before":["t-1"],"after":[]},{"ac":"ac-3","before":["t-2"],"after":[]},{"ac":"ac-4","before":["t-3"],"after":[]},{"ac":"ac-5","before":["t-3","t-2","t-1"],"after":["t-4"]},{"ac":"ac-6","before":["t-3","t-2","t-1"],"after":["t-4"]},{"ac":"ac-7","before":["t-3","t-2","t-1"],"after":["t-4"]},{"ac":"ac-8","before":["t-3","t-2","t-1"],"after":["t-4"]},{"ac":"ac-9","before":["t-3","t-2","t-1"],"after":["t-4"]},{"ac":"ac-10","before":["t-3","t-2","t-1"],"after":["t-4"]},{"ac":"ac-11","before":["t-3","t-2","t-1"],"after":["t-4"]}]}
+{"type":"done","v":1,"verb":"evolve","status":"complete","exit_code":0}

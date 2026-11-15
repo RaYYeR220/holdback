@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   balance,
   designTests,
+  evolve,
   extractResume,
   ingest,
   readGraph,
@@ -281,5 +282,87 @@ describe("design error details and resumeSession", () => {
     useFixture(fx("02-extract.ndjson"));
     await resumeSession(cwd, p, {});
     expect(argvs()[1]).toEqual(["context", "extract", "--resume", "s-1", "--message", "a b", "--mode", "agent"]);
+  });
+});
+
+describe("maintain evolve (R40)", () => {
+  /** One fixture per kane-cli call, in order. */
+  const sequence = (...files: string[]) => {
+    const seq = join(cwd, "seq.txt");
+    writeFileSync(seq, files.join("\n"));
+    process.env.FAKE_KANE_SEQUENCE = seq;
+  };
+  afterEach(() => {
+    delete process.env.FAKE_KANE_SEQUENCE;
+  });
+  const BECAUSE = "A version of the app where household size 9 is checked against the 8-person limit passed every test.";
+
+  it("live (Kane 0.10.4): pauses for its re-design question, which Holdback answers itself with the same argv, then reports what it minted and retired", async () => {
+    sequence(fx("14-evolve-paused.ndjson"), fx("15-evolve-complete.ndjson"));
+    const r = await evolve(cwd, "uc-1", BECAUSE);
+    const argv = ["maintain", "evolve", "uc-1", "--because", BECAUSE, "--mode", "agent"];
+    expect(argvs()).toEqual([argv, [...argv, "--answer", "evolve:uc-1=1"]]);
+    expect(r).toMatchObject({
+      status: "complete",
+      minted: [{ scenario: "sc-4", test: "t-4" }],
+      superseded: [
+        { scenario: "sc-1", test: "t-1" },
+        { scenario: "sc-2", test: "t-2" },
+        { scenario: "sc-3", test: "t-3" },
+      ],
+      retained: [],
+      testsCommitted: 1,
+      credits: 11.39, // the sum of its usage events (Kane's own running total says 11.38)
+    });
+    if (r.status !== "complete") throw new Error("unreachable");
+    // Kane's own map: three criteria are left with no test after the evolve
+    expect(r.moves.filter((m) => m.after.length === 0).map((m) => m.ac)).toEqual(["ac-2", "ac-3", "ac-4"]);
+  });
+
+  it("a re-design that finds nothing to change is a no-op, never a success", async () => {
+    sequence(fx("14-evolve-paused.ndjson"), fx("16-evolve-nothing-to-change.ndjson"));
+    const r = await evolve(cwd, "uc-1", BECAUSE);
+    expect(r).toEqual({ status: "nothing", note: expect.stringContaining("no requested change"), credits: 5.69 });
+  });
+
+  it("a follow-up evolve that covers criteria again reports its own minted and retired pairs", async () => {
+    sequence(fx("14-evolve-paused.ndjson"), fx("17-evolve-cover-again.ndjson"));
+    const r = await evolve(cwd, "uc-1", 'cover ac-2 ("x") again');
+    expect(r).toMatchObject({
+      status: "complete",
+      minted: [
+        { scenario: "sc-5", test: "t-5" },
+        { scenario: "sc-6", test: "t-6" },
+      ],
+      superseded: [{ scenario: "sc-4", test: "t-4" }],
+      testsCommitted: 2,
+      credits: 7.33,
+    });
+  });
+
+  it("an evolve that minted no test, or one whose run failed, is not a success", async () => {
+    const noTests = textFixture(
+      '{"type":"commit","v":1,"verb":"design","acs":0,"scenarios":1,"tests":0,"minted":[{"logical_id":"sc-4"}]}\n' +
+        '{"type":"evolve_diff","v":1,"verb":"evolve","use_case":"uc-1","superseded":[],"minted":[],"retained":[],"moves":[]}\n' +
+        '{"type":"done","v":1,"verb":"evolve","status":"complete","exit_code":0}\n',
+    );
+    sequence(fx("14-evolve-paused.ndjson"), noTests);
+    expect(await evolve(cwd, "uc-1", BECAUSE)).toMatchObject({ status: "nothing", note: expect.stringMatching(/no new test/) });
+
+    writeFileSync(join(cwd, "seq.txt.count"), "0");
+    const failed = textFixture('{"type":"error","v":1,"verb":"evolve","code":"E_NOCREDIT","message":"out of credits"}\n{"type":"done","v":1,"verb":"evolve","status":"error","exit_code":1}\n');
+    sequence(fx("14-evolve-paused.ndjson"), failed);
+    expect(await evolve(cwd, "uc-1", BECAUSE)).toMatchObject({ status: "error", message: "out of credits", code: "E_NOCREDIT" });
+  });
+
+  it("never answers a question other than its own re-design gate", async () => {
+    const other = textFixture(
+      '{"type":"evolve_paused","v":1,"verb":"evolve","pending_questions":[{"id":"q-scope","header":"Scope?","text":"Also re-design uc-2?","risk":"high","options":[{"label":"yes"},{"label":"no"}],"recommended_index":0,"allow_free_text":false}]}\n' +
+        '{"type":"done","v":1,"verb":"evolve","status":"paused","exit_code":3}\n',
+    );
+    sequence(other);
+    const r = await evolve(cwd, "uc-1", BECAUSE);
+    expect(r).toMatchObject({ status: "error", message: expect.stringContaining("Also re-design uc-2?") });
+    expect(argvs()).toHaveLength(1);
   });
 });

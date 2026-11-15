@@ -260,6 +260,81 @@ function parseDesign(r: RunKaneResult): DesignResult {
   };
 }
 
+// ---------------------------------------------------------------- maintain evolve (R40)
+
+/** A scenario and the test that runs it, as `evolve_diff` pairs them. */
+export type EvolvePair = { scenario: string; test: string };
+
+/**
+ * What `kane-cli maintain evolve` did. `complete`: Kane re-designed the use case and minted at
+ * least one new test (`done` complete, exit 0, a non-empty `evolve_diff.minted`, a `commit` with a
+ * test). Its new set replaces the use case's old one: `superseded` pairs are retired, whatever the
+ * reason said (live, 2026-11-15). `nothing`: it ran but minted no test. `error`: it failed or asked
+ * something Holdback does not answer on its own.
+ */
+export type EvolveResult =
+  | {
+      status: "complete";
+      minted: EvolvePair[];
+      superseded: EvolvePair[];
+      retained: EvolvePair[];
+      /** Per criterion, the tests that verified it before and after (Kane's own map). */
+      moves: { ac: string; before: string[]; after: string[] }[];
+      testsCommitted: number;
+      credits: number;
+    }
+  | { status: "nothing"; note: string; credits: number }
+  | { status: "error"; message: string; code?: string; credits: number };
+
+const pairs = (v: unknown): EvolvePair[] =>
+  arr(v)
+    .filter(isObj)
+    .map((x) => ({ scenario: str(x.scenario), test: str(x.test) }));
+
+function evolveOutcome(r: RunKaneResult, credits: number): EvolveResult {
+  const nothing = r.events.find((e) => e.type === "nothing_to_change");
+  if (r.exitCode !== 0 || doneStatus(r) !== "complete") {
+    if (nothing && r.exitCode === 0) return { status: "nothing", note: str(nothing.note), credits };
+    return { ...errorFrom(r), credits };
+  }
+  if (nothing) return { status: "nothing", note: str(nothing.note) || "Kane found nothing to change", credits };
+  const diff = r.events.find((e) => e.type === "evolve_diff");
+  const testsCommitted = r.events.filter((e) => e.type === "commit").reduce((n, e) => n + (typeof e.tests === "number" ? e.tests : 0), 0);
+  const minted = pairs(diff?.minted).filter((m) => m.test !== "");
+  if (!diff) return { status: "nothing", note: "Kane reported no evolve_diff", credits };
+  if (minted.length === 0 || testsCommitted < 1) return { status: "nothing", note: "Kane minted no new test", credits };
+  const moves = arr(diff.moves)
+    .filter(isObj)
+    .map((m) => ({ ac: str(m.ac), before: arr(m.before).map(str), after: arr(m.after).map(str) }));
+  return { status: "complete", minted, superseded: pairs(diff.superseded), retained: pairs(diff.retained), moves, testsCommitted, credits };
+}
+
+/**
+ * `kane-cli maintain evolve <useCase> --because <because> --mode agent`, run in the verifier. Kane
+ * pauses on its own re-design gate (`evolve_paused`, question `evolve:<useCase>`, exit 3); Holdback
+ * answers it with the same argv plus `--answer evolve:<useCase>=<proceed>`. Any other question is
+ * never answered (an `error`). The credits are both calls' `usage`.
+ */
+export async function evolve(cwd: string, useCase: string, because: string): Promise<EvolveResult> {
+  const args = ["maintain", "evolve", useCase, "--because", because, "--mode", "agent"];
+  const first = await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS });
+  let credits = sumCredits(first.events);
+  const paused = first.events.find((e) => e.type === "evolve_paused");
+  if (!paused) return evolveOutcome(first, credits);
+  const gate = `evolve:${useCase}`;
+  const qs = arr(paused.pending_questions)
+    .map(pendingQuestion)
+    .filter((q): q is PendingQuestion => q !== null);
+  if (qs.length !== 1 || qs[0]!.id !== gate) {
+    return { status: "error", message: `Kane asked something Holdback does not answer on its own: ${qs.map((q) => q.text).join(" / ") || "(no question)"}`, credits };
+  }
+  const proceed = qs[0]!.options.findIndex((o) => o.label === "proceed");
+  const second = await runKane([...args, "--answer", `${gate}=${proceed >= 0 ? proceed + 1 : 1}`], { cwd, timeoutMs: AI_TIMEOUT_MS });
+  credits = Math.round((credits + sumCredits(second.events)) * 1e4) / 1e4;
+  if (second.events.some((e) => e.type === "evolve_paused")) return { status: "error", message: "Kane paused the evolve again after Holdback answered its re-design question", credits };
+  return evolveOutcome(second, credits);
+}
+
 // ---------------------------------------------------------------- reconcile / balance
 
 export async function reconcile(
