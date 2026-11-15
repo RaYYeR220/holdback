@@ -19,6 +19,16 @@ import {
 } from "@holdback/core";
 import { main, type HookDeps } from "../src/index.js";
 
+/** A note file once a line has landed in it (or what it holds after `waitMs`). */
+async function readWhenWritten(file: string, waitMs = 10_000): Promise<string> {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (text.endsWith("\n") || Date.now() > until) return text;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 const at = "2026-11-15T00:00:00.000Z";
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const saved = { ...process.env };
@@ -221,7 +231,8 @@ describe("hook post-edit (PostToolUse, asyncRewake)", { timeout: 120_000 }, () =
     expect(r.err).toContain("## ac-2 — criterion ac-2");
     expect(r.err).not.toMatch(/timeout|inconclusive/i);
     expect(world.kaneCalls).toEqual([["t-1", "t-2"], ["t-2"]]);
-    const note = readFileSync(join(p.home, "check.log"), "utf8");
+    // the hook returns on the verdict; the background check appends its note just after
+    const note = await readWhenWritten(join(p.home, "check.log"));
     expect(note).toMatch(/edit: checked \(Kane ran t-1, t-2\), 1 owed; inconclusive: t-2: timeout\n$/);
   });
 
