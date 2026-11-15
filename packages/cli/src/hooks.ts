@@ -14,6 +14,7 @@ import {
   guardPayload,
   HEADLESS_ENV,
   loadProject,
+  logSpecAttempt,
   markEdit,
   readCheckState,
   writeCheckState,
@@ -172,8 +173,10 @@ async function guardHook(ctx: Ctx, o: HookOptions): Promise<number> {
   try {
     const input = await readInput(ctx);
     p = await projectOf(ctx, input, o);
-    const d = guardPayload(input, { home: p.home, verifierDir: p.verifierDir, specFiles: p.config.spec });
+    const d = guardPayload(input, { home: p.home, verifierDir: p.verifierDir, appDir: p.appDir, specFiles: p.config.spec });
     if (d.allow) return EXIT.ok;
+    // a write aimed at the spec goes on record: a spec change after it is a tamper, not drift (R37)
+    if (d.spec) logSpecAttempt(p.home, { tool: String(input.tool_name), how: d.spec });
     await note(p, "guard.log", `deny ${String(input.tool_name)}: ${d.reason}`);
     ctx.err(d.reason);
     return BLOCK;
@@ -189,6 +192,12 @@ function savedFile(input: HookInput): string | undefined {
   if (typeof ti !== "object" || ti === null) return undefined;
   const f = (ti as Record<string, unknown>).file_path ?? (ti as Record<string, unknown>).notebook_path;
   return typeof f === "string" && f !== "" ? f : undefined;
+}
+
+/** True when `file` (absolute, or relative to the app dir) is one of the config's spec files. */
+function isSpecFile(p: Project, file: string): boolean {
+  const norm = (f: string) => path.resolve(p.appDir, f).split(path.sep).join("/").toLowerCase();
+  return p.config.spec.some((s) => norm(s) === norm(file));
 }
 
 /** Claude Code's own folder and Kane's copied screenshots: saving there changes nothing Kane checks. */
@@ -211,6 +220,8 @@ async function postEditHook(ctx: Ctx, o: HookOptions): Promise<number> {
     p = await projectOf(ctx, input, o);
     const file = savedFile(input);
     if (file && outsideTheApp(p.appDir, file)) return EXIT.ok;
+    // a save that went through onto a spec file (past the deny rules): on record, so the change is a tamper (R37)
+    if (file && isSpecFile(p, file)) logSpecAttempt(p.home, { tool: String(input.tool_name), how: "saved" });
     // first, before anything can fail: no verdict from a check that began earlier stands any more
     await markEdit(p.home);
     const stamp = homeFile(p, "edit.stamp");

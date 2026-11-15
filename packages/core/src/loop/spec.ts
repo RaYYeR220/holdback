@@ -1,4 +1,6 @@
-import { appendFile, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   designTests,
@@ -13,7 +15,7 @@ import {
   type ReconcileResult,
   type Paused,
 } from "../kane/assurance.js";
-import { commitPaths, headSha, holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
+import { commitPaths, git, headSha, holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
 import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { readEvents } from "../ledger/store.js";
@@ -70,6 +72,112 @@ export const specFileOf = (key: string): string => appSealKey(key).slice("app:".
 export const driftHint = (files: string[]): string =>
   `the spec changed since the last seal (${files.join(", ")}): run \`holdback drift\` so Kane re-plans the criteria with you`;
 
+type SpecChanged = Extract<LedgerEvent, { t: "spec.changed" }>;
+
+/** The latest `spec.changed` since the latest seal: how Holdback first saw the spec edit a drift is about to re-plan. */
+export function latestSpecChange(events: LedgerEvent[]): SpecChanged | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.t === "seal") return undefined;
+    if (e.t === "spec.changed") return e;
+  }
+  return undefined;
+}
+
+const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+const hashOf = (file: string): Promise<string> =>
+  readFile(file).then(sha256, (e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? "absent" : Promise.reject(e)));
+
+/**
+ * The `spec.changed` event for `files` (spec files, as `specFileOf` names them) against `manifest`,
+ * or undefined when the latest one since the seal already says the same (it is logged once per edit;
+ * one seen during an agent turn is never re-logged as seen outside one).
+ */
+export async function specChangeEvent(
+  p: Project,
+  events: LedgerEvent[],
+  manifest: Record<string, string>,
+  files: string[],
+  duringAgentTurn: boolean,
+): Promise<Omit<SpecChanged, "at"> | undefined> {
+  const before: Record<string, string> = {};
+  const after: Record<string, string> = {};
+  for (const f of files) {
+    before[f] = manifest[appSealKey(f)] ?? "absent";
+    after[f] = await hashOf(path.join(p.appDir, ...f.split("/")));
+  }
+  const last = latestSpecChange(events);
+  if (last && JSON.stringify(last.after) === JSON.stringify(after) && (last.duringAgentTurn || !duringAgentTurn)) return undefined;
+  return { t: "spec.changed", files, duringAgentTurn, before, after };
+}
+
+/** `<home>/sealed/<spec>`: each spec file as the latest seal hashed it, for the diff drift shows the human (R37). */
+export const SEALED_DIR = "sealed";
+
+/** Keeps a copy of each spec file the seal just hashed (never one whose old hash it kept). Best effort: the diff falls back to git. */
+async function keepSealedCopies(p: Project, manifest: Record<string, string>, kept: Record<string, string>): Promise<void> {
+  for (const f of p.config.spec) {
+    const key = appSealKey(f);
+    if (key in kept || manifest[key] === "absent") continue;
+    const rel = specFileOf(key);
+    const dest = path.join(p.home, SEALED_DIR, ...rel.split("/"));
+    try {
+      await mkdir(path.dirname(dest), { recursive: true });
+      await copyFile(path.join(p.appDir, ...rel.split("/")), dest);
+    } catch {
+      await rm(dest, { force: true }).catch(() => {});
+    }
+  }
+}
+
+/** The bytes of `rel` as the seal in `manifest` hashed them: the kept copy, else HEAD's when it matches; null when neither does. */
+async function sealedBytes(p: Project, manifest: Record<string, string>, rel: string): Promise<Buffer | null> {
+  const want = manifest[appSealKey(rel)];
+  if (want === undefined) return null;
+  if (want === "absent") return Buffer.alloc(0);
+  const copy = await readFile(path.join(p.home, SEALED_DIR, ...rel.split("/"))).catch(() => null);
+  if (copy && sha256(copy) === want) return copy;
+  try {
+    const gitOpts = await holdbackGitOptions(p.home);
+    if (!(await isRepoRoot(p.appDir, gitOpts))) return null;
+    const r = await git(p.appDir, ["show", `HEAD:${rel}`], gitOpts);
+    if (r.code !== 0) return null;
+    const head = Buffer.from(r.stdout, "utf8");
+    return sha256(head) === want ? head : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The unified diff of spec file `rel` from the sealed version (`manifest`) to the app dir's, headed
+ * `--- <rel> (sealed)` / `+++ <rel> (now)`; "" when they are the same; null when the sealed version
+ * is no longer at hand.
+ */
+export async function specDiff(p: Project, manifest: Record<string, string>, rel: string): Promise<string | null> {
+  const sealed = await sealedBytes(p, manifest, rel);
+  if (sealed === null) return null;
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "holdback-diff-"));
+  try {
+    const old = path.join(tmp, "sealed");
+    await writeFile(old, sealed);
+    const now = path.join(p.appDir, ...rel.split("/"));
+    let nowFile = now;
+    if ((await hashOf(now)) === "absent") {
+      nowFile = path.join(tmp, "absent");
+      await writeFile(nowFile, "");
+    }
+    const r = await git(tmp, ["diff", "--no-index", "--no-color", "--no-ext-diff", "-U3", "--", old, nowFile]);
+    if (r.code === 0) return "";
+    if (r.code !== 1) return null;
+    const lines = r.stdout.split(/\r?\n/);
+    const hunk = lines.findIndex((l) => l.startsWith("@@"));
+    return [`--- ${rel} (sealed)`, `+++ ${rel} (now)`, ...(hunk < 0 ? [] : lines.slice(hunk))].join("\n").trimEnd();
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /**
  * Re-hash the sealed app files (call after any later Holdback append to the
  * spec, e.g. more Clarifications) and return the updated manifest.
@@ -98,6 +206,7 @@ export async function reseal(p: Project, log: Log, git?: GitOptions, opts: Resea
   if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
   const manifest = { ...(await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) })), ...opts.keep };
   await log({ at: at(), t: "seal", manifest });
+  await keepSealedCopies(p, manifest, opts.keep ?? {});
   await clearTamper(p);
   if (await isRepoRoot(p.appDir, gitOpts)) await logRecordings(p, log, gitOpts);
   return manifest;
@@ -220,7 +329,7 @@ export async function commitClarifications(p: Project, before: Buffer | null, wa
  * turn carries or lists them. Only those files are committed. No repo, or an unborn HEAD: nothing to
  * do. A commit that fails is a warning, never a failed drift.
  */
-export async function commitSpec(p: Project, changed: string[], before: Buffer | null, warn: Warn = stderrWarn): Promise<void> {
+export async function commitSpec(p: Project, changed: string[], before: Buffer | null, warn: Warn = stderrWarn, opts: { unverified?: boolean } = {}): Promise<void> {
   try {
     const now = await clarifiedFile(p);
     const clarified = now !== null && (before === null || !now.equals(before));
@@ -228,7 +337,8 @@ export async function commitSpec(p: Project, changed: string[], before: Buffer |
     if (paths.length === 0) return;
     const gitOpts = await holdbackGitOptions(p.home);
     if (!(await isRepoRoot(p.appDir, gitOpts)) || (await headSha(p.appDir, gitOpts)) === null) return;
-    await commitPaths(p.appDir, `spec: ${paths.join(", ")}`, paths, gitOpts);
+    // a change first seen right after an agent turn may be the agent's: the commit never says the human wrote it
+    await commitPaths(p.appDir, `spec: ${paths.join(", ")}${opts.unverified ? " (origin unverified)" : ""}`, paths, gitOpts);
   } catch (e) {
     warn(`warning: could not commit the spec change (${e instanceof Error ? e.message : String(e)}); it will go into the next commit`);
   }

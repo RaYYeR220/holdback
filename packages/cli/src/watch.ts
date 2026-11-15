@@ -5,7 +5,8 @@ import { runPipeline, type RunOptions } from "./run.js";
 /**
  * Watches the spec files: every edit goes through drift and then the run loop, until Ctrl-C. An
  * edit made while a pass runs stops that pass (drift, never a tamper), and the next pass re-plans it
- * with the human before it builds on.
+ * with the human before it builds on, unless Holdback first saw it while the coding agent was
+ * working: then watch stops, and the human reviews it and runs `holdback drift` (R37).
  */
 export async function watchCmd(ctx: Ctx, o: RunOptions): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback watch")) return EXIT.error;
@@ -27,7 +28,15 @@ export async function watchCmd(ctx: Ctx, o: RunOptions): Promise<number> {
     do {
       pending = false;
       ctx.out("spec changed: checking for drift, then building");
-      const c = await runPipeline(ctx, p, io, sig.signal, o, { drifted: () => void (pending = true) });
+      // a spec change Holdback first saw while the agent was working is never re-planned unasked (R37)
+      let unverified = false;
+      const c = await runPipeline(ctx, p, io, sig.signal, o, {
+        drifted: (duringAgentTurn) => {
+          if (duringAgentTurn) unverified = true;
+          else pending = true;
+        },
+      });
+      if (unverified) return fail(EXIT.unfinished);
       if (c === EXIT.tamper || c === EXIT.aborted) return fail(c);
     } while (pending && !sig.signal.aborted);
   };

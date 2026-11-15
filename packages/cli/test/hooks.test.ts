@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -203,6 +204,33 @@ describe("hook guard (PreToolUse)", () => {
       expect(r.code, input).toBe(2);
       expect(r.err).not.toBe("");
     }
+  });
+});
+
+describe("hook guard and post-edit: writes aimed at the spec go on record (R37)", { timeout: 120_000 }, () => {
+  const attempts = () =>
+    readFile(join(p.home, "spec-attempts.jsonl"), "utf8").then(
+      (t) => t.trim().split("\n").map((l) => JSON.parse(l) as { tool: string; how: string }),
+      () => [],
+    );
+
+  it("the guard denies an Edit or a shell write onto the spec, and logs each in the home", async () => {
+    await fixture();
+    const edit = await hook("guard", pre("Edit", { file_path: join(appDir, "PRD.md"), old_string: "a", new_string: "b" }));
+    expect(edit.code).toBe(2);
+    expect(edit.err).toMatch(/spec is the human's/);
+    expect((await hook("guard", pre("Bash", { command: "echo more >> PRD.md" }))).code).toBe(2);
+    expect((await hook("guard", pre("Bash", { command: "cat PRD.md" }))).code).toBe(0);
+    expect((await attempts()).map((a) => [a.tool, a.how])).toEqual([
+      ["Edit", "edit"],
+      ["Bash", "shell"],
+    ]);
+  });
+
+  it("a save onto the spec that got through is logged by the post-edit hook", async () => {
+    await fixture();
+    await hook("post-edit", post("PRD.md"));
+    expect((await attempts()).map((a) => [a.tool, a.how])).toEqual([["Edit", "saved"]]);
   });
 });
 

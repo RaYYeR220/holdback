@@ -1,6 +1,6 @@
-import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
-import { driftNotice, driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage } from "./messages.js";
+import { latestSpecChange, loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
+import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, scrubAgentEnv, showSpecDiff, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { driftNotice, driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
 
 export type RunOptions = {
   maxTurns?: string | number;
@@ -30,7 +30,8 @@ function buildStop(b: BuildResult): Stop {
       // Kane's to redo, not the agent's: more turns would not help
       return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []) };
     case "drift":
-      return { code: EXIT.unfinished, why: driftStop(b.error) };
+      // seen right after the agent's turn: the agent may have written it (R37)
+      return { code: EXIT.unfinished, why: b.specChange?.duringAgentTurn ? unverifiedDrift(b.specChange.files) : driftStop(b.error) };
     case "max-turns":
       return { code: EXIT.error, why: `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}: some criteria are still owed (raise it with --max-turns or loop.maxTurns)` };
     default:
@@ -75,8 +76,11 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
 
 /** What a caller of the pipeline (`watch`) hears about besides the exit code. */
 export type PipelineEvents = {
-  /** The spec changed while the pass ran: it stopped for a human to re-plan it (`holdback drift`). */
-  drifted?: () => void;
+  /**
+   * The spec changed: the pass stopped for a human to re-plan it (`holdback drift`). `duringAgentTurn`:
+   * Holdback first saw it while the coding agent was working, so its origin is unverified (R37).
+   */
+  drifted?: (duringAgentTurn: boolean) => void;
 };
 
 /**
@@ -118,8 +122,15 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
 
     // the spec was edited after the last seal: Kane re-plans with the human before anything is built
     if (before.specChanged.length > 0) {
+      // first seen while the agent was working: only an explicit `holdback drift` may accept it (R37)
+      if (latestSpecChange(before.events)?.duringAgentTurn) {
+        ctx.err(unverifiedDrift(before.specChanged));
+        on.drifted?.(true);
+        return EXIT.unfinished;
+      }
       ctx.out("spec changed since the last seal — running drift");
       ctx.out(driftNotice(before.specChanged));
+      await showSpecDiff(ctx, p, before);
       const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err });
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
@@ -139,7 +150,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       turns += b.turns;
       if (b.reason !== "gate-open") {
         stop = buildStop(b);
-        if (b.reason === "drift") on.drifted?.();
+        if (b.reason === "drift") on.drifted?.(b.specChange?.duringAgentTurn === true);
         break;
       }
       if (o.falsify === false) break;
@@ -147,7 +158,7 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err });
       falsified = f;
       stop = falsifyStop(f);
-      if (f.reason === "drift") on.drifted?.();
+      if (f.reason === "drift") on.drifted?.(false);
       if (stop) break;
       if (f.redesigned.length === 0) break;
       ctx.out(`Falsify re-opened ${f.redesigned.join(", ")}: building again`);

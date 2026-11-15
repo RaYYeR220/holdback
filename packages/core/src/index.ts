@@ -70,7 +70,21 @@ export {
 export { runClaudeTurn, contractPath, guardMainPath, HEADLESS_ENV, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO, parseHumanScript, type HumanScript } from "./loop/human.js";
-export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls, type SpecDeps } from "./loop/spec.js";
+export {
+  runSpecStage,
+  reseal,
+  resealAppFiles,
+  appSealFiles,
+  drivePaused,
+  latestSpecChange,
+  specDiff,
+  SEALED_DIR,
+  type ResealOptions,
+  type ResumeCalls,
+  type SpecDeps,
+} from "./loop/spec.js";
+export { logSpecAttempt, specAttemptsSince, attemptsText, SPEC_ATTEMPTS, type SpecAttempt } from "./agent/attempts.js";
+export { freshDataDir, appEnv, DATA_DIR_ENV, DATA_ROOT, KEEP_DATA_DIRS } from "./datadir.js";
 export { runDrift, watchSpec, defaultDriftKane, type DriftDeps, type DriftKane, type DriftResult } from "./loop/drift.js";
 export { buildBrief, byAcId, type BriefOptions, type AcFailure, type Blame } from "./loop/brief.js";
 export { bisectRegression, BisectTampered, blameOf, lastGoodTurn, probeVerdict, type BisectDeps } from "./loop/bisect.js";

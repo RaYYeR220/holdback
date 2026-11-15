@@ -190,6 +190,22 @@ describe("guardDecision hardening", () => {
     if (!d.allow) expect(d.reason).toMatch(/spec/i);
   });
 
+  it("denies Edit/Write onto a spec file too, and marks every spec denial as one (R37)", () => {
+    const app = join(tmpdir(), "hb-guard-app");
+    const c = { ...ctx, specFiles: ["PRD.md"], appDir: app };
+    const edit = (tool_name: string, file_path: string) => guardDecision({ tool_name, tool_input: { file_path, old_string: "a", new_string: "b" } }, c);
+    expect(edit("Edit", join(app, "PRD.md"))).toMatchObject({ allow: false, spec: "edit" });
+    expect(edit("Write", "PRD.md")).toMatchObject({ allow: false, spec: "edit" });
+    expect(edit("MultiEdit", `${app}/./prd.md`)).toMatchObject({ allow: false, spec: "edit" });
+    expect(guardDecision({ tool_name: "Bash", tool_input: { command: "echo x >> PRD.md" } }, c)).toMatchObject({ allow: false, spec: "shell" });
+    // another file of that name elsewhere is not the spec
+    expect(edit("Edit", join(app, "docs", "PRD.md"))).toEqual({ allow: true });
+    expect(guardDecision({ tool_name: "Read", tool_input: { file_path: join(app, "PRD.md") } }, c)).toEqual({ allow: true });
+    // other denials carry no spec mark
+    const other = guardDecision({ tool_name: "Bash", tool_input: { command: "git commit -m x" } }, c);
+    expect(other.allow === false && other.spec).toBeFalsy();
+  });
+
   it("still lets the agent read the spec, and write other files", () => {
     const c = { ...ctx, specFiles: ["PRD.md"] };
     const sh = (command: string, tool = "Bash") => denied(tool, { command }, c);
@@ -225,9 +241,9 @@ describe("guardHookCommand", () => {
     );
     expect(guardHookCommand(c, "g.js").startsWith(`"${process.execPath}" "g.js" `)).toBe(true);
   });
-  it("passes each spec file, quoted", () => {
-    const c = { home: "/h/p", verifierDir: "/h/p/verifier", specFiles: ["PRD.md", "docs/My Rules.md"] };
-    expect(guardHookCommand(c, "g.js", "node")).toBe('"node" "g.js" --home "/h/p" --verifier "/h/p/verifier" --spec "PRD.md" --spec "docs/My Rules.md"');
+  it("passes the app dir and each spec file, quoted", () => {
+    const c = { home: "/h/p", verifierDir: "/h/p/verifier", appDir: "/w/my app", specFiles: ["PRD.md", "docs/My Rules.md"] };
+    expect(guardHookCommand(c, "g.js", "node")).toBe('"node" "g.js" --home "/h/p" --verifier "/h/p/verifier" --app "/w/my app" --spec "PRD.md" --spec "docs/My Rules.md"');
   });
 });
 

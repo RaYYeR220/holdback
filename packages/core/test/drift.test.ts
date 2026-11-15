@@ -204,6 +204,21 @@ describe("runDrift", () => {
     expect(git("status", "--porcelain")).toBe("?? app.js"); // nothing else of the work tree went in
   }, 60_000);
 
+  it("never implies the human wrote a change first seen right after an agent turn: its commit says origin unverified (R37)", async () => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: p.appDir, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("add", "-A");
+    git("commit", "-q", "-m", "spec");
+    await reseal(p, log);
+    editPrd();
+    await log({ at: new Date().toISOString(), t: "spec.changed", files: ["PRD.md"], duringAgentTurn: true, before: {}, after: {} });
+    const r = await runDrift(p, { answer: async () => ({}), approve: async (items) => all(items) }, log, { kane: fakeKane([]) });
+    expect(r).toEqual({ changed: true, applied: true });
+    expect(git("log", "-1", "--format=%s")).toBe("spec: PRD.md (origin unverified)");
+  }, 60_000);
+
   it("commits the Clarifications it added to PRD.md before the re-seal; a declined drift commits nothing", async () => {
     const git = (...args: string[]) => execFileSync("git", args, { cwd: p.appDir, encoding: "utf8" }).trim();
     git("init", "-q");

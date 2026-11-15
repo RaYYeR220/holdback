@@ -599,6 +599,38 @@ describe("run", () => {
     expect(s.calls).toEqual(["build"]);
   });
 
+  it("a spec change seen right after the agent's turn stops the run loudly: origin unverified, for the human to review (R37)", async () => {
+    await greenFixture();
+    const s = stages({ build: [{ allowStop: false, turns: 1, reason: "drift", error: "x", specChange: { files: ["PRD.md"], duringAgentTurn: true } }] });
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("SPEC CHANGED WHILE THE AGENT WAS WORKING");
+    expect(r.err).toContain("origin unverified");
+    expect(r.err).toContain("holdback drift");
+  });
+
+  it("never auto-drifts a spec change of unverified origin at the start of a run (R37)", async () => {
+    await greenFixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    await log({ at, t: "spec.changed", files: ["PRD.md"], duringAgentTurn: true, before: {}, after: {} });
+    const s = stages();
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(s.calls).toEqual([]);
+    expect(r.err).toContain("origin unverified");
+  });
+
+  it("shows the diff from the sealed spec before an automatic drift", async () => {
+    await greenFixture();
+    mkdirSync(join(p.home, "sealed"), { recursive: true });
+    writeFileSync(join(p.home, "sealed", "PRD.md"), readFileSync(join(appDir, "PRD.md")));
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    const r = await cli(["run"], stages().deps);
+    expect(r.out).toContain("--- PRD.md (sealed)");
+    expect(r.out).toContain("-SNAP households are eligible.");
+    expect(r.out).toContain("+A new rule.");
+  });
+
   it("stops with exit 3 the same way when the spec changed during falsify", async () => {
     await greenFixture();
     const s = stages({ falsify: [{ ...falsifyOk, reason: "drift", error: "the spec changed since the last seal (PRD.md): run `holdback drift`" }] });
@@ -766,6 +798,69 @@ describe("installSignals", () => {
 });
 
 describe("drift and watch", () => {
+  it("drift shows the diff from the sealed spec, and asks the human in the terminal before it re-plans a change of unverified origin, answers file or not (R37)", async () => {
+    await fixture();
+    mkdirSync(join(p.home, "sealed"), { recursive: true });
+    writeFileSync(join(p.home, "sealed", "PRD.md"), readFileSync(join(appDir, "PRD.md")));
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\nPlus a rule the agent wrote.\n");
+    await log({ at, t: "spec.changed", files: ["PRD.md"], duringAgentTurn: true, before: {}, after: {} });
+    const answers = join(root, "answers.json");
+    writeFileSync(answers, JSON.stringify({ answers: {}, approve: "all" }));
+    let drifts = 0;
+    const asked: string[] = [];
+    const deps = (yes: boolean): Fakes => ({ runDrift: async () => (drifts++, { changed: true, applied: true }), confirm: async (q) => (asked.push(q), yes) });
+    const no = await cli(["drift", "--answers", answers], deps(false));
+    expect(no.code).toBe(1);
+    expect(no.out).toContain("+Plus a rule the agent wrote.");
+    expect(no.err).toContain("origin unverified");
+    expect(asked).toHaveLength(1);
+    expect(drifts).toBe(0);
+    const yes = await cli(["drift", "--answers", answers], deps(true));
+    expect(yes.code).toBe(0);
+    expect(drifts).toBe(1);
+  });
+
+  it("drift of a change seen outside agent turns shows the diff and asks nothing more", async () => {
+    await fixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA rule.\n");
+    await log({ at, t: "spec.changed", files: ["PRD.md"], duringAgentTurn: false, before: {}, after: {} });
+    const r = await cli(["drift"], { humanIO: () => fakeIO() as never, runDrift: async () => ({ changed: true, applied: true }), confirm: notCalled("confirm") as never });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("PRD.md");
+  });
+
+  it("watch stops, without drift, on a spec change seen while the agent was working (R37)", async () => {
+    await greenFixture();
+    const io = fakeIO();
+    let onChange: () => void = () => {};
+    let watching = false;
+    const calls: string[] = [];
+    const run = cli(
+      ["watch", "--no-falsify"],
+      {
+        humanIO: () => io as never,
+        watchSpec: ((_p, cb) => {
+          onChange = cb;
+          watching = true;
+          return () => {};
+        }) as Deps["watchSpec"],
+        runDrift: async () => (calls.push("drift"), { changed: true, applied: true }),
+        runBuildLoop: async () => {
+          calls.push("build");
+          writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA rule the agent wrote.\n");
+          return { allowStop: false, turns: 1, reason: "drift", error: "x", specChange: { files: ["PRD.md"], duringAgentTurn: true } };
+        },
+      },
+      { signals: () => ({ signal: new AbortController().signal, dispose() {} }) },
+    );
+    await vi.waitFor(() => expect(watching).toBe(true), { timeout: 10_000 });
+    onChange();
+    const r = await run;
+    expect(r.code).toBe(3);
+    expect(calls).toEqual(["build"]);
+    expect(r.err).toContain("origin unverified");
+  });
+
   it("drift reports applied, unchanged and declined, and closes the IO", async () => {
     await fixture();
     const io = fakeIO();

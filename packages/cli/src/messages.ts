@@ -30,6 +30,19 @@ export function driftNotice(changed: string[]): string {
   ].join("\n");
 }
 
+/**
+ * Why `run` and `watch` stop, without re-planning, on a spec change Holdback first saw while the
+ * coding agent was working (R37): only the human, through `holdback drift`, may accept it.
+ */
+export function unverifiedDrift(files: string[]): string {
+  const f = files.map((k) => k.replace(/^app:/, ""));
+  return [
+    `SPEC CHANGED WHILE THE AGENT WAS WORKING — origin unverified (${f.join(", ")}).`,
+    `The coding agent may have written it. Review the diff (\`git diff -- ${f.join(" ")}\`), then run \`holdback drift\`: it asks you to accept the change as yours before Kane re-plans anything.`,
+    "Undo it instead if you did not make it.",
+  ].join("\n");
+}
+
 /** A command only the human may run, refused inside a Claude Code session. */
 export const HUMAN_ONLY = (cmd: string) =>
   `\`${cmd}\` is for you, not the coding agent: run it in your own terminal, outside Claude Code.`;

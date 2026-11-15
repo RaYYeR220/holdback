@@ -21,6 +21,7 @@ import {
   runTests,
   serve,
   snapshot as coreSnapshot,
+  specDiff,
   type Snapshot as CoreSnapshot,
   startApp,
   sweepStaleWorktrees,
@@ -233,6 +234,20 @@ export type Snapshot = Omit<CoreSnapshot, "tamperDetail"> & {
   /** What the human is told when the gate is shut by a tamper; null when there is none. */
   tamper: string | null;
 };
+
+/**
+ * Prints the unified diff of each changed spec file, from the sealed version to the one on disk,
+ * before drift asks the human to approve anything (R37).
+ */
+export async function showSpecDiff(ctx: Ctx, p: Project, s: Pick<Snapshot, "manifest" | "specChanged">): Promise<void> {
+  if (!s.manifest) return;
+  for (const key of s.specChanged) {
+    const rel = key.replace(/^app:/, "");
+    const d = await specDiff(p, s.manifest, rel);
+    if (d === null) ctx.out(`(no sealed copy of ${rel} to compare with: see \`git diff -- ${rel}\`)`);
+    else if (d !== "") ctx.out(d);
+  }
+}
 
 /** The core snapshot, with the tamper worded for the human. A ledger that cannot be read throws. */
 export async function snapshot(p: Project): Promise<Snapshot> {

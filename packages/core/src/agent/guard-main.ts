@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // PreToolUse hook entry point:
-//   node guard-main.js --home <home> --verifier <verifierDir> [--spec <file>]... [--log <file>]
+//   node guard-main.js --home <home> --verifier <verifierDir> [--app <appDir>] [--spec <file>]... [--log <file>]
 // Reads the hook JSON on stdin. Exit 0 = allow; exit 2 + reason on stderr = deny.
 // Any failure (bad args, bad stdin, crash) is a deny: exit 1 would let the call through.
 import { appendFileSync } from "node:fs";
+import { logSpecAttempt } from "./attempts.js";
 import { guardPayload } from "./guard.js";
 
 function arg(name: string): string | undefined {
@@ -72,9 +73,21 @@ async function main(): Promise<void> {
     log("deny unparseable");
     deny("Holdback guard could not parse the tool call, so it was blocked.");
   }
-  const d = guardPayload(payload, { home, verifierDir, specFiles: args("--spec") });
-  log(`${d.allow ? "allow" : "deny"} ${(payload as { tool_name?: string })?.tool_name ?? "?"}`);
-  if (!d.allow) deny(d.reason);
+  const app = arg("--app");
+  const d = guardPayload(payload, { home, verifierDir, specFiles: args("--spec"), ...(app ? { appDir: app } : {}) });
+  const tool = (payload as { tool_name?: string })?.tool_name ?? "?";
+  log(`${d.allow ? "allow" : "deny"} ${tool}`);
+  if (!d.allow) {
+    // a write aimed at the spec goes on record in Holdback's home: a spec change in this turn is then a tamper (R37)
+    if (d.spec) {
+      try {
+        logSpecAttempt(home!, { tool, how: d.spec });
+      } catch {
+        /* the call is denied either way */
+      }
+    }
+    deny(d.reason);
+  }
   process.exit(0);
 }
 

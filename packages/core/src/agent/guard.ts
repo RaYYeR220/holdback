@@ -8,10 +8,13 @@ export interface GuardInput {
 export interface GuardContext {
   verifierDir: string;
   home: string;
-  /** The app's spec files (`config.spec`, relative to the app dir): a shell write onto one is denied. */
+  /** The app's spec files (`config.spec`, relative to the app dir): an Edit/Write or a shell write onto one is denied. */
   specFiles?: string[];
+  /** The app dir, which an Edit/Write path is resolved against to tell the spec from another file of its name. */
+  appDir?: string;
 }
-export type GuardDecision = { allow: true } | { allow: false; reason: string };
+/** `spec`: the call aimed a write at a spec file (`edit`: an Edit/Write call, `shell`: a shell write); the guard logs it (R37). */
+export type GuardDecision = { allow: true } | { allow: false; reason: string; spec?: "edit" | "shell" };
 
 /** Lowercase, forward slashes, no trailing slash: the shape all path comparisons use. */
 function norm(s: string): string {
@@ -184,6 +187,28 @@ function specWrite(text: string, specFiles: string[]): boolean {
   return false;
 }
 
+/** Claude Code's file-writing tools, and the input fields that name the file they write. */
+const EDIT_TOOLS = /^(?:edit|write|multiedit|notebookedit)$/i;
+const EDIT_PATH_FIELDS = ["file_path", "notebook_path", "path"];
+
+/**
+ * True when an Edit/Write/MultiEdit/NotebookEdit call writes a spec file. With the app dir known the
+ * path is resolved against it, so only the spec itself matches; without it, any path ending in the
+ * spec's relative path does. The permission rules deny these edits too: this also logs them (R37).
+ */
+function editsSpec(toolName: string, input: Record<string, unknown>, ctx: GuardContext): boolean {
+  if (!EDIT_TOOLS.test(toolName) || !ctx.specFiles) return false;
+  for (const field of EDIT_PATH_FIELDS) {
+    const f = input[field];
+    if (typeof f !== "string" || f === "") continue;
+    if (ctx.appDir !== undefined) {
+      const abs = norm(path.resolve(ctx.appDir, f));
+      if (ctx.specFiles.some((s) => norm(path.resolve(ctx.appDir!, s)) === abs)) return true;
+    } else if (namesSpec(f, ctx.specFiles.map(specPathOf))) return true;
+  }
+  return false;
+}
+
 /**
  * True when `text` runs one of the human's Holdback commands: the `holdback` binary (any path,
  * any shim, behind npx, an env prefix, `cmd /c` or `powershell -c`) or the CLI's entry file,
@@ -227,6 +252,7 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
     if (ns.some((x) => n.includes(x))) return { allow: false, reason: DENY_FILES };
     if (/\bkane-cli\b/i.test(s)) return { allow: false, reason: DENY_KANE };
   }
+  if (ctx.specFiles && editsSpec(String(input.tool_name ?? ""), toolInput, ctx)) return { allow: false, reason: DENY_SPEC, spec: "edit" };
   for (const s of shellStrings(String(input.tool_name ?? ""), toolInput)) {
     if (HOME_REFS.some((re) => re.test(s))) return { allow: false, reason: DENY_HOME_REF };
     const n = s.toLowerCase().replace(/[\\/]+/g, "/"); // `.git\\hooks` (escaped) counts too
@@ -234,7 +260,7 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
     if (humanCommand(s)) return { allow: false, reason: DENY_HUMAN };
-    if (ctx.specFiles && specWrite(s, ctx.specFiles)) return { allow: false, reason: DENY_SPEC };
+    if (ctx.specFiles && specWrite(s, ctx.specFiles)) return { allow: false, reason: DENY_SPEC, spec: "shell" };
   }
   return { allow: true };
 }
@@ -279,7 +305,7 @@ function protectRules(p: { appDir: string; files: string[] }): string[] {
 }
 
 /**
- * `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>" [--spec "<file>"]вЂ¦
+ * `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>" [--spec "<file>"]…
  * [--log "<file>"]`: every path quoted. `log`: where the guard appends its decisions (debugging).
  */
 export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath, log?: string): string {
@@ -291,6 +317,7 @@ export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: 
     q(ctx.home),
     "--verifier",
     q(ctx.verifierDir),
+    ...(ctx.appDir !== undefined ? ["--app", q(ctx.appDir)] : []),
     ...(ctx.specFiles ?? []).flatMap((f) => ["--spec", q(f)]),
     ...(log ? ["--log", q(log)] : []),
   ].join(" ");

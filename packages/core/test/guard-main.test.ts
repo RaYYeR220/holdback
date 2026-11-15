@@ -53,10 +53,18 @@ describe("guard-main", () => {
     const r = run(JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: "/h/p1/verifier" }));
     expect(r.status).toBe(2);
   });
-  it("denies a shell write onto a spec file named with --spec", () => {
-    const args = ["--home", "/h/p1", "--verifier", "/h/p1/verifier", "--spec", "PRD.md"];
+  it("denies a shell write or an Edit onto a spec file named with --spec, and logs it in the home (R37)", () => {
+    const home = mkdtempSync(join(tmpdir(), "hb-guard-home-"));
+    const app = mkdtempSync(join(tmpdir(), "hb-guard-app-"));
+    const args = ["--home", home, "--verifier", join(home, "verifier"), "--app", app, "--spec", "PRD.md"];
     expect(run(call("Bash", { command: "echo x >> PRD.md" }), args).status).toBe(2);
+    expect(run(call("Edit", { file_path: join(app, "PRD.md"), old_string: "a", new_string: "b" }), args).status).toBe(2);
     expect(run(call("Bash", { command: "cat PRD.md" }), args).status).toBe(0);
+    const lines = readFileSync(join(home, "spec-attempts.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.tool, l.how])).toEqual([
+      ["Bash", "shell"],
+      ["Edit", "edit"],
+    ]);
   });
   it("writes the marker log", () => {
     const log = join(mkdtempSync(join(tmpdir(), "hb-")), "g.log");

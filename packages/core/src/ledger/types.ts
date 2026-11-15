@@ -38,6 +38,13 @@ export type LedgerEvent = { at: string } & (
   | { t: "redesign.dropped"; useCases: string[]; detail: string; credits: number }
   | { t: "drift"; rows: { kind: string; ref: string; why: string }[]; applied: boolean; credits?: number }
   | { t: "regression"; ac: string; turn: number; blamedTurn?: number; blamedCommit?: string; detail?: string }
+  /**
+   * The spec files (and nothing else sealed) changed since the seal: drift, not a tamper. Where it was
+   * seen: `duringAgentTurn` when the coding agent may have made it (right after a headless turn, or
+   * while an interactive session runs): its origin is unverified. `before`/`after`: sha256 per file,
+   * as sealed and as found ("absent" for a missing file).
+   */
+  | { t: "spec.changed"; files: string[]; duringAgentTurn: boolean; before: Record<string, string>; after: Record<string, string> }
   | { t: "tamper"; detail: string }
   /**
    * Baseline after a Kane batch (app stopped): digest of Kane's own `output-*` run recordings and the

@@ -24,7 +24,7 @@ import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js"
 import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed } from "./falsify.js";
 import type { HumanIO } from "./human.js";
-import { checkSpecPaths, clarifiedFile, commitSpec, drivePaused, reseal, type Warn } from "./spec.js";
+import { checkSpecPaths, clarifiedFile, commitSpec, drivePaused, latestSpecChange, reseal, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 
@@ -258,8 +258,8 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
   });
   if (declined) return declined;
   // kept only now: a rollback restores PRD.md, and a commit made right after the append would be left behind.
-  // The human's edit goes in too: left in the work tree, it would land in the agent's next turn commit
-  await commitSpec(p, changed, clarifiedBefore, deps.warn);
+  // The spec edit goes in too: left in the work tree, it would land in the agent's next turn commit
+  await commitSpec(p, changed, clarifiedBefore, deps.warn, { unverified: latestSpecChange(events)?.duringAgentTurn === true });
   await reseal(p, log, gitOpts);
   return { changed: true, applied: true };
 }

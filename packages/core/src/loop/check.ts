@@ -14,6 +14,7 @@ import { blameOf } from "./bisect.js";
 import { buildBrief, byAcId } from "./brief.js";
 import { EVIDENCE_DIR, filesOf, lastSeal, testFileMap, VerifySession, type BuildDeps, type SessionStop } from "./build.js";
 import { isSpecKey, specFileOf } from "./spec.js";
+import { attemptsText, specAttemptsSince } from "../agent/attempts.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Gate = ReturnType<typeof gate>;
@@ -191,7 +192,23 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     detail ??= logged?.t === "tamper" ? logged.detail : "the ledger records a tamper";
     return closed("tamper", TAMPER_BRIEF, detail);
   };
-  const drift = (files: string[]) => closed("drift", DRIFT_BRIEF(files), `spec changed since the last seal: ${files.join(", ")}`);
+  /**
+   * A spec change, and nothing else sealed: drift for a human. The interactive agent runs all along,
+   * so its origin is unverified (R37), and with a write at the spec on the guard's record since the
+   * seal it is a tamper instead.
+   */
+  const drift = async (files: string[]): Promise<CheckResult> => {
+    s.specDrift = files;
+    s.manifest ??= lastSeal(s.events);
+    const sealedAt = Date.parse(s.events.findLast((e) => e.t === "seal")?.at ?? "") || 0;
+    const tries = await specAttemptsSince(p.home, sealedAt);
+    if (tries.length > 0) {
+      await s.recordTamper(`the spec changed (${files.join(", ")}) after the agent tried to write it: ${attemptsText(tries)}`);
+      return tamper();
+    }
+    await s.noteSpecDrift(true);
+    return closed("drift", DRIFT_BRIEF(files), `spec changed since the last seal: ${files.join(", ")}`);
+  };
   const stopFor = async (r: SessionStop): Promise<CheckResult> => {
     if (r.reason === "tamper") return tamper();
     if (r.reason === "drift") return drift(s.specDrift);

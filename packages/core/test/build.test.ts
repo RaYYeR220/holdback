@@ -19,6 +19,8 @@ import { appSealFiles, reseal } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { seal, sealRecordings } from "../src/seal.js";
 import { clearTamper, manifestDigest, markTampered, tamperMarker } from "../src/tamper.js";
+import { logSpecAttempt } from "../src/agent/attempts.js";
+import { createHash } from "node:crypto";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fxTests = join(here, "fixtures", "kane", "tests");
@@ -585,9 +587,44 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(ev.some((e) => e.t === "tamper")).toBe(false);
     expect(await tamperMarker(p)).toBeNull();
     expect(ev.find((e) => e.t === "turn.end")).toMatchObject({ n: 1, filesChanged: ["app.js"] });
-    // the human's edit stays theirs: in the work tree, out of the agent's commit
+    // the edit stays out of the agent's commit, in the work tree
     expect(git(appDir, "show", "--name-only", "--format=", "HEAD")).toBe("app.js");
     expect(git(appDir, "status", "--porcelain")).toContain("PRD.md");
+    // provenance (R37): seen right after the agent ran, so its origin is unverified
+    const sealed = ev.find((e) => e.t === "seal");
+    const change = ev.find((e) => e.t === "spec.changed");
+    expect(change).toMatchObject({
+      t: "spec.changed",
+      files: ["PRD.md"],
+      duringAgentTurn: true,
+      before: { "PRD.md": sealed && sealed.t === "seal" ? sealed.manifest["app:PRD.md"] : "?" },
+      after: { "PRD.md": createHash("sha256").update(readFileSync(join(appDir, "PRD.md"))).digest("hex") },
+    });
+    expect(r.specChange).toEqual({ files: ["PRD.md"], duringAgentTurn: true });
+  });
+
+  it("a spec change in a turn where the guard logged the agent aiming a write at the spec is a tamper, not drift (R37)", async () => {
+    await setup();
+    const edit = () => {
+      logSpecAttempt(p.home, { tool: "Bash", how: "shell" }); // what the guard writes when it denies `echo … >> PRD.md`
+      appendFileSync(join(appDir, "PRD.md"), "\nIncome limits do not apply.\n"); // and a write that got round it
+    };
+    const { deps, calls } = fakes({ edit, kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("tamper");
+    expect(calls.tests).toHaveLength(0);
+    const tamper = (await loopEvents()).find((e) => e.t === "tamper");
+    expect(tamper && tamper.t === "tamper" && tamper.detail).toContain("PRD.md");
+    expect(tamper && tamper.t === "tamper" && tamper.detail).toMatch(/tried to write/);
+    expect(await tamperMarker(p)).not.toBeNull();
+  });
+
+  it("an attempt the guard logged before this turn does not make a later turn's spec change a tamper", async () => {
+    await setup();
+    logSpecAttempt(p.home, { tool: "Edit", how: "edit" }, new Date(Date.now() - 60_000));
+    const edit = () => appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n");
+    const { deps } = fakes({ edit, kane: (_t, files) => files.map(pass) });
+    expect((await runBuildLoop(p, deps, log)).reason).toBe("drift");
   });
 
   it("a spec edit made while Kane runs is drift: Kane's results stand, nothing more runs, and nothing is marked tampered", async () => {
@@ -610,6 +647,9 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(ev.filter((e) => e.t === "run")).toHaveLength(2);
     expect(reduce(ev).acs["ac-1"]!.status).toBe("passing");
     expect(await tamperMarker(p)).toBeNull();
+    // no agent ran while Kane did: logged once, as made outside an agent turn
+    expect(ev.filter((e) => e.t === "spec.changed")).toEqual([expect.objectContaining({ files: ["PRD.md"], duringAgentTurn: false })]);
+    expect(r.specChange).toEqual({ files: ["PRD.md"], duringAgentTurn: false });
   });
 
   it("a spec edit between runs stops at the start with drift, before any agent turn", async () => {

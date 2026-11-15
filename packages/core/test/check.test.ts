@@ -13,6 +13,7 @@ import { acquireCheckLock, CHECK_LOCK, checkOnce, EDIT_MARK, forAgent, markEdit,
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { seal } from "../src/seal.js";
+import { logSpecAttempt } from "../src/agent/attempts.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fxTests = join(here, "fixtures", "kane", "tests");
@@ -271,6 +272,19 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(calls.tests).toHaveLength(0);
     expect(existsSync(join(p.home, "TAMPERED"))).toBe(false);
     expect((await readEvents(p.ledgerFile)).some((e) => e.t === "tamper")).toBe(false);
+    // the interactive agent runs all along: its origin is unverified (R37); logged once, not on every check
+    await checkOnce(p, deps, log, { reason: "stop" });
+    expect((await readEvents(p.ledgerFile)).filter((e) => e.t === "spec.changed")).toEqual([expect.objectContaining({ files: ["PRD.md"], duringAgentTurn: true })]);
+  });
+
+  it("a spec change after the guard logged the agent aiming a write at the spec is a tamper (R37)", async () => {
+    await setup();
+    const { deps } = fakes({ kane: (_c, files) => files.map(pass) });
+    logSpecAttempt(p.home, { tool: "Edit", how: "edit" });
+    appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify at $9,467.\n");
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    expect(r).toMatchObject({ status: "tamper", tampered: true });
+    expect(r.detail).toMatch(/tried to write/);
   });
 
   it("a spec edit made while Kane runs is drift too: no tamper, and the agent is sent to a human", async () => {
@@ -289,7 +303,8 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     const ev = await readEvents(p.ledgerFile);
     expect(ev.some((e) => e.t === "tamper")).toBe(false);
     expect(ev.filter((e) => e.t === "run")).toHaveLength(2); // Kane's results stand
-    expect(ev.at(-1)).toMatchObject({ t: "turn.end" }); // the stop still closes the turn
+    expect(ev.filter((e) => e.t === "turn.end")).toHaveLength(1); // the stop still closes the turn
+    expect(ev.at(-1)).toMatchObject({ t: "spec.changed", duringAgentTurn: true });
   });
 
   it.each([

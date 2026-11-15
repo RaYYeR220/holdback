@@ -19,7 +19,7 @@ import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamp
 import { byAcId } from "./brief.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
-import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specFileOf, type Warn } from "./spec.js";
+import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specChangeEvent, specFileOf, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Verdict = Extract<LedgerEvent, { t: "mutant" }>["verdict"];
@@ -335,6 +335,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     const drift = bad.every((k) => isSpecKey(p, k));
     specDrift = drift ? bad.map(specFileOf) : [];
     return drift ? [] : bad;
+  };
+  /** Logs the spec drift just found as a `spec.changed` event (once per edit): no agent runs during a falsify pass. */
+  const noteDrift = async (files: string[]) => {
+    const e = manifest ? await specChangeEvent(p, events, manifest, files, false) : undefined;
+    if (e) await emit(e);
   };
   /** After a Kane batch, with the app stopped: Kane's recordings as they are now are what the next run holds them to. */
   const closeKaneWindow = async () => {
@@ -660,7 +665,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     manifest = lastSeal(events);
     if (!manifest) return result("error", NO_SEAL);
     const broken = await checkSeal(p.verifierDir, manifest, p.appDir);
-    if (broken.length > 0 && broken.every((k) => isSpecKey(p, k))) return result("drift", driftHint(broken.map(specFileOf)));
+    if (broken.length > 0 && broken.every((k) => isSpecKey(p, k))) {
+      await noteDrift(broken.map(specFileOf));
+      return result("drift", driftHint(broken.map(specFileOf)));
+    }
     if (broken.length > 0) {
       await recordTamper(`sealed files changed: ${broken.join(", ")}`);
       return result("tamper");
@@ -744,7 +752,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
 
     // falsify runs left failing coverage in Kane's project store: replay the real build once
     if (attacked && (await replayRealBuild()) === "tamper") return result("tamper");
-    if (drifted || specDrift.length > 0) return result("drift", driftHint(specDrift.length > 0 ? specDrift : driftFiles));
+    if (drifted || specDrift.length > 0) {
+      if (specDrift.length > 0) await noteDrift(specDrift);
+      return result("drift", driftHint(specDrift.length > 0 ? specDrift : driftFiles));
+    }
     return result(aborted ? "aborted" : budgetOut ? "budget" : "done");
   };
 

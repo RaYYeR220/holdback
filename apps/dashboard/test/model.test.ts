@@ -128,6 +128,19 @@ describe("timeline", () => {
     const m = meters(stateFromLedger(events, null), events);
     expect(m).toMatchObject({ metered: 1, unmeasured: 1 });
   });
+
+  it("shows where a spec change was first seen, and flags one of unverified origin (R37)", () => {
+    const events = [
+      ev({ t: "turn.start", n: 1, owed: [] }),
+      ev({ t: "spec.changed", files: ["PRD.md"], duringAgentTurn: true, before: { "PRD.md": "a" }, after: { "PRD.md": "b" } }),
+      ev({ t: "spec.changed", files: ["PRD.md"], duringAgentTurn: false, before: { "PRD.md": "a" }, after: { "PRD.md": "c" } }),
+    ];
+    const items = timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "spec");
+    expect(items).toMatchObject([
+      { title: "The spec changed while the agent was working: origin unverified", detail: "PRD.md" },
+      { title: "The spec changed", detail: "PRD.md" },
+    ]);
+  });
 });
 
 describe("meters and labels", () => {

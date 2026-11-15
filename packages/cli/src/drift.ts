@@ -1,8 +1,12 @@
-import { loadProject } from "@holdback/core";
-import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
-import { driftNotice } from "./messages.js";
+import { latestSpecChange, loadProject } from "@holdback/core";
+import { EXIT, explainFailure, ledgerLog, openHumanIO, refuseInsideClaudeCode, showSpecDiff, snapshot, withCheckLock, type Ctx } from "./context.js";
+import { driftNotice, unverifiedDrift } from "./messages.js";
 
-/** After a spec edit: Kane plans what changed, the human approves, the new criteria are owed. */
+/**
+ * After a spec edit: Kane plans what changed, the human approves, the new criteria are owed. The
+ * human always sees the diff from the sealed spec first; a change Holdback first saw while the coding
+ * agent was working must be accepted in the terminal, whatever `--answers` says (R37).
+ */
 export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: boolean; port?: string } = {}): Promise<number> {
   if (refuseInsideClaudeCode(ctx, "holdback drift")) return EXIT.error;
   const p = await loadProject(ctx.cwd);
@@ -11,7 +15,17 @@ export async function driftCmd(ctx: Ctx, o: { answers?: string; dashboard?: bool
     let r!: Awaited<ReturnType<typeof ctx.deps.runDrift>>;
     const locked = await withCheckLock(ctx, p, async () => {
       const s = await snapshot(p);
-      if (s.tamper === null && s.specChanged.length > 0) ctx.out(driftNotice(s.specChanged));
+      if (s.tamper === null && s.specChanged.length > 0) {
+        ctx.out(driftNotice(s.specChanged));
+        await showSpecDiff(ctx, p, s);
+        if (latestSpecChange(s.events)?.duringAgentTurn) {
+          ctx.err(unverifiedDrift(s.specChanged));
+          if (!(await ctx.deps.confirm("Is this change yours, for Kane to re-plan the criteria from? [y/N] "))) {
+            ctx.err("Nothing applied. Undo the change, or run `holdback drift` again once you have reviewed it.");
+            return EXIT.error;
+          }
+        }
+      }
       r = await ctx.deps.runDrift(p, io, ledgerLog(p), { balance: ctx.deps.balance, warn: ctx.err });
       return EXIT.ok;
     });

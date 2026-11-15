@@ -466,6 +466,9 @@ export function timeline(events: LedgerEvent[]): Segment[] {
       case "drift":
         seg.items.push({ kind: "drift", at: e.at, rows: e.rows.length, applied: e.applied, ...(e.credits !== undefined ? { credits: e.credits } : {}) });
         break;
+      case "spec.changed":
+        seg.items.push({ kind: "spec", at: e.at, title: e.duringAgentTurn ? "The spec changed while the agent was working: origin unverified" : "The spec changed", detail: e.files.join(", ") });
+        break;
       case "credits":
         seg.items.push({ kind: "meter", at: e.at, source: e.source, delta: e.delta, perRunSum: e.perRunSum, ...(e.error ? { error: e.error } : {}) });
         break;
