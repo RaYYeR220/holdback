@@ -256,7 +256,7 @@ describe("status and owed", () => {
     rmSync(p.ledgerFile);
     mkdirSync(p.ledgerFile);
     for (const args of [["status"], ["status", "--json"], ["owed"], ["run"]]) {
-      const r = await cli(args, { runBuildLoop: notCalled("build") as never, humanIO: fakeIO as never });
+      const r = await cli(args, { runBuildLoop: notCalled("build") as never, humanIO: fakeIO as never, env: { VENICE_API_KEY: "k" } });
       expect(r.code, args.join(" ")).toBe(1);
       expect(r.err).toMatch(/error: .*(EISDIR|illegal operation)/i);
       expect(r.out).not.toMatch(/No acceptance criteria/);
@@ -508,6 +508,7 @@ describe("run", () => {
     const builds = [...(plan.build ?? [buildOk])];
     const falsifies = [...(plan.falsify ?? [falsifyOk])];
     const deps: Fakes = {
+      env: { VENICE_API_KEY: "test-key" }, // falsify's breaker needs it: run checks before it builds (M3)
       humanIO: () => io as never,
       runDrift: async () => {
         calls.push("drift");
@@ -528,6 +529,17 @@ describe("run", () => {
     };
     return { calls, seen, io, deps };
   }
+
+  it("refuses to start, before any build, when falsify will need VENICE_API_KEY and it is not set (M3)", async () => {
+    await greenFixture();
+    const s = stages();
+    const r = await cli(["run"], { ...s.deps, env: {} });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("VENICE_API_KEY is not set");
+    expect(r.err).toContain("--no-falsify");
+    expect(s.calls).toEqual([]);
+    expect((await cli(["run", "--no-falsify"], { ...s.deps, env: {} })).code).toBe(0);
+  });
 
   it("asks for `holdback spec` first when nothing is sealed, and builds nothing", async () => {
     await fixture({ seal: false });
@@ -846,6 +858,7 @@ describe("run", () => {
     const r = await cli(
       ["run"],
       {
+        env: { VENICE_API_KEY: "k" },
         humanIO: () => io as never,
         runBuildLoop: async () => {
           throw new Error("kaboom");

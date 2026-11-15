@@ -123,6 +123,12 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       }
     }
 
+    // the breaker's key is checked now, not after a whole build (M3)
+    if (o.falsify !== false && !(ctx.deps.falsifyDeps.apiKey ?? ctx.deps.env.VENICE_API_KEY)) {
+      ctx.err("VENICE_API_KEY is not set: the falsify stage needs it for the breaker (Venice API). Set it, or run with --no-falsify.");
+      return EXIT.error;
+    }
+
     const before = await snapshot(p);
     if (before.tamper !== null) {
       ctx.err(before.tamper);
