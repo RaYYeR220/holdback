@@ -550,6 +550,15 @@ describe("run", () => {
     expect(vacuous.out).toContain("1 vacuous");
   });
 
+  it("counts criteria the human turned down apart, and they never keep the run from finishing green (I3)", async () => {
+    await greenFixture();
+    const ac = (id: string) => ({ id, text: `criterion ${id}`, useCase: "uc-2", cites: [], trust: "derived" as const });
+    await log({ at, t: "design", useCase: "uc-2", acs: [ac("ac-9")], tests: [{ id: "t-9", title: "nine", file: ".testmuai/tests/t1_test.md", verifies: ["ac-9"] }], gaps: [], credits: 0, rejected: ["ac-9", "t-9"] });
+    const r = await cli(["run"], stages().deps);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("1 rejected");
+  });
+
   it("skips falsify with --no-falsify and passes --max-turns on", async () => {
     await greenFixture();
     const s = stages();

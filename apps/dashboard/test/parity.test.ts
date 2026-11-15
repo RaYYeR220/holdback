@@ -35,6 +35,7 @@ describe("the replay reduces the ledger exactly as core does", () => {
       regressed: g.regressed.map((a) => a.id),
       vacuous: g.vacuous.map((a) => a.id),
       needsSpec: g.needsSpec.map((a) => a.id),
+      rejected: g.rejected.map((a) => a.id),
       inconclusive: g.inconclusive,
     });
     // and the browser entry's functions give the same answer on their own

@@ -62,7 +62,7 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
   ctx.out("");
   ctx.out(`Gate: ${s.gate.allowStop ? "open" : "closed"}`);
   ctx.out(
-    `Criteria: ${count("owed", "regressed")} owed${regressed > 0 ? ` (${regressed} regressed)` : ""}, ${count("passing")} passing, ${count("proved")} proved, ${count("vacuous")} vacuous, ${count("needs-spec")} needs-spec`,
+    `Criteria: ${count("owed", "regressed")} owed${regressed > 0 ? ` (${regressed} regressed)` : ""}, ${count("passing")} passing, ${count("proved")} proved, ${count("vacuous")} vacuous, ${count("needs-spec")} needs-spec${count("rejected") > 0 ? `, ${count("rejected")} rejected` : ""}`,
   );
   ctx.out(`Turns this run: ${turns} (turn ${s.state.turn} overall)`);
   ctx.out(`Kane credits: ${kaneCreditsText(s.state)}`);

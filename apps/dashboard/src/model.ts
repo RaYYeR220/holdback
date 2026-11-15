@@ -11,6 +11,8 @@ export type GateInfo = {
   regressed: string[];
   vacuous: string[];
   needsSpec: string[];
+  /** Criteria a human turned down when approving the design (older servers leave it out). */
+  rejected?: string[];
   inconclusive: LedgerState["inconclusive"];
 };
 
@@ -58,6 +60,7 @@ export function stateFromLedger(events: LedgerEvent[], config: ConfigSummary | n
       regressed: g.regressed.map((a) => a.id),
       vacuous: g.vacuous.map((a) => a.id),
       needsSpec: g.needsSpec.map((a) => a.id),
+      rejected: g.rejected.map((a) => a.id),
       inconclusive: g.inconclusive,
     },
     config,
@@ -148,13 +151,14 @@ export type Card = {
   inconclusive: LedgerState["inconclusive"];
 };
 
-export type ColumnKey = "owed" | "passing" | "proved" | "vacuous" | "needs-spec";
+export type ColumnKey = "owed" | "passing" | "proved" | "vacuous" | "needs-spec" | "rejected";
 export const COLUMNS: { key: ColumnKey; label: string; note: string }[] = [
   { key: "owed", label: "Owed", note: "Kane has not passed it yet, or it broke again" },
   { key: "passing", label: "Passing", note: "Kane passed every test that verifies it" },
   { key: "proved", label: "Proved", note: "Passing, and Kane caught a planted bug" },
   { key: "vacuous", label: "Vacuous", note: "A planted bug got past its tests" },
   { key: "needs-spec", label: "Needs spec", note: "No test verifies it: the spec is too thin" },
+  { key: "rejected", label: "Rejected", note: "You turned it down when approving the design: never owed" },
 ];
 
 export const columnOf = (s: AcStatus): ColumnKey => (s === "regressed" ? "owed" : s);
@@ -242,7 +246,7 @@ export function board(api: ApiState, events: LedgerEvent[]): Record<ColumnKey, C
   const mutants = events.filter((e): e is MutantEvent & { at: string } => e.t === "mutant");
   const inconclusiveByTest = new Map(api.gate.inconclusive.map((u) => [u.test, u]));
 
-  const cols: Record<ColumnKey, Card[]> = { owed: [], passing: [], proved: [], vacuous: [], "needs-spec": [] };
+  const cols: Record<ColumnKey, Card[]> = { owed: [], passing: [], proved: [], vacuous: [], "needs-spec": [], rejected: [] };
   for (const ac of Object.values(api.state.acs)) {
     // Kane lists the cite it leans on first
     const best = ac.cites[0];

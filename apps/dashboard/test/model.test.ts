@@ -52,6 +52,15 @@ describe("board", () => {
     expect(gateLabel(api)).toEqual({ word: "Held back", open: false, parts: ["2 owed", "1 regressed"] });
   });
 
+  it("shows a criterion the human turned down in its own column, never owed (I3)", () => {
+    const events = [ev({ ...design(["ac-1", "ac-2"], [["t-1", ["ac-1"]], ["t-2", ["ac-2"]]]), rejected: ["ac-2"] })];
+    const api = stateFromLedger(events, null);
+    const cols = board(api, events);
+    expect(cols.rejected.map((c) => c.ac.id)).toEqual(["ac-2"]);
+    expect(cols.owed.map((c) => c.ac.id)).toEqual(["ac-1"]);
+    expect(api.gate.rejected).toEqual(["ac-2"]);
+  });
+
   it("flags a criterion whose test proved nothing, and marks that test inconclusive until it runs conclusively", () => {
     const base = [design(["ac-1"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "error", { reason: "timeout" }))];
     const cards = board(stateFromLedger(base, null), base).owed;

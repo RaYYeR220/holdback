@@ -8,6 +8,8 @@ export function gate(state: LedgerState): {
   regressed: AcState[];
   vacuous: AcState[];
   needsSpec: AcState[];
+  /** Criteria a human turned down when approving the design: never owed, never in the way of the gate. */
+  rejected: AcState[];
   /**
    * Tests a criterion (other than a needs-spec one) depends on whose latest build run proved
    * nothing: the gate stays shut until Kane runs them conclusively, whatever the criteria's status.
@@ -20,7 +22,7 @@ export function gate(state: LedgerState): {
   const owed = by("owed");
   const regressed = by("regressed");
   const tampered = state.tampered === true;
-  const depended = new Set(all.filter((a) => a.status !== "needs-spec").flatMap((a) => a.tests));
+  const depended = new Set(all.filter((a) => a.status !== "needs-spec" && a.status !== "rejected").flatMap((a) => a.tests));
   const inconclusive = (state.inconclusive ?? []).filter((u) => depended.has(u.test));
   return {
     allowStop: !tampered && owed.length === 0 && regressed.length === 0 && inconclusive.length === 0,
@@ -29,6 +31,7 @@ export function gate(state: LedgerState): {
     regressed,
     vacuous: by("vacuous"),
     needsSpec: by("needs-spec"),
+    rejected: by("rejected"),
     inconclusive,
   };
 }

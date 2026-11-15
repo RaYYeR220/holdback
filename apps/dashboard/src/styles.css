@@ -45,6 +45,7 @@ ol, ul { list-style: none; }
 .gr-proved { box-shadow: 0 0 0 1.5px var(--raised), 0 0 0 2.6px var(--accent); }
 .gr-vacuous { background: var(--ink-4); border-color: var(--ink-4); }
 .gr-needs-spec { border-style: dashed; border-color: var(--ink-3); }
+.gr-rejected { border-style: dotted; border-color: var(--ink-4); }
 .gr-regressed { border-color: var(--alarm); }
 .gate-word { font-weight: 600; letter-spacing: -0.005em; }
 .gate.open .gate-word { color: var(--accent); }
@@ -87,7 +88,7 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 32px; letter-spac
 .empty-line { font-size: 13.5px; line-height: 1.55; color: var(--ink-3); }
 
 /* ---------------- board ---------------- */
-.board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .col-head { display: grid; grid-template-columns: auto 1fr auto; align-items: center; column-gap: 9px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--hair); }
 .col-head h3 { font-family: var(--display); font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
 .col-n { font-size: 12px; color: var(--ink-3); }

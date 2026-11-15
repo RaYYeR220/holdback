@@ -237,6 +237,7 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
         regressed: g.regressed.map((a) => a.id),
         vacuous: g.vacuous.map((a) => a.id),
         needsSpec: g.needsSpec.map((a) => a.id),
+        rejected: g.rejected.map((a) => a.id),
         inconclusive: g.inconclusive,
       },
       config: configSummary(p),

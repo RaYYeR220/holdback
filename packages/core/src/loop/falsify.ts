@@ -85,7 +85,7 @@ export type FalsifyResult = {
 const MUT_DIR = "mut";
 /** Where regression-bisect probes check out commits. */
 export const BISECT_DIR = "bisect";
-const RESEAL_HINT = "a tamper is on record: re-seal (the spec stage, or a human re-seal) before falsifying";
+const RESEAL_HINT = "a tamper is on record: a human re-seals (`holdback reseal`) before falsifying";
 const NO_SEAL = "no seal in the ledger: run the spec stage first";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 

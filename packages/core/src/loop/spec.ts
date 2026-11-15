@@ -351,6 +351,26 @@ export type SpecDeps = {
   warn?: Warn;
 };
 
+/** sha256 over the spec files' bytes (as they are in the app dir) and the spec links: what an extraction was made from. */
+async function specSourceHash(p: Project): Promise<string> {
+  const files: [string, string][] = [];
+  for (const rel of p.config.spec) files.push([rel, await hashOf(path.join(p.appDir, rel))]);
+  return createHash("sha256").update(JSON.stringify({ files, urls: p.config.specUrls })).digest("hex");
+}
+
+export const ALREADY_SEALED =
+  "already sealed: to change the criteria, edit the spec and run `holdback drift` (after a tamper, `holdback reseal`)";
+
+/**
+ * The spec stage, once per project: Kane ingests the spec and asks its questions, the human approves
+ * the use cases, Kane designs criteria and tests per use case, the human approves the design, and
+ * the seal follows. Refuses once anything is sealed (a later spec change is drift). A stage cut short
+ * resumes where it stopped: no new ingest while the spec and links still hash as they did when the
+ * extraction finished, no question again for a use case already approved, no new design for one
+ * already designed; then the design approval and the seal. What the human turns down in the design
+ * approval is logged on each use case's design (`rejected`): such a criterion is never owed, such a
+ * test never runs (I3).
+ */
 export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: SpecDeps = {}): Promise<void> {
   const at = () => new Date().toISOString();
   const meter = new KaneMeter(deps.balance, (e) => log({ at: at(), ...e }));
@@ -363,74 +383,120 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first, undefined, "spec");
 
   checkSpecPaths(p);
-  const clarifiedBefore = await clarifiedFile(p);
+  const earlier = await readEvents(p.ledgerFile);
+  if (earlier.some((e) => e.t === "seal")) throw new Error(ALREADY_SEALED);
+  // a resumed stage commits the Clarifications an earlier attempt appended too
+  const clarifiedBefore = earlier.length > 0 ? null : await clarifiedFile(p);
+  const designed = new Map<string, Extract<EventBody, { t: "design" }>>();
+  for (const e of earlier) if (e.t === "design") designed.set(e.useCase, e);
 
-  // 1. copy the spec into the verifier store (kept outside the app repo)
-  for (const rel of p.config.spec) {
-    const dest = path.join(cwd, rel);
-    await mkdir(path.dirname(dest), { recursive: true });
-    await copyFile(path.join(p.appDir, rel), dest);
-  }
-  const sources = [...p.config.spec, ...p.config.specUrls];
-
-  // 2. ingest + extraction, answering Kane's questions (one metered Kane batch)
-  await meter.batch("spec", async () => {
-    const first = await ingest(cwd, sources);
-    if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
-    // Kane's own source ids (`PRD.md` is `prd`); `file` keeps the spec path each came from, so drift can map back
-    const mapped = first.sources.length === sources.length;
-    await emit({
-      t: "spec.ingested",
-      sources: first.sources.map((s, i) => ({ id: s.id, cid: s.cid, status: s.status, ...(mapped ? { file: sources[i]! } : {}) })),
-      credits: first.status === "complete" ? first.credits : 0,
+  // 1-2. the spec copied into the verifier store (kept outside the app repo), then ingest and
+  // extraction, answering Kane's questions (one metered Kane batch); skipped when an earlier attempt
+  // finished them for the spec as it is now
+  const hash = await specSourceHash(p);
+  if (!earlier.some((e) => e.t === "spec.extracted" && e.hash === hash)) {
+    for (const rel of p.config.spec) {
+      const dest = path.join(cwd, rel);
+      await mkdir(path.dirname(dest), { recursive: true });
+      await copyFile(path.join(p.appDir, rel), dest);
+    }
+    const sources = [...p.config.spec, ...p.config.specUrls];
+    await meter.batch("spec", async () => {
+      const first = await ingest(cwd, sources);
+      if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
+      const files = mapIngestedFiles(first.sources, p.config.spec);
+      await emit({
+        t: "spec.ingested",
+        sources: first.sources.map((s) => ({ id: s.id, cid: s.cid, status: s.status, ...(files.has(s.id) ? { file: files.get(s.id)! } : {}) })),
+        credits: first.status === "complete" ? first.credits : 0,
+      });
+      const extracted = await drive<IngestResult>(first);
+      if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
+      // hashed after the answers went into PRD.md: a resumed stage compares the spec as it is now
+      await emit({ t: "spec.extracted", hash: await specSourceHash(p) });
     });
-    const extracted = await drive<IngestResult>(first);
-    if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
-  });
+  }
 
-  // 3. human approves the extracted use cases
-  const ucs = (await listNodes(cwd)).filter((n) => n.label === "usecase" && n.trust === "derived");
-  const approvedUcs = ucs.length ? await io.approve(ucs.map((n) => ({ ref: n.id, title: n.title, kind: "usecase" }))) : [];
-  const designable = approvedUcs.filter((r) => ucs.some((n) => n.id === r));
-  await emit({
-    t: "spec.approved",
-    refs: designable,
-    rejected: ucs.map((n) => n.id).filter((id) => !designable.includes(id)),
-  });
+  // 3. human approves the extracted use cases (ones approved by an earlier attempt are not asked again)
+  const nodes = (await listNodes(cwd)).filter((n) => n.label === "usecase");
+  const asked = nodes.filter((n) => n.trust === "derived");
+  const approvedBefore = nodes.filter((n) => n.trust !== "derived").map((n) => n.id);
+  let approvedNow: string[] = [];
+  if (asked.length > 0 || approvedBefore.length === 0) {
+    const picked = asked.length ? await io.approve(asked.map((n) => ({ ref: n.id, title: n.title, kind: "usecase" }))) : [];
+    approvedNow = picked.filter((r) => asked.some((n) => n.id === r));
+    await emit({ t: "spec.approved", refs: approvedNow, rejected: asked.map((n) => n.id).filter((id) => !approvedNow.includes(id)) });
+  }
+  const designable = [...approvedBefore, ...approvedNow];
   if (designable.length === 0) throw new Error("spec stage: no use case approved, nothing to design");
-  await review(cwd, designable);
+  if (approvedNow.length > 0) await review(cwd, approvedNow);
 
-  // 4. design acceptance criteria + tests per use case (a metered Kane batch each)
-  for (const uc of designable) {
+  // 4. design acceptance criteria + tests per use case not designed yet (a metered Kane batch each)
+  for (const uc of designable.filter((u) => !designed.has(u))) {
     await meter.batch("design", async () => {
       const d = await drive(await designTests(cwd, uc, { max: p.config.kane.designMax }));
       if (d.status !== "complete") throw new Error(`design for ${uc} ${d.status}: ${d.message ?? ""}`);
       const g = await readGraph(cwd);
       const acs = g.acs.filter((a) => a.useCase === uc);
       const acIds = new Set(acs.map((a) => a.id));
-      await emit({
+      const e: Extract<EventBody, { t: "design" }> = {
         t: "design",
         useCase: uc,
         acs,
         tests: g.tests.filter((t) => t.verifies.some((v) => acIds.has(v))),
         gaps: g.gaps,
         credits: d.credits,
-      });
+      };
+      await emit(e);
+      designed.set(uc, e);
     });
   }
 
-  // 5. human approves the derived design (ACs, scenarios, tests)
+  // 5. human approves the derived design (ACs, scenarios, tests); what they turn down goes on each
+  //    use case's design, so it is never owed (a criterion) and never run (a test)
   const derived = (await listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label));
   if (derived.length > 0) {
     const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
     const approvedSet = derived.map((n) => n.id).filter((id) => approved.includes(id));
-    await emit({ t: "spec.approved", refs: approvedSet, rejected: derived.map((n) => n.id).filter((id) => !approvedSet.includes(id)) });
+    const turnedDown = derived.map((n) => n.id).filter((id) => !approvedSet.includes(id));
+    await emit({ t: "spec.approved", refs: approvedSet, rejected: turnedDown });
     if (approvedSet.length === 0) throw new Error("spec stage: no designed test was approved, refusing to seal");
     await review(cwd, approvedSet);
+    for (const d of designed.values()) {
+      const mine = new Set([...d.acs.map((a) => a.id), ...d.tests.map((t) => t.id)]);
+      const rejected = turnedDown.filter((id) => mine.has(id));
+      if (JSON.stringify(rejected) !== JSON.stringify(d.rejected ?? [])) await emit({ ...d, credits: 0, rejected });
+    }
   }
 
   // 6. point the tests at the app, commit Holdback's own spec edit, then seal (a fresh seal is the only thing that lifts a tamper)
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
   await commitClarifications(p, clarifiedBefore, deps.warn);
   await reseal(p, log);
+}
+
+/**
+ * Which spec file each source Kane registered came from (M6): matched on Kane's source id, which it
+ * derives from the file name (`PRD.md` is `prd`), never on the order of its events. A file no id
+ * matches is paired only when it is the one file and the one source left unmatched.
+ */
+export function mapIngestedFiles(sources: { id: string }[], specFiles: string[]): Map<string, string> {
+  const slug = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  const stem = (f: string) => path.basename(f.split("\\").join("/")).replace(/\.[^.]*$/, "");
+  const out = new Map<string, string>();
+  const left = new Set(specFiles);
+  for (const s of sources) {
+    const hit = [...left].filter((f) => s.id.toLowerCase() === stem(f).toLowerCase() || s.id.toLowerCase() === slug(stem(f)));
+    if (hit.length === 1) {
+      out.set(s.id, hit[0]!);
+      left.delete(hit[0]!);
+    }
+  }
+  const unmatched = sources.filter((s) => !out.has(s.id));
+  if (left.size === 1 && unmatched.length === 1) out.set(unmatched[0]!.id, [...left][0]!);
+  return out;
 }

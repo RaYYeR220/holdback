@@ -32,6 +32,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
             regressed: ids(s.gate.regressed),
             vacuous: ids(s.gate.vacuous),
             needsSpec: ids(s.gate.needsSpec),
+            rejected: ids(s.gate.rejected),
             inconclusive: agent ? s.gate.inconclusive.length : s.gate.inconclusive.map((u) => u.test),
           },
           tamper: s.tamper === null ? null : { marker: s.marker, changed: s.changed },

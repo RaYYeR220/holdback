@@ -8,7 +8,14 @@ export type LedgerEvent = { at: string } & (
   | { t: "spec.paused"; sid: string; questions: PendingQuestion[]; credits?: number }
   | { t: "spec.answered"; sid: string; answers: Record<string, string>; credits?: number }
   | { t: "spec.approved"; refs: string[]; rejected?: string[] }
-  | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number }
+  /**
+   * A use case's criteria and tests as Kane designed them. `rejected`: the ids among them a human
+   * turned down when approving the design (a rejected criterion is never owed, a rejected test never
+   * runs). A later design of the use case replaces it whole.
+   */
+  | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number; rejected?: string[] }
+  /** The spec stage's extraction finished for the spec files and links as they hash to `hash`: a resumed stage need not ingest again. */
+  | { t: "spec.extracted"; hash: string }
   | { t: "seal"; manifest: Record<string, string> }
   | { t: "turn.start"; n: number; owed: string[] }
   | {
@@ -58,7 +65,8 @@ export type LedgerEvent = { at: string } & (
   | { t: "credits"; source: string; delta: number | null; perRunSum: number; error?: string }
 );
 
-export type AcStatus = "owed" | "passing" | "proved" | "vacuous" | "regressed" | "needs-spec";
+/** `rejected`: a human turned the criterion down when approving the design: never owed, never run. */
+export type AcStatus = "owed" | "passing" | "proved" | "vacuous" | "regressed" | "needs-spec" | "rejected";
 
 export type AcState = {
   id: string;

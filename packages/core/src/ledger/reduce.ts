@@ -44,7 +44,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           latest.clear();
           unsure.clear();
           for (const ac of Object.values(state.acs)) {
-            ac.status = ac.tests.length > 0 ? "owed" : "needs-spec";
+            if (ac.status !== "rejected") ac.status = ac.tests.length > 0 ? "owed" : "needs-spec";
             delete ac.lastFailure;
           }
         }
@@ -59,15 +59,19 @@ export function reduce(events: LedgerEvent[]): LedgerState {
             latest.delete(old.id);
           }
         }
+        // I3: what the human turned down is never owed (a criterion) and never run (a test); a
+        // criterion whose every test was turned down needs a better spec
+        const rejected = new Set(e.rejected ?? []);
         for (const ac of e.acs) {
-          const tests = e.tests.filter((t) => t.verifies.includes(ac.id)).map((t) => t.id);
+          const turnedDown = rejected.has(ac.id);
+          const tests = turnedDown ? [] : e.tests.filter((t) => t.verifies.includes(ac.id) && !rejected.has(t.id)).map((t) => t.id);
           state.acs[ac.id] = {
             id: ac.id,
             text: ac.text,
             useCase: ac.useCase,
             cites: ac.cites,
             tests,
-            status: tests.length > 0 ? "owed" : "needs-spec",
+            status: turnedDown ? "rejected" : tests.length > 0 ? "owed" : "needs-spec",
           };
         }
         break;

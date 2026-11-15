@@ -29,10 +29,11 @@ export function Ring({ status, size = 14, title }: { status: AcStatus | "inconcl
         cy={c}
         r={r}
         fill={status === "passing" || status === "proved" || status === "vacuous" ? "var(--ink)" : "none"}
-        stroke={status === "regressed" ? "var(--alarm)" : status === "needs-spec" || status === "inconclusive" ? "var(--ink-3)" : "var(--ink)"}
+        stroke={status === "regressed" ? "var(--alarm)" : status === "needs-spec" || status === "inconclusive" || status === "rejected" ? "var(--ink-3)" : "var(--ink)"}
         strokeWidth={1.2}
-        strokeDasharray={status === "needs-spec" || status === "inconclusive" ? "1.6 1.8" : undefined}
+        strokeDasharray={status === "needs-spec" || status === "inconclusive" || status === "rejected" ? "1.6 1.8" : undefined}
       />
+      {status === "rejected" && <path d={`M${c - r} ${c} L${c + r} ${c}`} stroke="var(--ink-3)" strokeWidth={1.2} />}
       {status === "vacuous" && <path d={`M${c - r - 1.5} ${c + r + 1.5} L${c + r + 1.5} ${c - r - 1.5}`} stroke="var(--ground)" strokeWidth={1.6} />}
     </svg>
   );

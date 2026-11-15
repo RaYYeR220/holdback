@@ -103,6 +103,24 @@ describe("design", () => {
     expect(status([...redesigned, run(result("t-2", ["ac-1"], []))], "ac-1")).toBe("passing");
   });
 
+  it("honours the human's rejections: a rejected AC is never owed, a rejected test never counts, and an AC left with no test needs a spec (I3)", () => {
+    const d = { ...design(["ac-1", "ac-2", "ac-3"], [["t-1", ["ac-1", "ac-2"]], ["t-2", ["ac-1"]], ["t-3", ["ac-3"]]]), rejected: ["ac-2", "t-2", "t-3"] } as LedgerEvent;
+    const s = reduce([d]);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "owed", tests: ["t-1"] });
+    expect(s.acs["ac-2"]).toMatchObject({ status: "rejected", tests: [] });
+    expect(s.acs["ac-3"]).toMatchObject({ status: "needs-spec", tests: [] });
+    const g = gate(s);
+    expect(g.owed.map((a) => a.id)).toEqual(["ac-1"]);
+    expect(g.rejected.map((a) => a.id)).toEqual(["ac-2"]);
+    // a run of the approved test that also covers the rejected AC changes nothing for it
+    const after = reduce([d, run(result("t-1", ["ac-1", "ac-2"], []))]);
+    expect(after.acs["ac-1"]!.status).toBe("passing");
+    expect(after.acs["ac-2"]!.status).toBe("rejected");
+    expect(gate(after).allowStop).toBe(true);
+    // a later design of the use case without rejections starts it over
+    expect(status([d, design(["ac-2"], [["t-1", ["ac-2"]]])], "ac-2")).toBe("owed");
+  });
+
   it("redesign that reuses the same test id still resets to owed", () => {
     const evs = [
       design(["ac-1"], [["t-1", ["ac-1"]]]),

@@ -1,14 +1,15 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
-import { checkSpecPaths, resealAppFiles, runSpecStage } from "../src/loop/spec.js";
+import { checkSpecPaths, mapIngestedFiles, resealAppFiles, runSpecStage } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
+import { gate } from "../src/ledger/gate.js";
 import { loadProject } from "../src/project.js";
 import { markTampered, tamperMarker } from "../src/tamper.js";
 
@@ -67,7 +68,7 @@ describe("runSpecStage", () => {
     const events = await readEvents(p.ledgerFile);
     // the marker's tamper goes into the ledger before the seal, so the seal drops any result from before it;
     // the app dir is not a git repo here, so no recordings anchor follows the seal
-    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.approved", "design", "spec.approved", "tamper", "seal"]);
+    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.extracted", "spec.approved", "design", "spec.approved", "tamper", "seal"]);
     expect(events.at(-2)).toMatchObject({ t: "tamper", detail: expect.stringContaining("left over from an earlier build") });
     expect(events[0]).toMatchObject({ t: "spec.ingested", sources: [{ id: "prd", cid: expect.stringMatching(/^sha256:/), status: "created", file: "PRD.md" }] });
     // live smoke: the ledger was 4.44 credits short of the balance drop: the ingest that paused was never counted
@@ -95,7 +96,7 @@ describe("runSpecStage", () => {
     const balances = [100, 92.5, 92.5, 70];
     await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e), { balance: async () => balances.shift()! });
     const events = await readEvents(p.ledgerFile);
-    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "credits", "spec.approved", "design", "credits", "spec.approved", "seal"]);
+    expect(events.map((e) => e.t)).toEqual(["spec.ingested", "spec.paused", "spec.answered", "spec.extracted", "credits", "spec.approved", "design", "credits", "spec.approved", "seal"]);
     const [ingest, design] = events.filter((e) => e.t === "credits");
     const perRun = (ts: string[]) => events.filter((e) => ts.includes(e.t)).reduce((n, e) => n + ("credits" in e && typeof e.credits === "number" ? e.credits : 0), 0);
     expect(ingest).toMatchObject({ source: "spec", delta: 7.5, perRunSum: expect.closeTo(perRun(["spec.ingested", "spec.paused", "spec.answered"]), 4) });
@@ -215,6 +216,16 @@ describe("runSpecStage", () => {
     approve: async (items) => items.map((i) => i.ref),
   };
 
+  it("maps Kane's sources to spec files by Kane's source id, never by event order (M6)", () => {
+    const m = mapIngestedFiles([{ id: "rules" }, { id: "url-1" }, { id: "prd" }], ["PRD.md", "a.md", "b.md", "docs/rules.md"]);
+    expect(m.get("prd")).toBe("PRD.md");
+    expect(m.get("rules")).toBe("docs/rules.md");
+    expect(m.has("url-1")).toBe(false); // two files left unmatched: no guess
+    expect(mapIngestedFiles([{ id: "pantry-rules" }], ["docs/Pantry Rules.md"]).get("pantry-rules")).toBe("docs/Pantry Rules.md");
+    // one file and one source left: paired
+    expect(mapIngestedFiles([{ id: "src-1" }], ["SPEC.md"]).get("src-1")).toBe("SPEC.md");
+  });
+
   it("rejects spec paths that escape the app dir", async () => {
     for (const bad of ["../x.md", join(root, "abs.md")]) {
       const appDir = setup("# PRD\n");
@@ -246,6 +257,81 @@ describe("runSpecStage", () => {
     const last = events.filter((e) => e.t === "spec.approved").pop();
     expect(last).toMatchObject({ refs: [], rejected: ["ac-1", "sc-1", "t-1"] });
     expect(() => reduce(events)).not.toThrow();
+  }, 60_000);
+
+  it("honours the human's rejections in the design approval: rejected nodes are logged on the design, and never owed (I3)", async () => {
+    const appDir = setup("# PRD\n");
+    const p = await loadProject(appDir);
+    const io: HumanIO = { ...acceptAll, approve: async (items) => items.map((i) => i.ref).filter((r) => r !== "ac-1" && r !== "t-1") };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    const events = await readEvents(p.ledgerFile);
+    const designs = events.filter((e) => e.t === "design");
+    expect(designs).toHaveLength(2);
+    expect(designs[1]).toMatchObject({ useCase: "uc-1", credits: 0, rejected: ["ac-1", "t-1"] });
+    expect(events.at(-1)!.t).toBe("seal");
+    const s = reduce(events);
+    expect(s.acs["ac-1"]!.status).toBe("rejected");
+    expect(Object.values(s.acs).some((a) => a.tests.includes("t-1"))).toBe(false);
+    expect(gate(s).owed.map((a) => a.id)).not.toContain("ac-1");
+  }, 60_000);
+
+  it("refuses to run again once the criteria are sealed: a spec change goes through drift (I4)", async () => {
+    const appDir = setup("# PRD\n");
+    const p = await loadProject(appDir);
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+    const calls = readFileSync(process.env.FAKE_KANE_ARGV_LOG!, "utf8");
+    const before = (await readEvents(p.ledgerFile)).length;
+    await expect(runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/already sealed.*holdback drift/);
+    expect(readFileSync(process.env.FAKE_KANE_ARGV_LOG!, "utf8")).toBe(calls); // no Kane call
+    expect(await readEvents(p.ledgerFile)).toHaveLength(before);
+  }, 60_000);
+
+  it("resumes a stage cut short after the design: no new ingest or design, the approval, then the seal (I4)", async () => {
+    const appDir = setup("# PRD\n");
+    const p = await loadProject(appDir);
+    const closing: HumanIO = {
+      ...acceptAll,
+      approve: async (items) => {
+        if (items[0]?.kind !== "usecase") throw new Error("the dashboard server closed");
+        return items.map((i) => i.ref);
+      },
+    };
+    await expect(runSpecStage(p, closing, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/dashboard server closed/);
+    const first = await readEvents(p.ledgerFile);
+    expect(first.some((e) => e.t === "seal")).toBe(false);
+    expect(first.filter((e) => e.t === "design")).toHaveLength(1);
+
+    // the resumed stage: list (use cases, all approved now), list (derived nodes), review
+    const seq = join(root, "seq-resume.txt");
+    writeFileSync(seq, [fx("10-list-derived.ndjson"), fx("10-list-derived.ndjson"), "-"].join("\n"));
+    process.env.FAKE_KANE_SEQUENCE = seq;
+    writeFileSync(process.env.FAKE_KANE_ARGV_LOG!, "");
+    const approvals: string[][] = [];
+    const io: HumanIO = { ...acceptAll, approve: async (items) => (approvals.push(items.map((i) => i.ref)), items.map((i) => i.ref)) };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    const calls = readFileSync(process.env.FAKE_KANE_ARGV_LOG!, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+    expect(calls.map((c) => c.slice(0, 2).join(" "))).toEqual(["context list", "context list", "context review"]);
+    expect(approvals).toEqual([["ac-1", "sc-1", "t-1"]]); // the use case was approved before: not asked again
+    const events = await readEvents(p.ledgerFile);
+    expect(events.filter((e) => e.t === "design")).toHaveLength(1);
+    expect(events.at(-1)!.t).toBe("seal");
+    expect(Object.keys(reduce(events).acs).length).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("re-ingests on a resume when the spec changed since the extraction", async () => {
+    const appDir = setup("# PRD\n");
+    const p = await loadProject(appDir);
+    const closing: HumanIO = { ...acceptAll, approve: async () => Promise.reject(new Error("closed")) };
+    await expect(runSpecStage(p, closing, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/closed/);
+    expect((await readEvents(p.ledgerFile)).find((e) => e.t === "spec.extracted")).toMatchObject({ hash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    appendFileSync(join(appDir, "PRD.md"), "\nRule 2.\n");
+    const seq = join(root, "seq-again.txt");
+    writeFileSync(seq, [fx("01-ingest.ndjson"), fx("02-extract.ndjson")].join("\n"));
+    process.env.FAKE_KANE_SEQUENCE = seq;
+    writeFileSync(process.env.FAKE_KANE_ARGV_LOG!, "");
+    await expect(runSpecStage(p, closing, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow();
+    const calls = readFileSync(process.env.FAKE_KANE_ARGV_LOG!, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+    expect(calls[0]!.slice(0, 2)).toEqual(["context", "ingest"]);
   }, 60_000);
 
   it("seals app config + spec, collapses whitespace, and counts credits", async () => {

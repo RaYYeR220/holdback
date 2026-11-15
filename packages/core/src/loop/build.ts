@@ -80,7 +80,7 @@ const REPLAY_EVERY = 3;
 const SETTINGS_FILE = "agent-settings.json";
 /** Copies of Kane's failure screenshots inside the app dir, where the agent may open them; never committed. */
 export const EVIDENCE_DIR = "kane-evidence";
-const RESEAL_HINT = "a tamper is on record: re-seal (the spec stage, or a human re-seal) before building again";
+const RESEAL_HINT = "a tamper is on record: a human re-seals (`holdback reseal`) before building again";
 const NO_SEAL = "no seal in the ledger: run the spec stage first";
 const NO_ACS = "no acceptance criteria in the ledger: run the spec stage first";
 
