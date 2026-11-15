@@ -537,6 +537,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
   const designAgain = async (ucs: string[], survivors: string[]): Promise<boolean> => {
     const copy = await copySealed(p);
     const credits = new Map<string, number>();
+    /** Per use case, how many tests and criteria Kane's re-design minted. */
+    const designed = new Map<string, number>();
     const designs: Extract<EventBody, { t: "design" }>[] = [];
     const designNode = (n: ListedNode) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label);
     kaneWindow = true; // Kane writes into the verifier while it designs
@@ -546,6 +548,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
         const first = await deps.kane.designTests(cwd, uc, { force: true, max: p.config.kane.designMax });
         const d = await drivePaused(p, io, emit, first, deps.kane);
         credits.set(uc, d.credits);
+        if (d.status === "complete") designed.set(uc, d.tests.length + d.acs.length);
         if (d.status !== "complete") throw new RedesignDropped(`re-design of ${uc} ${d.status}${d.message ? `: ${d.message}` : ""}`);
       }
       // only nodes of these use cases: new since the re-design started, or attributed to them by the graph
@@ -553,7 +556,15 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
       const ucAcs = new Set(g.acs.filter((a) => ucs.includes(a.useCase)).map((a) => a.id));
       const ucTests = new Set(g.tests.filter((t) => t.verifies.some((v) => ucAcs.has(v))).map((t) => t.id));
       const derived = (await deps.kane.listNodes(cwd)).filter((n) => designNode(n) && (!derivedBefore.has(n.id) || ucAcs.has(n.id) || ucTests.has(n.id)));
-      if (derived.length === 0) throw new RedesignDropped("the re-design produced nothing to approve");
+      if (derived.length === 0) {
+        // live (2026-11-15): forced on an unchanged spec, Kane keeps the design as it is (`nothing_to_change`)
+        const kept = [...designed.entries()].filter(([, n]) => n === 0).map(([uc]) => uc);
+        throw new RedesignDropped(
+          kept.length === ucs.length
+            ? `Kane found nothing to change in ${kept.join(", ")}: a forced re-design of an unchanged spec keeps the tests that let the planted bug through`
+            : "the re-design produced nothing to approve",
+        );
+      }
       const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
       const refs = derived.map((n) => n.id).filter((id) => approved.includes(id));
       const rejected = new Set(derived.map((n) => n.id).filter((id) => !refs.includes(id)));

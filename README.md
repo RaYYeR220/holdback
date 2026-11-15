@@ -62,7 +62,19 @@ claude                         # work as usual
 
 After every Edit or Write, Kane checks the app in the background and wakes the agent with a bug report when it finds a failure. Claude Code cannot stop while a criterion is owed; after 5 refused stops in a row it hands over to you. `holdback init --agent claude --remove` takes the hooks out again.
 
-**Scripted answers.** `spec`, `run`, `drift` and `watch` take `--answers <file>`, a JSON file outside the app folder: `{"answers": {"q1": "..."}, "default": "recommended", "approve": "all"}`. `spec`, `run` and `drift` also take `--dashboard`, which asks in the browser instead of the terminal.
+`init --agent claude` also sets `permissions.blockReadsOutsideWorkingDirectories: true` in the project's `.claude/settings.json`. That keeps the agent out of the verifier folder, and it applies to your own Claude Code sessions in this project too: they cannot read files outside it either. `--remove` takes it out with the hooks.
+
+**Scripted answers.** `spec`, `run`, `drift` and `watch` take `--answers <file>`, a JSON file outside the app folder: `{"answers": {"q1": "..."}, "default": "recommended", "approve": "all"}`. `spec`, `run` and `drift` also take `--dashboard`, which asks in the browser instead of the terminal. An answers file never accepts a spec change of unverified origin (see [Spec changes](#spec-changes)): that takes a yes typed in the terminal.
+
+**Before `holdback spec`.** The config is sealed with the spec, so set everything in `holdback.config.json` first: changing it by hand later is a tamper (`holdback reseal` lifts it). For one run, use `--max-turns` and `--kane-cap` instead of editing the file. If your app's behaviour depends on the date or the time (bookings, opening hours, "today's" lists), pin them in `start.env`, the way the exam does, so every Kane run sees the same day:
+
+```json
+{ "start": { "env": { "HOLDBACK_TODAY": "2026-11-19", "HOLDBACK_NOW": "08:00" } } }
+```
+
+Your app has to read those variables, as the pantry spec's stack notes ask. Pick a date the spec's rules allow (for the pantry, a Tuesday, Thursday or Saturday).
+
+**Your app's data.** Every time Holdback starts your app for Kane (each turn's checks, a re-run, the hooks' check, a planted bug, a bisect probe, the closing replay), it sets `DATA_DIR` to a new, empty folder under `~/.holdback/<id>/data/`, over anything `start.env` says. Keep your app's state there: then rows one Kane run writes (a booking, a sign-up) never meet the next run, and a replay of the same steps meets the same empty app. The newest few folders stay for debugging.
 
 ## Requirements
 
@@ -87,12 +99,13 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | `start.cmd` | `"npm start"` | The command that starts your app. |
 | `start.port` | `3100` | The port passed to the app in `PORT`. Holdback refuses a port another program already uses. |
 | `start.readyPath` | `"/"` | The path polled until the app answers. |
-| `start.env` | unset | Extra environment for the app. |
+| `start.env` | unset | Extra environment for the app, e.g. a pinned `HOLDBACK_TODAY` and `HOLDBACK_NOW`. `DATA_DIR` here is overridden: each start gets its own (see [Your app's data](#quick-start)). |
 | `agent.kind` | `"claude"` | The coding agent. Claude Code is the only one. |
 | `agent.model` | unset | Model passed to Claude Code (`--model`); unset uses Claude Code's default. |
 | `agent.maxTurnsPerCall` | `60` | `--max-turns` for each Claude Code call. |
 | `kane.parallel` | `3` | Kane tests run at once. |
-| `kane.timeoutS` | `420` | Kane's `--timeout`, which applies to each step. Holdback stops a whole run after this times its step count, plus a grace period. |
+| `kane.timeoutS` | `120` | Kane's `--timeout`, which applies to each step. Holdback stops a whole run after this times its step count, plus 30 seconds, so a hung test costs minutes, not an hour. |
+| `kane.capCredits` | `null` | The most Kane credits this project may spend, as measured on the ledger (the `Kane credits` figure in `holdback status`). No Kane batch, and no agent turn, starts once it is reached; the command stops with exit 3. `null` is no cap; `--kane-cap` overrides it for one command. |
 | `kane.designMax` | `5` | Passed as `kane-cli design tests --max`: the most scenarios Kane designs per use case, one test each. It does not limit a test's steps. |
 | `breaker.model` | `"deepseek-v4-flash"` | The breaker's model on the Venice API. |
 | `breaker.capUsd` | `2` | The most the breaker may spend for this project, in USD, across runs. |
@@ -103,10 +116,10 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | Environment variable | What it does |
 | --- | --- |
 | `VENICE_API_KEY` | The breaker's key. The agent and the app never see it: Holdback blanks it in their environment. |
-| `HOLDBACK_HOME` | Where the per-project verifier folders and ledgers live. Default `~/.holdback`. |
+| `HOLDBACK_HOME` | Where the per-project verifier folders and ledgers live. Default `~/.holdback`; a relative path is resolved against the folder you run Holdback in. The coding agent never gets it, nor any other `HOLDBACK_*` variable. |
 | `HOLDBACK_KANE_BIN` | The Kane CLI binary. Default `kane-cli`. |
 | `HOLDBACK_CLAUDE_BIN` | The Claude Code binary. Default `claude`. |
-| `HOLDBACK_GUARD_LOG` | A file the guard hook appends each decision to, for debugging. |
+| `HOLDBACK_GUARD_LOG` | A file the guard hook appends each decision to, for debugging. Holdback hands it to the guard on its command line, not through the agent's environment. |
 
 ## Commands
 
@@ -114,31 +127,38 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | --- | --- | --- |
 | `holdback init [--spec <file>] [--url <url>] [--start <cmd>] [--port <n>] [--force]` | Writes `holdback.config.json` and creates the verifier folder. | 0, 1 |
 | `holdback init --agent claude [--remove]` | Installs (or removes) the Claude Code hooks and skill for interactive mode. | 0, 1 |
-| `holdback spec [--answers <file> \| --dashboard]` | Kane designs criteria and tests from the spec; you answer and approve; Holdback seals them. | 0, 1, 2 |
-| `holdback run [--max-turns <n>] [--no-falsify] [--answers <file> \| --dashboard]` | Builds until Kane proves every criterion, then falsifies the passing ones. Runs drift first when the spec changed. | 0, 1, 2, 3, 130 |
-| `holdback drift [--answers <file> \| --dashboard]` | Applies a spec edit made after the last seal. | 0, 1, 2 |
-| `holdback watch [--max-turns <n>] [--no-falsify] [--answers <file>]` | Watches the spec; on every edit runs drift, then the run loop, until Ctrl-C. | 1, 2, 130 |
+| `holdback spec [--answers <file> \| --dashboard] [--kane-cap <n>]` | Kane designs criteria and tests from the spec; you answer and approve; Holdback seals them. What you leave unticked in the design approval is rejected: never owed, never run. Once anything is sealed it refuses (a later spec change goes through `drift`); a stage cut short resumes where it stopped. | 0, 1, 2, 3 |
+| `holdback run [--max-turns <n>] [--no-falsify] [--answers <file> \| --dashboard] [--kane-cap <n>]` | Builds until Kane proves every criterion, then falsifies the passing ones, and builds again while falsify leaves criteria owed. Runs drift first when the spec changed. Checks `VENICE_API_KEY` before it builds, unless `--no-falsify`. | 0, 1, 2, 3, 130 |
+| `holdback drift [--answers <file> \| --dashboard] [--kane-cap <n>]` | Applies a spec edit made after the last seal: shows the diff from the sealed spec, then Kane re-plans with you. | 0, 1, 2, 3 |
+| `holdback watch [--max-turns <n>] [--no-falsify] [--answers <file>] [--kane-cap <n>]` | Watches the spec; on every edit runs drift, then the run loop, until Ctrl-C. An edit made while it builds stops the build and goes through drift on the next pass. | 1, 2, 3, 130 |
 | `holdback status [--json]` | Every criterion and whether the gate is open. | 0, 1, 2 |
 | `holdback owed` | What the coding agent is told is still owed. | 0, 1, 2 |
-| `holdback reseal [--yes]` | Accepts the files on disk as the new sealed state, which lifts a tamper. | 0, 1, 2 |
-| `holdback clean` | Removes leftover mutant and bisect worktrees. Never delete them by hand: they link into your app's `node_modules`. | 0, 1, 2 |
+| `holdback reseal [--yes]` | Accepts the files on disk as the new sealed state, which lifts a tamper. It refuses when only the spec changed (that is drift), and after a tamper it keeps a changed spec's old seal, so drift still re-plans it. | 0, 1, 2 |
+| `holdback clean` | Removes leftover mutant and bisect worktrees, waiting for a check in flight. Never delete them by hand: they link into your app's `node_modules`. | 0, 1, 2 |
 | `holdback serve [--port <n>] [--static <dir>]` | The local dashboard on 127.0.0.1 (default port 4317): ledger, gate, live events, and answering Kane from the browser. | 0, 1 |
 | `holdback hook <guard\|post-edit\|stop\|prompt>` | The Claude Code hook entry point that `init --agent claude` installs. | hook protocol |
 
-`spec`, `run`, `drift`, `watch`, `reseal`, `serve` and `init --agent claude --remove` are yours, not the agent's: they refuse to run inside a Claude Code session. The guard hook also denies them, plus `init`, `clean` and `hook`, in the agent's own shell commands: by any path, behind `npx`, an env prefix, `cmd /c` or `powershell -c`. `status` and `owed` stay open to the agent.
+`spec`, `run`, `drift`, `watch`, `reseal`, `serve` and `init --agent claude --remove` are yours, not the agent's: they refuse to run inside a Claude Code session. The guard hook denies them, and `init`, `clean` and `hook` as well, in the agent's own shell commands: by any path, behind `npx`, an env prefix, `cmd /c` or `powershell -c`. `init`, `clean` and `hook` themselves do not check for a Claude Code session; only the guard keeps the agent off them. `status` and `owed` stay open to the agent.
+
+### Spec changes
+
+Editing the spec after the seal is drift, not a tamper: Kane re-plans the criteria with you (`holdback drift`, or `holdback run`, which runs it first). An edit made while `run` builds stops it (exit 3) with Kane's results so far kept, and the agent's turn is committed without the spec. `watch` takes it into drift on its next pass.
+
+Holdback cannot tell who edited the spec, so it fails closed. A change counts as yours only when no agent turn has started since the last seal or drift; otherwise its origin is unverified. Then `run` stops instead of re-planning it, and `drift` and `watch` show you the diff from the sealed spec and go ahead only on a yes typed in the terminal (an answers file never gives it). If the guard saw the agent try to write the spec since the last seal, the change is a tamper. The coding agent cannot edit the spec: its Edit and Write are denied by rule, and the guard denies shell writes onto it.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success. For `run`: the gate is open and every criterion is proved or passing. |
 | 1 | An error, or not finished (for example, the turn limit was reached). |
 | 2 | Tamper: something sealed changed. Nothing counts until you run `holdback reseal`. |
-| 3 | `run` finished but the gate is not fully green: criteria are still owed, vacuous or need the spec, or Kane could not finish checking a test. |
+| 3 | `run` finished but the gate is not fully green: criteria are still owed, vacuous or need the spec, or Kane could not finish checking a test. Also: the spec changed while it ran (run `holdback drift`), or the Kane credit cap was reached (any command). |
 | 130 | Interrupted. One Ctrl-C stops after the current step; a second quits at once. |
 
 ## Honest limits
 
 - The verifier is sealed, guarded and hashed, not sandboxed. Holdback does not isolate it at the OS level.
-- Human-only commands are refused by an env check (`CLAUDECODE`) plus the guard hook's command rule. Both are best-effort against an agent that disguises its shell commands.
+- Human-only commands are refused by an env check (`CLAUDECODE`) plus the guard hook's command rule. Both are best-effort against an agent that disguises its shell commands, and so is the guard's rule against shell writes onto the spec.
+- Holdback cannot tell who changed the spec. It treats a change as yours only before any agent turn since the last seal, and asks you otherwise.
 - In interactive mode, Bash edits to git-ignored files are not noticed until the agent's next Edit or Write.
 - Kane CLI is a cloud service. Test runs, screenshots and the pages Kane saw are uploaded to LambdaTest Test Manager.
 - Authoring is slow and billed per step, and a failing test re-authors on every run.

@@ -227,6 +227,15 @@ describe("readGraph", () => {
   });
 });
 
+describe("design tests --force on an unchanged use case (live, 2026-11-15)", () => {
+  it("is complete with nothing new: Kane keeps the design, its ids and its tests", async () => {
+    useFixture(fx("13-design-force-nothing-to-change.ndjson"));
+    const d = await designTests(cwd, "uc-1", { force: true, max: 3 });
+    expect(d).toMatchObject({ status: "complete", tests: [], acs: [], credits: 11.03 });
+    expect(argvs()[0]).toEqual(["design", "tests", "--use-case", "uc-1", "--mode", "agent", "--max", "3", "--force"]);
+  });
+});
+
 describe("design error details and resumeSession", () => {
   it("designTests error carries message and code", async () => {
     useFixture(

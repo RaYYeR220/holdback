@@ -29,6 +29,7 @@ The fake Kane replays real Kane CLI 0.10.4 output. Home paths, temp folders and 
 | `packages/core/test/fixtures/kane/01-ingest.ndjson` to `10-list-derived.ndjson`, `context-commits/`, `context-view.json`, `cover-gaps.json` and `tests/` | Real Kane CLI runs on the same 4-rule spec as the first live run, recorded before Holdback's loop was built: ingest, extraction, design, authoring, replay, a mutant replay, reconcile, listing and coverage |
 | `packages/core/test/fixtures/kane/11-heal-replay-t1.ndjson` | The first live run: a replay that failed, healed itself and passed |
 | `packages/core/test/fixtures/kane/12-env-failure-t3.ndjson` | The first live run: an authoring run broken off by an `environment_issue` |
+| `packages/core/test/fixtures/kane/13-design-force-nothing-to-change.ndjson` | `kane-cli design tests --use-case uc-1 --force` on a copy of the first live run's verifier (2026-11-15): Kane kept the design and reported `nothing_to_change` |
 | `apps/dashboard/fixtures/ledger.jsonl`, `config.json`, `artifacts/` | The first live run's ledger, config and the 3 screenshots it names, sanitized by `apps/dashboard/scripts/sanitize-ledger.mjs` (home paths, share links and Kane's evidence packs removed) |
 
 One fixture is written for the tests, not recorded: `noise.txt`, a plain-text line mixed into NDJSON, to check that Holdback keeps Kane's raw stdout.

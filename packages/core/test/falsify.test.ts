@@ -847,6 +847,19 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(r.killed).toEqual(["ac-1", "ac-3"]);
   });
 
+  it("says so when a forced re-design finds nothing to change (live: Kane keeps an unchanged design), and the survivor stays vacuous", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => (ac === "ac-3" ? files.map(pass) : files.map(failOn(ac))) });
+    deps.kane.designTests = async (cwd, uc, opts) => {
+      calls.design.push({ cwd, uc, opts });
+      return { status: "complete", tests: [], acs: [], gaps: [], variables: [], credits: 11.03, next: [] };
+    };
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ survived: ["ac-3"], redesigned: [], vacuous: ["ac-3"] });
+    expect(r.redesignError).toMatch(/Kane found nothing to change in uc-1/);
+    expect(calls.approvals).toEqual([]);
+  });
+
   it("stops with drift, not tamper, before any breaker call when only the spec changed since the seal", async () => {
     await setup();
     appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n");

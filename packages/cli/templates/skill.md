@@ -11,7 +11,7 @@ Holdback checks this app against acceptance criteria that Kane, an independent v
 - Make your changes with Edit or Write.
 - You cannot finish while a criterion is owed. A refused stop comes with the same bug report; work from it. If Kane is still checking, wait for its verdict.
 - Each prompt starts with a `Holdback: N owed (...)` line. `holdback owed` prints the full brief and `holdback status` the table; both only read.
-- The spec is the source of truth: read it for intent and detail. If a criterion is ambiguous, choose the most literal reading of the spec.
+- The spec is the source of truth: read it for intent and detail. If a criterion is ambiguous, choose the most literal reading of the spec. Never write to the spec files, from any tool or shell: they are the human's, and a change Holdback sees after your turn stops the build for the human to review it.
 - The verifier's files live outside this repository on purpose. Do not look for them, and never run `kane-cli`: Holdback runs Kane itself.
 - Leave git to the human: only read-only git commands (status, diff, log, show) are allowed. Do not change git configuration or hooks.
 - The app must start with its configured start command and listen on the port in the `PORT` environment variable.
