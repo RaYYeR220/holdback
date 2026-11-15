@@ -5,7 +5,7 @@ import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, type Mutant } from "../breaker/mutate.js";
 import { Budget, veniceChat } from "../breaker/venice.js";
-import { git, holdbackGitOptions, isRepoRoot, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
+import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, designTests, extractResume, listNodes, readGraph, resumeSession, review, type ListedNode } from "../kane/assurance.js";
 import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneMeter, type BalanceReader } from "../ledger/credits.js";
@@ -17,7 +17,7 @@ import type { Project } from "../project.js";
 import { checkSeal, tier1Entries, type SealEntry } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, logRecordings, markTampered, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
 import { byAcId } from "./brief.js";
-import { assertTestsSealed, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
+import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
 import { appSealFiles, clarifiedFile, commitClarifications, drivePaused, driftHint, isSpecKey, reseal, specFileOf, type Warn } from "./spec.js";
 
@@ -664,6 +664,12 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, io: HumanIO, log
     if (broken.length > 0) {
       await recordTamper(`sealed files changed: ${broken.join(", ")}`);
       return result("tamper");
+    }
+    // mutants are planted in a worktree of HEAD: the code Kane proved must be the code they break
+    const dirty = await uncommitted(p.appDir, gitOpts, [EVIDENCE_DIR, ".claude"]);
+    if (dirty.length > 0) {
+      const shown = dirty.slice(0, 8).join(", ") + (dirty.length > 8 ? `, and ${dirty.length - 8} more` : "");
+      return result("error", `the app has uncommitted changes (${shown}): commit them first. Falsify plants its bugs in the last commit, so it must be the code Kane proved`);
     }
     // Kane's recordings and the git config are held to the latest `recordings` event before any Kane batch
     const anchor = await checkRecordingsAnchor(p, events, gitOpts);

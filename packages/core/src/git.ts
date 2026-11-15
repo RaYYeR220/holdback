@@ -134,6 +134,24 @@ export async function excludeFromGit(cwd: string, pattern: string, opts: GitOpti
   await appendFile(file, (text === "" || text.endsWith("\n") ? "" : "\n") + pattern + "\n", "utf8");
 }
 
+/**
+ * Paths the work tree has that HEAD does not (changed, staged, deleted or untracked, ignored files
+ * left out), `/`-separated and relative to the repo root, except those under one of `skip` (folder
+ * names, relative to the root).
+ */
+export async function uncommitted(cwd: string, opts: GitOptions = {}, skip: string[] = []): Promise<string[]> {
+  const out = await gitOk(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], opts);
+  const parts = out.split("\0");
+  const paths: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i]!;
+    if (e.length < 4) continue;
+    paths.push(e.slice(3));
+    if (e[0] === "R" || e[0] === "C") i++; // a rename or copy also names where it came from
+  }
+  return paths.filter((f) => !skip.some((d) => f === d || f.startsWith(`${d}/`)));
+}
+
 /** Paths changed between two commits, relative to the repo root. */
 export async function changedFiles(cwd: string, from: string, to: string, opts: GitOptions = {}): Promise<string[]> {
   const out = await gitOk(cwd, ["diff", "--name-only", "-z", from, to, "--"], opts);

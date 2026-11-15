@@ -818,6 +818,34 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(await tamperMarker(p)).not.toBeNull();
   });
 
+  it("refuses, before any breaker call, while the app has uncommitted changes: mutants are planted in the last commit (I2)", async () => {
+    await setup();
+    writeFileSync(join(appDir, "src", "eligibility.js"), SRC.replace("2461", "2462")); // the human's work, not committed
+    writeFileSync(join(appDir, "src", "new.js"), "export const x = 1;\n");
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const before = (await readEvents(p.ledgerFile)).length;
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("error");
+    expect(r.error).toContain("commit");
+    expect(r.error).toContain("src/eligibility.js");
+    expect(r.error).toContain("src/new.js");
+    expect(calls.chat).toEqual([]);
+    expect(calls.tests).toEqual([]);
+    expect((await readEvents(p.ledgerFile)).slice(before).filter((e) => e.t === "mutant")).toEqual([]);
+  });
+
+  it("is not held up by Kane's evidence copies or Claude Code's own folder", async () => {
+    await setup();
+    mkdirSync(join(appDir, "kane-evidence", "turn-1"), { recursive: true });
+    writeFileSync(join(appDir, "kane-evidence", "turn-1", "t-3-step-2.png"), "png");
+    mkdirSync(join(appDir, ".claude"), { recursive: true });
+    writeFileSync(join(appDir, ".claude", "settings.local.json"), "{}");
+    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("done");
+    expect(r.killed).toEqual(["ac-1", "ac-3"]);
+  });
+
   it("stops with drift, not tamper, before any breaker call when only the spec changed since the seal", async () => {
     await setup();
     appendFileSync(join(appDir, "PRD.md"), "\nHouseholds of 9 qualify.\n");
