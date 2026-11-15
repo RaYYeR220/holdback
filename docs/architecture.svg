@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" width="960" height="580" role="img" aria-labelledby="title desc">
+  <title id="title">How Holdback holds back "done"</title>
+  <desc id="desc">Three stages. Spec: you write the spec, Kane CLI asks about what is ambiguous and designs criteria and tests, which are sealed in a verifier folder outside the repo. Build: Claude Code builds from a brief of what is still owed, the app runs, Kane runs the sealed tests in a real browser, results go to a ledger and a gate that holds back done until every criterion passes; Kane's bug report on a failure goes back to the agent. Falsify: once the gate opens, a breaker on a different model plants the smallest bug that breaks one passing criterion, Kane replays the tests against it with healing off, a caught bug proves the criterion and a missed one makes it vacuous. Solid arrows ran in the first live run; dashed arrows are built and unit-tested but have not run live yet.</desc>
+  <style>
+    .bg { fill: #f7f6f2; }
+    .card { fill: #ffffff; stroke: #1b1b1f; stroke-opacity: 0.28; stroke-width: 1; }
+    .kcard { fill: #eef1ff; stroke: #2347ff; stroke-width: 1.2; }
+    .title { fill: #1b1b1f; font: 700 17px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .h { fill: #1b1b1f; font: 600 15px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .o { fill: #1b1b1f; font: 600 13.5px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .p { fill: #5b5b63; font: 400 12.5px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .m { fill: #5b5b63; font: 400 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .lane { fill: #8a8a92; font: 600 11px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; letter-spacing: 0.12em; }
+    .lbl { fill: #3d3d44; font: 500 12px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .e { stroke: #1b1b1f; stroke-width: 1.6; fill: none; }
+    .dash { stroke-dasharray: 6 5; stroke: #6b6b73; }
+    .tip { fill: #1b1b1f; }
+    .tipd { fill: #6b6b73; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #141417; }
+      .card { fill: #1e1e23; stroke: #ececef; stroke-opacity: 0.3; }
+      .kcard { fill: #1c2142; stroke: #8fa0ff; }
+      .title, .h, .o { fill: #ececef; }
+      .p, .m { fill: #a6a6ae; }
+      .lane { fill: #7c7c85; }
+      .lbl { fill: #c9c9cf; }
+      .e { stroke: #d4d4da; }
+      .dash { stroke: #9a9aa3; }
+      .tip { fill: #d4d4da; }
+      .tipd { fill: #9a9aa3; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" class="tip"/>
+    </marker>
+    <marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" class="tipd"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="960" height="580" rx="14"/>
+
+  <!-- header and legend -->
+  <text class="title" x="24" y="38">How Holdback holds back "done"</text>
+  <line class="e" x1="560" y1="26" x2="600" y2="26" marker-end="url(#a)"/>
+  <text class="lbl" x="610" y="30">ran in the first live run</text>
+  <line class="e dash" x1="560" y1="46" x2="600" y2="46" marker-end="url(#d)"/>
+  <text class="lbl" x="610" y="50">built and unit-tested, not run live yet</text>
+
+  <!-- 1 spec -->
+  <text class="lane" x="24" y="82">1  SPEC</text>
+  <rect class="card" x="20" y="92" width="170" height="78" rx="10"/>
+  <text class="h" x="36" y="118">You</text>
+  <text class="p" x="36" y="140">write the spec</text>
+  <text class="p" x="36" y="158">answer Kane, approve</text>
+
+  <rect class="kcard" x="290" y="92" width="290" height="78" rx="10"/>
+  <text class="h" x="306" y="118">Kane CLI · assurance</text>
+  <text class="p" x="306" y="140">asks what is ambiguous, designs</text>
+  <text class="p" x="306" y="158">criteria citing spec lines + tests</text>
+
+  <rect class="card" x="640" y="92" width="300" height="78" rx="10"/>
+  <text class="h" x="656" y="118">Sealed verifier</text>
+  <text class="m" x="656" y="140">~/.holdback/&lt;id&gt;/verifier</text>
+  <text class="p" x="656" y="158">outside the repo, sha256-sealed</text>
+
+  <line class="e" x1="190" y1="118" x2="288" y2="118" marker-end="url(#a)"/>
+  <text class="lbl" x="239" y="110" text-anchor="middle">spec</text>
+  <line class="e dash" x1="190" y1="150" x2="288" y2="150" marker-end="url(#d)"/>
+  <text class="lbl" x="239" y="166" text-anchor="middle">spec edit:</text>
+  <text class="lbl" x="239" y="181" text-anchor="middle">reopens work</text>
+
+  <line class="e" x1="580" y1="131" x2="638" y2="131" marker-end="url(#a)"/>
+  <text class="lbl" x="609" y="123" text-anchor="middle">approved</text>
+  <text class="lbl" x="609" y="148" text-anchor="middle">sealed</text>
+
+  <!-- 2 build -->
+  <text class="lane" x="24" y="238">2  BUILD</text>
+  <rect class="card" x="20" y="248" width="180" height="78" rx="10"/>
+  <text class="h" x="36" y="274">Claude Code</text>
+  <text class="p" x="36" y="296">builds from the brief;</text>
+  <text class="p" x="36" y="314">guard + deny rules</text>
+
+  <rect class="card" x="250" y="248" width="170" height="78" rx="10"/>
+  <text class="h" x="266" y="274">App repo</text>
+  <text class="p" x="266" y="296">the agent's code,</text>
+  <text class="p" x="266" y="314">a commit per turn</text>
+
+  <rect class="kcard" x="470" y="248" width="210" height="78" rx="10"/>
+  <text class="h" x="486" y="274">Kane testmd run</text>
+  <text class="p" x="486" y="296">real browser, against</text>
+  <text class="p" x="486" y="314">the running app</text>
+
+  <rect class="card" x="730" y="248" width="210" height="78" rx="10"/>
+  <text class="h" x="746" y="274">Ledger → gate</text>
+  <text class="p" x="746" y="296">done held back until</text>
+  <text class="p" x="746" y="314">every criterion passes</text>
+
+  <line class="e" x1="200" y1="287" x2="248" y2="287" marker-end="url(#a)"/>
+  <line class="e" x1="420" y1="287" x2="468" y2="287" marker-end="url(#a)"/>
+  <line class="e" x1="680" y1="287" x2="728" y2="287" marker-end="url(#a)"/>
+
+  <line class="e" x1="660" y1="170" x2="660" y2="246" marker-end="url(#a)"/>
+  <text class="lbl" x="652" y="212" text-anchor="end">sealed tests</text>
+  <line class="e dash" x1="905" y1="170" x2="905" y2="246" marker-end="url(#d)"/>
+  <text class="lbl" x="897" y="204" text-anchor="end">a changed seal:</text>
+  <text class="lbl" x="897" y="219" text-anchor="end">tamper, gate shut</text>
+
+  <path class="e dash" d="M500 326 V350 H140 V328" marker-end="url(#d)"/>
+  <text class="lbl" x="320" y="367" text-anchor="middle">Kane's bug report on a failure: criterion, spec line, what Kane saw</text>
+  <path class="e" d="M770 326 V384 H60 V328" marker-end="url(#a)"/>
+  <text class="lbl" x="415" y="401" text-anchor="middle">brief: only what is still owed</text>
+
+  <!-- 3 falsify -->
+  <text class="lane" x="24" y="436">3  FALSIFY</text>
+  <rect class="card" x="670" y="446" width="270" height="86" rx="10"/>
+  <text class="h" x="686" y="472">Breaker · a different model</text>
+  <text class="p" x="686" y="494">plants the smallest bug that</text>
+  <text class="p" x="686" y="512">breaks one passing criterion</text>
+
+  <rect class="kcard" x="390" y="446" width="220" height="86" rx="10"/>
+  <text class="h" x="406" y="472">Kane replay, heal off</text>
+  <text class="p" x="406" y="494">the bug runs in a</text>
+  <text class="p" x="406" y="512">throwaway worktree</text>
+
+  <rect class="card" x="20" y="446" width="310" height="38" rx="10"/>
+  <text class="o" x="36" y="470">caught → criterion proved</text>
+  <rect class="card" x="20" y="494" width="310" height="38" rx="10"/>
+  <text class="o" x="36" y="518">missed → vacuous; Kane re-designs</text>
+
+  <line class="e dash" x1="905" y1="326" x2="905" y2="444" marker-end="url(#d)"/>
+  <text class="lbl" x="897" y="424" text-anchor="end">gate opens</text>
+  <line class="e" x1="670" y1="489" x2="612" y2="489" marker-end="url(#a)"/>
+  <line class="e" x1="390" y1="465" x2="332" y2="465" marker-end="url(#a)"/>
+  <line class="e dash" x1="390" y1="513" x2="332" y2="513" marker-end="url(#d)"/>
+
+  <text class="p" x="24" y="562">Evidence for every arrow: CLAIMS.md. The first live run's ledger: apps/dashboard/fixtures/ledger.jsonl.</text>
+</svg>
