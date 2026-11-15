@@ -17,7 +17,7 @@ export type HoldbackConfig = {
 const DEFAULTS: HoldbackConfig = {
   spec: ["PRD.md"],
   specUrls: [],
-  start: { cmd: "", port: 3100, readyPath: "/" },
+  start: { cmd: "npm start", port: 3100, readyPath: "/" },
   agent: { kind: "claude", maxTurnsPerCall: 60 },
   kane: { parallel: 3, timeoutS: 420, designMax: 5 },
   breaker: { model: "deepseek-v4-flash", capUsd: 2 },

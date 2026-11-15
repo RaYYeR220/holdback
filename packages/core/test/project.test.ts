@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadProject, seal, checkSeal } from "../src/index.js";
@@ -58,7 +58,7 @@ describe("loadProject", () => {
     expect(p.config).toEqual({
       spec: ["PRD.md"],
       specUrls: [],
-      start: { cmd: "", port: 3100, readyPath: "/" },
+      start: { cmd: "npm start", port: 3100, readyPath: "/" },
       agent: { kind: "claude", maxTurnsPerCall: 60 },
       kane: { parallel: 3, timeoutS: 420, designMax: 5 },
       breaker: { model: "deepseek-v4-flash", capUsd: 2 },
@@ -117,6 +117,29 @@ describe("seal", () => {
       ".testmuai/tests/c.md",
       ".testmuai/tests/sub/b.md",
     ]);
+  });
+
+  it("reports a symlink/junction planted after sealing", async (ctx) => {
+    const v = await verifier();
+    const m = await seal(v);
+    const target = path.join(tmp, "elsewhere");
+    await mkdir(target, { recursive: true });
+    await writeFile(path.join(target, "evil.md"), "x");
+    const link = path.join(v, ".testmuai", "tests", "link");
+    let made = false;
+    for (const type of ["dir", "junction"] as const) {
+      try {
+        await symlink(target, link, type);
+        made = true;
+        break;
+      } catch {
+        /* try next */
+      }
+    }
+    if (!made) ctx.skip(); // neither symlink nor junction can be created here
+    const bad = await checkSeal(v, m);
+    expect(bad).toEqual([".testmuai/tests/link"]);
+    expect((await seal(v))[".testmuai/tests/link"]).toMatch(/^symlink:/);
   });
 
   it("missing folders give an empty manifest without throwing", async () => {
