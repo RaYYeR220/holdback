@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
   acquireCheckLock,
   appendEvent,
   balance,
   CliHumanIO,
+  confirmLine,
   ScriptedHumanIO,
   DEFAULT_PORT,
   defaultBuildDeps,
@@ -121,20 +121,12 @@ export function installSignals(
   return { signal: ctl.signal, dispose: () => names.forEach((n) => proc.off(n, hit)) };
 }
 
-function askYesNo(stdin: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, question: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: stdin, output: stdout, terminal: false });
-    let answered = false;
-    rl.on("close", () => {
-      if (!answered) resolve(false);
-    });
-    rl.question(question, (a) => {
-      answered = true;
-      rl.close();
-      resolve(/^y(es)?$/i.test(a.trim()));
-    });
-  });
-}
+/**
+ * A yes/no question in the terminal. It reads through the process's one stdin reader, the one the
+ * terminal human IO uses too (N-C1): the yes is consumed once, never also taken as the next prompt's
+ * answer, and stdin is never paused under a prompt still open.
+ */
+export const terminalConfirm = (stdin: NodeJS.ReadableStream, stdout: NodeJS.WritableStream) => (q: string) => confirmLine(stdin, stdout, q);
 
 export function defaultCtx(): Ctx {
   const stdin = process.stdin;
@@ -160,7 +152,7 @@ export function defaultCtx(): Ctx {
       falsifyDeps: defaultFalsifyDeps,
       balance,
       humanIO: (file) => (file ? ScriptedHumanIO.fromFile(file) : new CliHumanIO(stdin, stdout)),
-      confirm: (q) => askYesNo(stdin, stdout, q),
+      confirm: terminalConfirm(stdin, stdout),
       env: process.env,
       hooks: defaultHookDeps({ tests: runTests, app: startApp, balance }),
       lockWaitMs: 20 * 60_000,

@@ -11,21 +11,29 @@ export interface HumanIO {
   approve(items: ApprovalItem[]): Promise<string[]>;
 }
 
-/** Interactive terminal implementation. */
-export class CliHumanIO implements HumanIO {
-  constructor(
-    private readonly input: NodeJS.ReadableStream = process.stdin,
-    private readonly output: NodeJS.WritableStream = process.stdout,
-  ) {}
-
-  // One readline for the whole session; lines are queued so piped stdin never loses input.
+/**
+ * The one reader of an input stream (stdin) for the whole process (N-C1): every prompt, the
+ * terminal human IO's and a command's yes/no alike, takes its line from one readline and one queue,
+ * so a line typed once is consumed once, in order, and no prompt pauses the stream under another.
+ * Lines nobody waits for yet are queued (piped stdin never loses input). The readline stays open
+ * while anyone holds the reader and is closed when the last holder lets go, which pauses the stream
+ * so the process can exit; queued lines stay, and the next prompt opens it again.
+ */
+export class LineReader {
   private rl: Interface | null = null;
   private lines: string[] = [];
   private waiting: ((l: string | null) => void)[] = [];
+  /** The stream itself ended: no line will come. */
   private ended = false;
+  private holders = 0;
 
-  private open(): Interface {
-    if (this.rl) return this.rl;
+  constructor(
+    private readonly input: NodeJS.ReadableStream,
+    private readonly output: NodeJS.WritableStream,
+  ) {}
+
+  private open(): void {
+    if (this.rl || this.ended) return;
     const rl = createInterface({ input: this.input, output: this.output, terminal: false });
     rl.on("line", (l) => {
       const w = this.waiting.shift();
@@ -33,26 +41,93 @@ export class CliHumanIO implements HumanIO {
       else this.lines.push(l);
     });
     rl.on("close", () => {
+      if (this.rl !== rl) return; // closed by `release`, not by the stream's end
+      this.rl = null;
       this.ended = true;
       for (const w of this.waiting.splice(0)) w(null);
     });
-    return (this.rl = rl);
+    this.rl = rl;
   }
 
-  /** Release stdin once the session is over. */
-  close(): void {
-    this.rl?.close();
+  /** Keeps the reader open until the matching `release`. */
+  hold(): void {
+    this.holders += 1;
   }
 
-  private async ask(prompt: string): Promise<string> {
+  /** The last holder gone and nobody waiting: the readline is closed and the stream paused. */
+  release(): void {
+    this.holders = Math.max(0, this.holders - 1);
+    if (this.holders > 0 || this.waiting.length > 0 || !this.rl) return;
+    const rl = this.rl;
+    this.rl = null;
+    rl.close();
+  }
+
+  /** Writes `prompt` and returns the next line, trimmed; null when the input ended first. */
+  async ask(prompt: string): Promise<string | null> {
     this.open();
     this.output.write(prompt);
     const queued = this.lines.shift();
     if (queued !== undefined) return queued.trim();
-    if (this.ended) throw new Error("CliHumanIO: input closed before an answer was given");
+    if (this.ended) return null;
     const l = await new Promise<string | null>((res) => this.waiting.push(res));
+    return l === null ? null : l.trim();
+  }
+}
+
+const readers = new WeakMap<object, LineReader>();
+
+/** The process's one reader of `input` (N-C1). */
+export function lineReaderFor(input: NodeJS.ReadableStream, output: NodeJS.WritableStream): LineReader {
+  let r = readers.get(input);
+  if (!r) readers.set(input, (r = new LineReader(input, output)));
+  return r;
+}
+
+/**
+ * A yes/no question on the terminal, through the process's one reader of `input`: `y` or `yes`
+ * (any case) is a yes; anything else, or the input ending, is a no.
+ */
+export async function confirmLine(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, question: string): Promise<boolean> {
+  const r = lineReaderFor(input, output);
+  r.hold();
+  try {
+    const a = await r.ask(question);
+    return a !== null && /^y(es)?$/i.test(a);
+  } finally {
+    r.release();
+  }
+}
+
+/** Interactive terminal implementation. */
+export class CliHumanIO implements HumanIO {
+  /** Shared with every other prompt on the same input (N-C1). */
+  private readonly reader: LineReader;
+  private holding = false;
+
+  constructor(
+    input: NodeJS.ReadableStream = process.stdin,
+    private readonly output: NodeJS.WritableStream = process.stdout,
+  ) {
+    this.reader = lineReaderFor(input, output);
+  }
+
+  /** Release stdin once the session is over. */
+  close(): void {
+    if (!this.holding) return;
+    this.holding = false;
+    this.reader.release();
+  }
+
+  private async ask(prompt: string): Promise<string> {
+    // the session holds the reader from its first prompt until `close`
+    if (!this.holding) {
+      this.holding = true;
+      this.reader.hold();
+    }
+    const l = await this.reader.ask(prompt);
     if (l === null) throw new Error("CliHumanIO: input closed before an answer was given");
-    return l.trim();
+    return l;
   }
 
   async answer(qs: PendingQuestion[]): Promise<Record<string, string>> {

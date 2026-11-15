@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ import {
   type Project,
   type TestRunResult,
 } from "@holdback/core";
-import { defaultCtx } from "../src/context.js";
+import { defaultCtx, terminalConfirm } from "../src/context.js";
 import { EXIT, installSignals, main, scrubAgentEnv, type Deps } from "../src/index.js";
 
 const at = "2026-11-15T00:00:00.000Z";
@@ -466,6 +467,39 @@ describe("--answers", () => {
     expect(tty).toBeInstanceOf(CliHumanIO);
     tty.close();
   });
+
+  it("one stdin reader per process: a terminal yes is consumed once, and the next prompt reads the next line (N-C1)", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.resume();
+    const confirm = terminalConfirm(stdin, stdout);
+    const io = new CliHumanIO(stdin, stdout);
+    const items = [
+      { ref: "r1", title: "one", kind: "test" },
+      { ref: "r2", title: "two", kind: "test" },
+    ];
+    // watch, pass 1: an approval opens the session's reader
+    stdin.write("\n");
+    expect(await io.approve(items)).toEqual(["r1", "r2"]);
+    // pass 2: the human says the spec change is theirs, then rejects r2 in drift's approval
+    const yes = confirm("Is this change yours? [y/N] ");
+    stdin.write("y\n");
+    expect(await yes).toBe(true);
+    expect(stdin.isPaused()).toBe(false); // the session's reader still listens
+    const approved = io.approve(items);
+    stdin.write("r2\n");
+    expect(await approved).toEqual(["r1"]); // the yes was not taken as an approval too
+    // typed ahead in one chunk: each line goes to one prompt, in order
+    stdin.write("n\nr1\n");
+    expect(await confirm("Again? [y/N] ")).toBe(false);
+    expect(await io.approve(items)).toEqual(["r2"]);
+    io.close();
+    // no session left: a confirm of its own still reads its line, then lets stdin go
+    const last = confirm("Re-seal now? [y/N] ");
+    stdin.write("yes\n");
+    expect(await last).toBe(true);
+    expect(stdin.isPaused()).toBe(true);
+  }, 10_000);
 
   it("refuses an answers file inside the app folder, also through a linked folder, before anything runs", async () => {
     // the coding agent can edit anything in the app folder: its approvals must not come from there
