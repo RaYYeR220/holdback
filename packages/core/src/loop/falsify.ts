@@ -131,7 +131,7 @@ class RedesignDropped extends Error {}
  * The tier-1 entries as the seal lists them (file bytes, or a link's target) and the sealed app
  * files (null when absent), taken before a re-design so it can be rolled back.
  */
-type SealedCopy = { verifier: Map<string, Buffer | string>; app: Map<string, Buffer | null> };
+export type SealedCopy = { verifier: Map<string, Buffer | string>; app: Map<string, Buffer | null> };
 
 const inVerifier = (p: Project, rel: string) => path.join(p.verifierDir, ...rel.split("/"));
 
@@ -141,7 +141,7 @@ async function entryValue(file: string, kind: SealEntry["kind"]): Promise<Buffer
   return "special";
 }
 
-async function copySealed(p: Project): Promise<SealedCopy> {
+export async function copySealed(p: Project): Promise<SealedCopy> {
   const verifier = new Map<string, Buffer | string>();
   for (const e of await tier1Entries(p.verifierDir)) verifier.set(e.rel, await entryValue(inVerifier(p, e.rel), e.kind));
   const app = new Map<string, Buffer | null>();
@@ -159,7 +159,7 @@ async function copySealed(p: Project): Promise<SealedCopy> {
 const same = (a: Buffer | string, b: Buffer | string) => (Buffer.isBuffer(a) && Buffer.isBuffer(b) ? a.equals(b) : a === b);
 
 /** Tier-1 test entries added or changed since `copy`. */
-async function changedTests(p: Project, copy: SealedCopy): Promise<string[]> {
+export async function changedTests(p: Project, copy: SealedCopy): Promise<string[]> {
   const out: string[] = [];
   for (const e of await tier1Entries(p.verifierDir)) {
     if (!e.rel.startsWith(".testmuai/tests/")) continue;
@@ -180,7 +180,7 @@ async function removeEntry(file: string): Promise<void> {
 }
 
 /** Put the sealed files back as `copy` holds them (links are only removed, never written through). */
-async function restoreSealed(p: Project, copy: SealedCopy): Promise<void> {
+export async function restoreSealed(p: Project, copy: SealedCopy): Promise<void> {
   for (const e of await tier1Entries(p.verifierDir)) {
     const was = copy.verifier.get(e.rel);
     if (was === undefined || e.kind !== "file" || !Buffer.isBuffer(was)) {

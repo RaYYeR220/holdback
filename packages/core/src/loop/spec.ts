@@ -10,6 +10,7 @@ import {
   review,
   type DesignResult,
   type IngestResult,
+  type ReconcileResult,
   type Paused,
 } from "../kane/assurance.js";
 import { holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
@@ -35,7 +36,7 @@ function inside(root: string, target: string): boolean {
 }
 
 /** Validate config.spec entries: relative, inside appDir, destination inside verifierDir. */
-function checkSpecPaths(p: Project): void {
+export function checkSpecPaths(p: Project): void {
   for (const rel of p.config.spec) {
     if (typeof rel !== "string" || rel === "" || path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel) || rel.startsWith("/") || rel.startsWith("\\")) {
       throw new Error(`spec path must be relative to the app dir: ${String(rel)}`);
@@ -125,7 +126,7 @@ export type ResumeCalls = { extractResume: typeof extractResume; resumeSession: 
  * to the PRD's Clarifications (re-seal afterwards); credits of a resumed call are logged in
  * `spec.answered` and zeroed on the result, so the caller does not count them twice.
  */
-export async function drivePaused<R extends IngestResult | DesignResult>(
+export async function drivePaused<R extends IngestResult | DesignResult | ReconcileResult>(
   p: Project,
   io: HumanIO,
   emit: (e: EventBody) => Promise<void>,

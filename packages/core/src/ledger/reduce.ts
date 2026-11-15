@@ -61,6 +61,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
       case "spec.ingested":
       case "spec.answered":
       case "redesign.dropped":
+      case "drift":
         state.credits += typeof e.credits === "number" ? e.credits : 0;
         break;
       case "turn.start":
