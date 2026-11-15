@@ -6,6 +6,7 @@ import {
   CliHumanIO,
   defaultBuildDeps,
   defaultFalsifyDeps,
+  forAgent,
   gate,
   isAppKeyOf,
   lastSeal,
@@ -196,6 +197,16 @@ export async function snapshot(p: Project): Promise<Snapshot> {
  */
 export function insideClaudeCode(ctx: Ctx): boolean {
   return !!ctx.deps.env.CLAUDECODE;
+}
+
+/**
+ * The output side of a read-only command (status, owed) as the coding agent may see it: inside
+ * Claude Code every line goes through `forAgent`, so counts, ids and the re-seal hint stay while
+ * Kane's file names and Holdback's folders do not. Outside Claude Code it is `ctx` unchanged.
+ */
+export function readerView(ctx: Ctx, p: Project): Ctx {
+  if (!insideClaudeCode(ctx)) return ctx;
+  return { ...ctx, out: (l) => ctx.out(forAgent(p, l)), err: (l) => ctx.err(forAgent(p, l)) };
 }
 
 /** Refuses a human-only command inside Claude Code: true (and the reason printed) when it must not run. */

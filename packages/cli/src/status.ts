@@ -1,12 +1,18 @@
 import { loadProject } from "@holdback/core";
-import { EXIT, snapshot, type Ctx } from "./context.js";
+import { EXIT, explainFailure, readerView, snapshot, type Ctx } from "./context.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 
-export async function statusCmd(ctx: Ctx, o: { json?: boolean }): Promise<number> {
-  const p = await loadProject(ctx.cwd);
-  const s = await snapshot(p);
+export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<number> {
+  const p = await loadProject(caller.cwd);
+  const ctx = readerView(caller, p);
+  let s: Awaited<ReturnType<typeof snapshot>>;
+  try {
+    s = await snapshot(p);
+  } catch (e) {
+    return await explainFailure(ctx, e);
+  }
   // no criteria is not an open gate: nothing has been proved
   const open = s.gate.allowStop && Object.keys(s.state.acs).length > 0;
   const ids = (l: { id: string }[]) => l.map((a) => a.id);

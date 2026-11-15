@@ -261,7 +261,7 @@ describe("hook post-edit (PostToolUse, asyncRewake)", { timeout: 120_000 }, () =
     appendFileSync(T1, "forged\n");
     const r = await hook("post-edit", post("app.js"));
     expect(r.code).toBe(2);
-    expect(r.err).toContain("Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.");
+    expect(r.err).toContain("Holdback's sealed verification files changed — a human must re-seal; ask the human to run `holdback status`.");
     rmSync(root, { recursive: true, force: true });
     mkdirSync(appDir, { recursive: true });
     await fixture({ seal: false });
@@ -329,7 +329,7 @@ describe("hook stop (Stop)", { timeout: 180_000 }, () => {
     for (let i = 0; i < 5; i++) {
       const r = await hook("stop", stopIn());
       expect(r.code).toBe(2);
-      expect(r.err).toContain("Holdback's sealed verification files changed — a human must re-seal; see `holdback status`.");
+      expect(r.err).toContain("Holdback's sealed verification files changed — a human must re-seal; ask the human to run `holdback status`.");
     }
     expect(world.kaneCalls).toHaveLength(0);
     const r = await hook("stop", stopIn());
@@ -375,6 +375,22 @@ describe("hook stop (Stop)", { timeout: 180_000 }, () => {
     const r = await hook("stop", stopIn());
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out).systemMessage).toContain("nothing is sealed yet");
+  });
+});
+
+describe("inside a headless turn (HOLDBACK_HEADLESS)", { timeout: 60_000 }, () => {
+  it("stop, post-edit and prompt stand aside at once; the guard still denies", async () => {
+    await fixture();
+    world.failing.add(T2);
+    const headless = { HOLDBACK_HEADLESS: "1" };
+    for (const [name, input] of [["stop", stopIn()], ["post-edit", post("app.js")], ["prompt", promptIn()]] as const) {
+      expect(await hook(name, input, {}, headless, ["--app", appDir]), name).toEqual({ code: 0, out: "", err: "" });
+    }
+    expect(world.checks).toBe(0);
+    expect(world.kaneCalls).toHaveLength(0);
+    const denied = await hook("guard", pre("Read", { file_path: join(p.verifierDir, ".testmuai", "tests", "t1_test.md") }), {}, headless, ["--app", appDir]);
+    expect(denied.code).toBe(2);
+    expect(denied.err).toContain("verification files are off limits");
   });
 });
 
@@ -493,6 +509,17 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
     expect(existsSync(join(appDir, "holdback.config.json"))).toBe(true);
   });
 
+  it("refuses an app folder whose path a shell would expand inside double quotes", async () => {
+    writeFileSync(entry(), "// built cli\n");
+    const odd = join(root, "price$app");
+    mkdirSync(odd);
+    const err: string[] = [];
+    const code = await main(["init", "--agent", "claude"], { cwd: odd, out: () => {}, err: (l) => err.push(l), deps: { env: {}, hooks: hookDeps() } });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("contains $, `, \" or a line break");
+    expect(existsSync(join(odd, ".claude", "settings.json"))).toBe(false);
+  });
+
   it("refuses a settings file it cannot parse, without touching it, and a CLI that is not built", async () => {
     writeFileSync(entry(), "// built cli\n");
     mkdirSync(join(appDir, ".claude"));
@@ -531,6 +558,32 @@ describe("init --agent claude", { timeout: 60_000 }, () => {
       expect(code, args[0]).toBe(1);
       expect(err.join("\n")).toContain(`\`holdback ${args[0]}\` is for you, not the coding agent`);
     }
+  });
+});
+
+describe("holdback status inside Claude Code", { timeout: 60_000 }, () => {
+  it("prints the counts and the re-seal hint but never names a sealed file", async () => {
+    await fixture();
+    appendFileSync(T1, "forged\n");
+    const run = async (env: NodeJS.ProcessEnv, args: string[]) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await main(args, { cwd: appDir, out: (l) => out.push(l), err: (l) => err.push(l), deps: { env } });
+      return { code, out: out.join("\n"), err: err.join("\n") };
+    };
+    const human = await run({}, ["status"]);
+    expect(human.err).toContain(".testmuai/tests/t1_test.md");
+    for (const args of [["status"], ["status", "--json"], ["owed"]]) {
+      const agent = await run({ CLAUDECODE: "1" }, args);
+      expect(agent.code, args.join(" ")).toBe(2);
+      expect(agent.err).toContain("TAMPER: sealed files changed: <verification file>");
+      expect(agent.err).toContain("holdback reseal");
+      expect(agent.out + agent.err).not.toMatch(/t1_test|testmuai/i);
+      // nor Holdback's home, raw or JSON-escaped
+      expect((agent.out + agent.err).toLowerCase()).not.toContain(p.home.toLowerCase());
+      expect((agent.out + agent.err).toLowerCase()).not.toContain(JSON.stringify(p.home.toLowerCase()).slice(1, -1));
+    }
+    expect((await run({ CLAUDECODE: "1" }, ["status"])).out).toMatch(/Gate: closed \| owed 2/);
   });
 });
 

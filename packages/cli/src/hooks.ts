@@ -12,6 +12,7 @@ import {
   checkOnce,
   forAgent,
   guardPayload,
+  HEADLESS_ENV,
   loadProject,
   markEdit,
   readCheckState,
@@ -374,6 +375,9 @@ async function checkWorker(ctx: Ctx, o: HookOptions): Promise<number> {
 
 /** `holdback hook <name>`: one Claude Code hook. Every path answers with the hook's own exit code. */
 export async function hookCmd(ctx: Ctx, name: string, o: HookOptions = {}): Promise<number> {
+  // a headless `holdback run` turn (its agent process is marked) already checks with Kane and holds
+  // the check lock: the interactive hooks the app may also have stand aside. The guard never does.
+  if (ctx.deps.env[HEADLESS_ENV] && (name === "stop" || name === "post-edit" || name === "prompt")) return EXIT.ok;
   switch (name) {
     case "guard":
       return guardHook(ctx, o);
@@ -522,6 +526,13 @@ export async function installClaudeHooks(ctx: Ctx): Promise<number> {
     return EXIT.error;
   }
   const p = await loadProject(ctx.cwd);
+  // the hook commands put these paths inside double quotes for a shell: refuse what it would expand there
+  for (const where of [process.execPath, entry, p.appDir]) {
+    if (/[$`"\r\n]/.test(where)) {
+      ctx.err(`Holdback cannot install hooks for a path that contains $, \`, " or a line break: ${where}. Move it to a plain path first.`);
+      return EXIT.error;
+    }
+  }
   const file = path.join(p.appDir, ...SETTINGS);
   let current: Json;
   try {
