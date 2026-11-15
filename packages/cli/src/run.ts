@@ -159,8 +159,16 @@ async function pipeline(ctx: Ctx, p: Project, io: HumanIO, signal: AbortSignal, 
       stop = falsifyStop(f);
       if (f.reason === "drift") on.drifted?.(false);
       if (stop) break;
-      if (f.redesigned.length === 0) break;
-      ctx.out(`Falsify re-opened ${f.redesigned.join(", ")}: building again`);
+      if (f.redesigned.length > 0) {
+        ctx.out(`Falsify re-opened ${f.redesigned.join(", ")}: building again`);
+        continue;
+      }
+      // the closing replay against the real build can leave criteria owed or regressed: that is the
+      // agent's to fix (only vacuous, needs-spec or inconclusive ones stay for the human)
+      const g = (await snapshot(p)).gate;
+      const open = [...g.regressed, ...g.owed].map((a) => a.id);
+      if (open.length === 0) break;
+      ctx.out(`Falsify's replay of the real build left ${open.join(", ")} owed: building again`);
     }
 
     if (stop?.code === EXIT.tamper) {

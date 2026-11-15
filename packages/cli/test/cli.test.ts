@@ -544,8 +544,8 @@ describe("run", () => {
   });
 
   it("exits 3 when the run finishes with the gate not fully green (owed, vacuous or needs-spec left)", async () => {
-    await fixture(); // ac-2 is still owed
-    const owed = await cli(["run"], stages().deps);
+    await fixture(); // ac-2 is still owed (after falsify it would go back to building: I5)
+    const owed = await cli(["run", "--no-falsify"], stages().deps);
     expect(owed.code).toBe(3);
     expect(owed.out).toContain("Criteria: 1 owed");
     expect(owed.err).toContain("not fully green");
@@ -582,6 +582,40 @@ describe("run", () => {
     expect(r.code).toBe(0);
     expect(s.calls).toEqual(["build", "falsify", "build", "falsify"]);
     expect(r.out).toContain("building again");
+  });
+
+  it("goes back to the build loop when falsify's closing replay leaves a criterion owed or regressed (I5)", async () => {
+    await greenFixture();
+    let falsifies = 0;
+    const s = stages();
+    s.deps.runFalsify = async () => {
+      s.calls.push("falsify");
+      // the closing replay against the real build: t-2 fails now
+      if (falsifies++ === 0) await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "failed", { verdict: { bugTitle: "Limit off by one" } }) });
+      return falsifyOk;
+    };
+    const build = s.deps.runBuildLoop!;
+    s.deps.runBuildLoop = async (...a) => {
+      if (s.calls.includes("falsify")) await log({ at, t: "run", kind: "build", turn: 3, result: result("t-2", "passed") });
+      return build(...a);
+    };
+    const r = await cli(["run"], s.deps);
+    expect(s.calls).toEqual(["build", "falsify", "build", "falsify"]);
+    expect(r.out).toContain("building again");
+    expect(r.code).toBe(0);
+  });
+
+  it("does not go back to the build loop when only vacuous, needs-spec or inconclusive criteria keep the gate shut (I5)", async () => {
+    await greenFixture();
+    const s = stages();
+    s.deps.runFalsify = async () => {
+      s.calls.push("falsify");
+      await log({ at, t: "mutant", id: "m-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "survived" });
+      return { ...falsifyOk, survived: ["ac-1"], vacuous: ["ac-1"] };
+    };
+    const r = await cli(["run"], s.deps);
+    expect(s.calls).toEqual(["build", "falsify"]);
+    expect(r.code).toBe(3);
   });
 
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {
