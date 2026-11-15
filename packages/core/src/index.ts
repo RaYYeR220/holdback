@@ -61,7 +61,7 @@ export {
 export { runClaudeTurn, contractPath, guardMainPath, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
 export type { HumanIO, ApprovalItem } from "./loop/human.js";
 export { CliHumanIO, ScriptedHumanIO } from "./loop/human.js";
-export { runSpecStage, reseal, resealAppFiles, appSealFiles } from "./loop/spec.js";
+export { runSpecStage, reseal, resealAppFiles, appSealFiles, drivePaused, type ResumeCalls } from "./loop/spec.js";
 export { buildBrief, type BriefOptions, type AcFailure } from "./loop/brief.js";
 export {
   runBuildLoop,
@@ -73,6 +73,44 @@ export {
   type BuildResult,
   type BuildStopReason,
 } from "./loop/build.js";
+export {
+  runFalsify,
+  defaultFalsifyDeps,
+  falsifyVerdict,
+  type FalsifyDeps,
+  type FalsifyKane,
+  type FalsifyResult,
+  type FalsifyStopReason,
+} from "./loop/falsify.js";
+export {
+  veniceChat,
+  parseReply,
+  PRICES,
+  Budget,
+  usdOf,
+  estimateUsd,
+  VeniceOutputError,
+  VENICE_URL,
+  MAX_TOKENS,
+  type ChatMessage,
+  type Usage,
+  type VeniceChatOptions,
+  type VeniceChatResult,
+} from "./breaker/venice.js";
+export {
+  proposeMutant,
+  pickFiles,
+  acKeywords,
+  checkPatch,
+  BudgetRefused,
+  BreakerError,
+  PATCH_SCHEMA,
+  MAX_PATCH_LINES,
+  type SourceFile,
+  type Mutant,
+  type ProposeOptions,
+} from "./breaker/mutate.js";
+export { LedgerTampered, type EventBody } from "./ledger/vouched.js";
 export {
   git,
   isRepoRoot,

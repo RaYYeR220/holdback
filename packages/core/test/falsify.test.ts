@@ -1,0 +1,606 @@
+import { execFileSync } from "node:child_process";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AppStartError, type StartAppOptions } from "../src/app.js";
+import type { VeniceChatOptions } from "../src/breaker/venice.js";
+import type { AcNode, Graph, TestNode } from "../src/kane/assurance.js";
+import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
+import { reduce } from "../src/ledger/reduce.js";
+import { appendEvent, readEvents } from "../src/ledger/store.js";
+import type { LedgerEvent } from "../src/ledger/types.js";
+import { runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
+import type { ApprovalItem, HumanIO } from "../src/loop/human.js";
+import { appSealFiles } from "../src/loop/spec.js";
+import { loadProject, type Project } from "../src/project.js";
+import { checkSeal, seal } from "../src/seal.js";
+import { checkRecordingsAnchor, logRecordings, tamperMarker } from "../src/tamper.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const fxTests = join(here, "fixtures", "kane", "tests");
+const at = "2026-11-15T00:00:00.000Z";
+const MODEL = "deepseek-v4-flash";
+const USD_PER_CALL = (1500 * 0.138 + 300 * 0.275) / 1e6;
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+const AC1: AcNode = {
+  id: "ac-1",
+  text: "When someone in the household receives SNAP, the household's eligibility result is “Eligible.” regardless of monthly income.",
+  useCase: "uc-1",
+  cites: [{ source: "prd", anchor: "L12-L12", quote: "A household where someone receives SNAP is eligible regardless of income." }],
+  trust: "derived",
+};
+const AC3: AcNode = {
+  id: "ac-3",
+  text: "For a household without SNAP, monthly income above the applicable limit produces “Not eligible.”",
+  useCase: "uc-1",
+  cites: [{ source: "prd", anchor: "L10-L10", quote: "A household is eligible when its monthly income is at or below the monthly limit for its size." }],
+  trust: "derived",
+};
+const AC3B: AcNode = { ...AC3, id: "ac-3b", text: "A one-person household without SNAP earning $2,462 gets “Not eligible.”" };
+
+const SRC = [
+  "export const LIMITS = { 1: 2461, 2: 3301 };",
+  "export function check(size, income, snap) {",
+  '  if (snap) return "Eligible.";',
+  '  return income <= LIMITS[size] ? "Eligible." : "Not eligible.";',
+  "}",
+  "",
+].join("\n");
+const PATCH: Record<string, string> = {
+  "ac-1": [
+    "--- a/src/eligibility.js",
+    "+++ b/src/eligibility.js",
+    "@@ -2,3 +2,3 @@",
+    " export function check(size, income, snap) {",
+    '-  if (snap) return "Eligible.";',
+    '+  if (snap && income < 0) return "Eligible.";',
+    '   return income <= LIMITS[size] ? "Eligible." : "Not eligible.";',
+    "",
+  ].join("\n"),
+  "ac-3": [
+    "--- a/src/eligibility.js",
+    "+++ b/src/eligibility.js",
+    "@@ -3,3 +3,3 @@",
+    '   if (snap) return "Eligible.";',
+    '-  return income <= LIMITS[size] ? "Eligible." : "Not eligible.";',
+    '+  return income <= LIMITS[size] + 1 ? "Eligible." : "Not eligible.";',
+    " }",
+    "",
+  ].join("\n"),
+};
+const BAD_PATCH = ["--- a/src/eligibility.js", "+++ b/src/eligibility.js", "@@ -1,1 +1,1 @@", "-const nothing = here;", "+const nothing = there;", ""].join("\n");
+
+const saved = { ...process.env };
+let root: string;
+let appDir: string;
+let p: Project;
+let T1: string;
+let T3: string;
+let T3B: string;
+const log = (e: LedgerEvent) => appendEvent(p.ledgerFile, e);
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "hb-falsify-"));
+  process.env.HOLDBACK_HOME = join(root, "home");
+});
+afterEach(() => {
+  for (const k of ["HOLDBACK_HOME", "VENICE_API_KEY"]) {
+    if (saved[k] === undefined) delete process.env[k];
+    else process.env[k] = saved[k];
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+const idOf = (file: string) => (file.endsWith("t1_test.md") ? "t-1" : file.endsWith("t3b_test.md") ? "t-3b" : "t-3");
+const pass = (file: string): TestRunResult => ({
+  testFile: file,
+  testId: idOf(file),
+  status: "passed",
+  steps: [],
+  criteriaPassed: [],
+  criteriaFailed: [],
+  credits: 0,
+  replayDecisions: 2,
+  authorDecisions: 0,
+  healTriggered: false,
+  durationS: 12,
+});
+const failOn =
+  (...acs: string[]) =>
+  (file: string): TestRunResult => ({
+    ...pass(file),
+    status: "failed",
+    failedStep: 2,
+    criteriaFailed: acs,
+    verdict: { bugTitle: "Eligibility check approves income above displayed limit" },
+    credits: 4.7,
+  });
+
+const testNodes = (): TestNode[] => [
+  { id: "t-1", title: "SNAP household qualifies", file: ".testmuai/tests/t1_test.md", verifies: ["ac-1"] },
+  { id: "t-3", title: "Non-SNAP household above $2,461 is not eligible", file: T3, verifies: ["ac-3"] },
+];
+
+/** App repo (one commit, a node_modules dir outside git) + verifier with t-1/t-3 + a ledger where ac-1 and ac-3 pass. */
+async function setup(opts: { before?: () => Promise<void> } = {}) {
+  appDir = join(root, "app");
+  mkdirSync(join(appDir, "src"), { recursive: true });
+  mkdirSync(join(appDir, "node_modules", "dep"), { recursive: true });
+  writeFileSync(join(appDir, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+  writeFileSync(join(appDir, ".gitignore"), "node_modules/\n");
+  writeFileSync(join(appDir, "PRD.md"), "# Food pantry\n\nNot eligible above 2461.\n");
+  writeFileSync(join(appDir, "holdback.config.json"), "{}");
+  writeFileSync(join(appDir, "src", "eligibility.js"), SRC);
+  git(appDir, "init", "-q");
+  git(appDir, "config", "user.name", "Test");
+  git(appDir, "config", "user.email", "test@example.com");
+  git(appDir, "config", "commit.gpgsign", "false");
+  git(appDir, "add", "-A");
+  git(appDir, "commit", "-q", "-m", "turn 1");
+  p = await loadProject(appDir);
+  const testsDir = join(p.verifierDir, ".testmuai", "tests");
+  mkdirSync(testsDir, { recursive: true });
+  T1 = join(testsDir, "t1_test.md");
+  T3 = join(testsDir, "t3_test.md");
+  T3B = join(testsDir, "t3b_test.md");
+  copyFileSync(join(fxTests, "snap-household-qualifies-despite-above-limit-income_test.md"), T1);
+  copyFileSync(join(fxTests, "non-snap-household-above-2-461-is-not-eligible_test.md"), T3);
+  const vars = join(p.verifierDir, ".testmuai", "variables", "assurance.json");
+  mkdirSync(dirname(vars), { recursive: true });
+  writeFileSync(vars, JSON.stringify({ start_url: { value: "http://127.0.0.1:3100/" } }));
+  await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests: testNodes(), gaps: [], credits: 12 });
+  await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+  await greenTurn(1);
+  await opts.before?.();
+}
+
+async function greenTurn(n: number) {
+  await log({ at, t: "turn.start", n, owed: ["ac-1", "ac-3"] });
+  await log({ at, t: "turn.end", n, commit: "abc", filesChanged: ["src/eligibility.js"], durationMs: 1, appUp: true, agentExit: 0 });
+  await log({ at, t: "run", kind: "build", turn: n, result: pass(T1) });
+  await log({ at, t: "run", kind: "build", turn: n, result: pass(T3) });
+}
+
+type Plan = {
+  /** Patch the breaker returns for an AC on its Nth call (0-based). */
+  patch?: (ac: string, call: number) => string;
+  /** Kane results for a falsify batch (`ac` is the AC under attack). */
+  mutantRun: (ac: string, files: string[]) => TestRunResult[];
+  /** Kane results for the closing replay against the real build. Default: all pass. */
+  replay?: (files: string[]) => TestRunResult[];
+  mutantStarts?: boolean;
+  approve?: (items: ApprovalItem[]) => string[];
+  onBatch?: (ac: string) => void;
+};
+
+function fakes(plan: Plan) {
+  const calls = {
+    chat: [] as { ac: string; o: VeniceChatOptions }[],
+    tests: [] as { ac: string; cwd: string; files: string[]; opts: RunTestOptions & { parallel?: number } }[],
+    apps: [] as StartAppOptions[],
+    stops: 0,
+    design: [] as { cwd: string; uc: string; opts: unknown }[],
+    review: [] as string[][],
+    approvals: [] as ApprovalItem[][],
+    /** Per mutant start: the patched source and whether the app's node_modules showed through. */
+    mutantSrc: [] as { src: string; deps: boolean }[],
+  };
+  let current = "";
+  const perAc = new Map<string, number>();
+  const graph = (): Graph => ({
+    useCases: [],
+    acs: [AC1, AC3B],
+    tests: [testNodes()[0]!, { id: "t-3b", title: "redesigned", file: T3B, verifies: ["ac-3b"] }],
+    gaps: [],
+  });
+  const deps: FalsifyDeps = {
+    apiKey: "test-key",
+    port: async () => 5178,
+    chat: async (o) => {
+      const ac = /^AC (\S+):/m.exec(o.messages[1]!.content)![1]!;
+      current = ac;
+      const n = perAc.get(ac) ?? 0;
+      perAc.set(ac, n + 1);
+      calls.chat.push({ ac, o });
+      const patch = plan.patch ? plan.patch(ac, n) : PATCH[ac]!;
+      return { json: { patch, rationale: `breaks ${ac}` }, usage: { prompt_tokens: 1500, completion_tokens: 300 } };
+    },
+    app: async (o) => {
+      calls.apps.push(o);
+      if (o.cwd !== appDir) {
+        calls.mutantSrc.push({ src: readFileSync(join(o.cwd, "src", "eligibility.js"), "utf8"), deps: existsSync(join(o.cwd, "node_modules", "dep", "index.js")) });
+        if (plan.mutantStarts === false) throw new AppStartError("app exited before becoming ready", "SyntaxError: Unexpected token");
+      }
+      return { url: `http://127.0.0.1:${o.port}`, logs: () => "", stop: async () => void calls.stops++ };
+    },
+    tests: async (cwd, files, opts = {}) => {
+      calls.tests.push({ ac: opts.noHeal ? current : "", cwd, files: [...files], opts });
+      // Kane writes its own recordings next to the tests
+      const out = join(p.verifierDir, ".testmuai", "tests", `output-${calls.tests.length}`);
+      mkdirSync(out, { recursive: true });
+      writeFileSync(join(out, "run.json"), "{}");
+      if (opts.noHeal) {
+        plan.onBatch?.(current);
+        return plan.mutantRun(current, files);
+      }
+      return (plan.replay ?? ((f) => f.map(pass)))(files);
+    },
+    kane: {
+      designTests: async (cwd, uc, opts) => {
+        calls.design.push({ cwd, uc, opts });
+        writeFileSync(T3B, "---\nassurance:\n  id: t-3b\n---\n# A one-person household earning $2,462 is not eligible\n");
+        const rec = join(p.verifierDir, ".testmuai", "tests", "output-design");
+        mkdirSync(rec, { recursive: true });
+        writeFileSync(join(rec, "authoring.json"), "{}");
+        return { status: "complete", tests: ["t-3b"], acs: ["ac-3b"], gaps: [], variables: [], credits: 9, next: [] };
+      },
+      listNodes: async () => [
+        { id: "uc-1", label: "usecase", title: "Check eligibility", trust: "approved" },
+        { id: "ac-3b", label: "ac", title: AC3B.text, trust: "derived" },
+        { id: "t-3b", label: "test", title: "redesigned", trust: "derived" },
+      ],
+      review: async (_cwd, refs) => void calls.review.push(refs),
+      readGraph: async () => graph(),
+      resumeSession: async () => {
+        throw new Error("no pause expected");
+      },
+      extractResume: async () => {
+        throw new Error("no pause expected");
+      },
+    },
+  };
+  const io: HumanIO = {
+    answer: async () => {
+      throw new Error("no question expected");
+    },
+    approve: async (items) => {
+      calls.approvals.push(items);
+      return plan.approve ? plan.approve(items) : items.map((i) => i.ref);
+    },
+  };
+  return { deps, io, calls };
+}
+
+const after = async (since: number) => (await readEvents(p.ledgerFile)).slice(since);
+const tags = (ev: LedgerEvent[]) =>
+  ev.map((e) => (e.t === "run" ? `run:${e.kind}:${e.result.testId}:${e.result.status}` : e.t === "mutant" ? `mutant:${e.ac}:${e.verdict}` : e.t));
+const mutDir = (id: string) => join(p.home, "mut", id);
+
+describe("runFalsify", { timeout: 60_000 }, () => {
+  it("kills a mutant that fails its AC: proved, runs logged as falsify, recordings anchored, worktree gone, real build replayed", async () => {
+    await setup();
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toEqual({
+      killed: ["ac-1", "ac-3"],
+      survived: [],
+      invalid: [],
+      redesigned: [],
+      vacuous: [],
+      skipped: [],
+      usd: expect.closeTo(2 * USD_PER_CALL, 12),
+      reason: "done",
+    });
+
+    // one breaker call per AC, each shown the AC and the source that implements it
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1", "ac-3"]);
+    expect(calls.chat[1]!.o.model).toBe(MODEL);
+    expect(calls.chat[1]!.o.apiKey).toBe("test-key");
+    expect(calls.chat[1]!.o.messages[1]!.content).toContain(`AC ac-3: ${AC3.text}`);
+    expect(calls.chat[1]!.o.messages[1]!.content).toContain('<file path="src/eligibility.js">');
+    expect(calls.chat[1]!.o.messages[1]!.content).not.toContain("Food pantry"); // never the spec file
+
+    // each mutant ran from a worktree of HEAD with the patch applied, its own data dir and the app's deps
+    const mutantApps = calls.apps.filter((a) => a.cwd !== appDir);
+    expect(mutantApps.map((a) => a.cwd)).toEqual([mutDir("m-ac-1-1"), mutDir("m-ac-3-1")]);
+    expect(mutantApps[1]).toMatchObject({ cmd: "npm start", port: 5178, readyPath: "/", env: { DATA_DIR: join(mutDir("m-ac-3-1"), "data"), VENICE_API_KEY: "" } });
+    expect(calls.mutantSrc[0]!.src).toContain("if (snap && income < 0)");
+    expect(calls.mutantSrc[1]!.src).toContain("LIMITS[size] + 1");
+    expect(calls.mutantSrc.every((m) => m.deps)).toBe(true);
+
+    // Kane replays only the AC's tests, from the sealed verifier, against the mutant, healing off
+    const falsify = calls.tests.filter((t) => t.opts.noHeal);
+    expect(falsify.map((t) => [t.ac, t.files])).toEqual([
+      ["ac-1", [T1]],
+      ["ac-3", [T3]],
+    ]);
+    expect(falsify[0]!.cwd).toBe(p.verifierDir);
+    expect(falsify[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:5178/", noHeal: true, timeoutS: 420, parallel: 3 });
+
+    // then every test once against the real build (heal on), to restore Kane's own coverage
+    const replay = calls.tests.filter((t) => !t.opts.noHeal);
+    expect(replay.map((t) => t.files)).toEqual([[T1, T3]]);
+    expect(replay[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 420, parallel: 3 });
+    expect(calls.apps.filter((a) => a.cwd === appDir)).toEqual([expect.objectContaining({ port: 3100, cmd: "npm start" })]);
+    expect(calls.stops).toBe(calls.apps.length);
+
+    const ev = await after(since);
+    expect(tags(ev)).toEqual([
+      "recordings", // seeded: nothing anchored the recordings since the seal
+      "mutant:ac-1:killed",
+      "run:falsify:t-1:failed",
+      "recordings",
+      "mutant:ac-3:killed",
+      "run:falsify:t-3:failed",
+      "recordings",
+      "run:build:t-1:passed",
+      "run:build:t-3:passed",
+      "recordings",
+    ]);
+    expect(ev[4]).toEqual({ at: expect.any(String), t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"], model: MODEL, usd: expect.closeTo(USD_PER_CALL, 12), verdict: "killed" });
+    expect(ev[5]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1" });
+    expect(ev[7]).toMatchObject({ t: "run", kind: "build", turn: 1 });
+
+    const state = reduce(await readEvents(p.ledgerFile));
+    expect(state.acs["ac-1"]!.status).toBe("proved");
+    expect(state.acs["ac-3"]!.status).toBe("proved");
+    expect(state.breakerUsd).toBeCloseTo(2 * USD_PER_CALL, 12);
+    expect(state.mutants).toEqual({ killed: 2, survived: 0, invalid: 0 });
+
+    // the next build loop holds the disk to what falsify logged: no false tamper
+    expect((await checkRecordingsAnchor(p, await readEvents(p.ledgerFile))).moved).toEqual([]);
+    // the throwaway worktrees and patch files are gone, the app's own deps and source are untouched
+    expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+    expect(git(appDir, "worktree", "list").split("\n")).toHaveLength(1);
+    expect(readFileSync(join(appDir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
+    expect(readFileSync(join(appDir, "src", "eligibility.js"), "utf8")).toBe(SRC);
+    expect(git(appDir, "status", "--porcelain")).toBe("");
+  });
+
+  it("marks a surviving AC vacuous and re-designs its use case once, with the human's approval and a fresh seal", async () => {
+    await setup();
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], invalid: [], redesigned: ["uc-1"], vacuous: [], reason: "done" });
+
+    expect(calls.design).toEqual([{ cwd: p.verifierDir, uc: "uc-1", opts: { force: true, max: 5 } }]);
+    expect(calls.approvals).toEqual([
+      [
+        { ref: "ac-3b", title: AC3B.text, kind: "ac" },
+        { ref: "t-3b", title: "redesigned", kind: "test" },
+      ],
+    ]);
+    expect(calls.review).toEqual([["ac-3b", "t-3b"]]);
+
+    const ev = await after(since);
+    expect(tags(ev)).toEqual([
+      "recordings",
+      "mutant:ac-1:killed",
+      "run:falsify:t-1:failed",
+      "recordings",
+      "mutant:ac-3:survived",
+      "run:falsify:t-3:passed",
+      "recordings",
+      "spec.approved",
+      "design",
+      "seal",
+      "recordings",
+      "run:build:t-1:passed",
+      "run:build:t-3b:passed",
+      "recordings",
+    ]);
+    expect(ev[7]).toMatchObject({ t: "spec.approved", refs: ["ac-3b", "t-3b"], rejected: [] });
+    expect(ev[8]).toMatchObject({ t: "design", useCase: "uc-1", acs: [AC1, AC3B], credits: 9 });
+    const sealEv = ev[9] as Extract<LedgerEvent, { t: "seal" }>;
+    expect(Object.keys(sealEv.manifest)).toContain(".testmuai/tests/t3b_test.md");
+    expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
+
+    // the survivor stays on record; the redesigned use case went back to owed, and the replay ran its new tests
+    const all = await readEvents(p.ledgerFile);
+    expect(all.some((e) => e.t === "mutant" && e.ac === "ac-3" && e.verdict === "survived")).toBe(true);
+    const beforeReplay = reduce(all.slice(0, since + 11));
+    expect(beforeReplay.acs["ac-3"]).toBeUndefined();
+    expect(beforeReplay.acs["ac-1"]!.status).toBe("owed");
+    expect(beforeReplay.acs["ac-3b"]!.status).toBe("owed");
+    expect(reduce(all).acs["ac-3b"]!.status).toBe("passing");
+  });
+
+  it("rolls the verifier back and keeps the survivor vacuous when the human approves none of the re-design", async () => {
+    await setup();
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass), approve: () => [] });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: [], vacuous: ["ac-3"], reason: "done" });
+    expect(r.redesignError).toMatch(/approved/);
+    expect(calls.review).toEqual([]);
+    expect(existsSync(T3B)).toBe(false);
+    const all = await readEvents(p.ledgerFile);
+    expect(tags(all.slice(since))).toEqual([
+      "recordings",
+      "mutant:ac-1:killed",
+      "run:falsify:t-1:failed",
+      "recordings",
+      "mutant:ac-3:survived",
+      "run:falsify:t-3:passed",
+      "recordings",
+      "spec.approved",
+      "recordings", // what Kane wrote while designing, anchored right after the rollback
+      "run:build:t-1:passed",
+      "run:build:t-3:passed",
+      "recordings",
+    ]);
+    const sealEv = all.filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>;
+    expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
+    expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
+    // what Kane recorded while designing is anchored, so the next build loop sees no tamper
+    expect((await checkRecordingsAnchor(p, all)).moved).toEqual([]);
+    // the closing replay still runs the sealed tests
+    expect(calls.tests.filter((t) => !t.opts.noHeal).map((t) => t.files)).toEqual([[T1, T3]]);
+  });
+
+  it("counts a failure on another AC as invalid (collateral), leaving the AC passing", async () => {
+    await setup();
+    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : failOn("ac-6")) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: [], invalid: ["ac-3"], redesigned: [], reason: "done" });
+    const all = await readEvents(p.ledgerFile);
+    const m = all.find((e) => e.t === "mutant" && e.ac === "ac-3");
+    expect(m).toMatchObject({ verdict: "invalid", note: expect.stringMatching(/^collateral: t-3 failed \(ac-6\)/) });
+    expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
+  });
+
+  it("counts a pass after a heal as survived-by-heal; a second survival of a use case stays vacuous without another re-design", async () => {
+    await setup({
+      before: async () => {
+        // an earlier pass: ac-3 survived, its use case was re-designed, and the build loop made it green again
+        await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived" });
+        await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests: testNodes(), gaps: [], credits: 9 });
+        await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+        await greenTurn(2);
+      },
+    });
+    const { deps, io, calls } = fakes({
+      mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : (f) => ({ ...pass(f), healTriggered: true })),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], invalid: [], redesigned: [], vacuous: ["ac-3"], reason: "done" });
+    expect(calls.design).toEqual([]);
+    expect(calls.approvals).toEqual([]);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.at(-1)!.t).toBe("recordings");
+    const m = all.filter((e) => e.t === "mutant").pop();
+    expect(m).toMatchObject({ id: "m-ac-3-2", ac: "ac-3", verdict: "survived-by-heal", note: expect.stringContaining("heal") });
+    expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
+  });
+
+  it("retries a patch that does not apply once with git's error, then counts it invalid without any Kane run", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({ patch: () => BAD_PATCH, mutantRun: () => [] });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: [], survived: [], invalid: ["ac-1", "ac-3"], reason: "done" });
+    expect(r.usd).toBeCloseTo(4 * USD_PER_CALL, 12);
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1", "ac-1", "ac-3", "ac-3"]);
+    const retry = calls.chat[1]!.o.messages.map((m) => m.content).join("\n");
+    expect(retry).toContain("Your previous patch failed:");
+    expect(retry).toMatch(/patch does not apply|patch failed/);
+    expect(retry).toContain("-const nothing = here;");
+    expect(calls.tests).toEqual([]);
+    expect(calls.apps).toEqual([]);
+    const all = await readEvents(p.ledgerFile);
+    const ms = all.filter((e) => e.t === "mutant");
+    expect(ms).toEqual([
+      expect.objectContaining({ ac: "ac-1", verdict: "invalid", usd: expect.closeTo(2 * USD_PER_CALL, 12), note: expect.stringMatching(/^patch did not apply/) }),
+      expect.objectContaining({ ac: "ac-3", verdict: "invalid" }),
+    ]);
+    expect(Object.values(reduce(all).acs).map((a) => a.status)).toEqual(["passing", "passing"]);
+    expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+  });
+
+  it("counts a mutant that does not start as invalid, with no Kane run", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({ mutantStarts: false, mutantRun: () => [] });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ invalid: ["ac-1", "ac-3"], reason: "done" });
+    expect(calls.tests).toEqual([]);
+    const m = (await readEvents(p.ledgerFile)).find((e) => e.t === "mutant");
+    expect(m).toMatchObject({ verdict: "invalid", note: expect.stringContaining("SyntaxError: Unexpected token") });
+  });
+
+  it("refuses the breaker call once the budget is spent, and logs no mutant", async () => {
+    await setup({
+      before: async () => {
+        await log({ at, t: "mutant", id: "m-old", ac: "ac-0", patch: "", model: MODEL, usd: 1.9999, verdict: "invalid" });
+      },
+    });
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: [], invalid: [], skipped: ["ac-1", "ac-3"], usd: 0, reason: "budget" });
+    expect(calls.chat).toEqual([]);
+    expect(calls.tests).toEqual([]);
+    expect(tags(await after(since))).toEqual(["recordings"]);
+    expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+  });
+
+  it("removes a mutant worktree a crashed pass left behind without touching the app's node_modules behind its link", async () => {
+    await setup({
+      before: async () => {
+        await log({ at, t: "mutant", id: "m-old", ac: "ac-0", patch: "", model: MODEL, usd: 2, verdict: "invalid" });
+      },
+    });
+    const stale = mutDir("m-ac-1-1");
+    mkdirSync(dirname(stale), { recursive: true });
+    git(appDir, "worktree", "add", "-q", "--detach", stale, "HEAD");
+    symlinkSync(join(appDir, "node_modules"), join(stale, "node_modules"), "junction");
+    writeFileSync(join(p.home, "mut", "m-ac-1-1.patch"), "x");
+    const { deps, io } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("budget");
+    expect(readdirSync(join(p.home, "mut"))).toEqual([]);
+    expect(git(appDir, "worktree", "list").split("\n")).toHaveLength(1);
+    expect(readFileSync(join(appDir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
+  });
+
+  it("stops with tamper, before any breaker call, when Kane's recordings changed since they were last logged", async () => {
+    await setup({ before: async () => void (await logRecordings(p, log)) });
+    const out = join(p.verifierDir, ".testmuai", "tests", "output-planted");
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, "run.json"), "{}");
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    expect(calls.chat).toEqual([]);
+    const last = (await readEvents(p.ledgerFile)).at(-1);
+    expect(last).toMatchObject({ t: "tamper", detail: expect.stringContaining("Kane's recordings") });
+    expect(await tamperMarker(p)).not.toBeNull();
+  });
+
+  it("stops with tamper when a sealed test changed since the seal", async () => {
+    await setup();
+    appendFileSync(T3, "\nAlso accept anything.\n");
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    expect(calls.chat).toEqual([]);
+    expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper", detail: expect.stringContaining(".testmuai/tests/t3_test.md") });
+  });
+
+  it("discards a batch whose sealed test changed while Kane ran, stops with tamper, and still books the breaker's spend", async () => {
+    await setup();
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io, calls } = fakes({
+      mutantRun: (ac, files) => files.map(failOn(ac)),
+      onBatch: () => appendFileSync(T3, "\nAlso accept anything.\n"),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: [], invalid: ["ac-1"], reason: "tamper" });
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
+    const ev = await after(since);
+    expect(tags(ev)).toEqual(["recordings", "tamper", "mutant:ac-1:invalid"]);
+    expect(ev[1]).toMatchObject({ t: "tamper", detail: expect.stringContaining(".testmuai/tests/t3_test.md") });
+    expect(ev[2]).toMatchObject({ usd: expect.closeTo(USD_PER_CALL, 12), note: "results discarded: the pass stopped" });
+    expect(reduce(await readEvents(p.ledgerFile)).breakerUsd).toBeCloseTo(USD_PER_CALL, 12);
+    expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+  });
+
+  it("stops with tamper when the ledger is changed behind Holdback's back mid-pass, and still cleans up", async () => {
+    await setup();
+    const { deps, io } = fakes({
+      mutantRun: (ac, files) => files.map(failOn(ac)),
+      onBatch: () => appendFileSync(p.ledgerFile, JSON.stringify({ at, t: "mutant", id: "x", ac: "ac-3", patch: "", model: MODEL, usd: 0, verdict: "killed" }) + "\n"),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    expect(await tamperMarker(p)).not.toBeNull();
+    expect(reduce(await readEvents(p.ledgerFile)).tampered).toBe(true);
+    expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+    expect(readFileSync(join(appDir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
+  });
+
+  it("refuses with a clear error, before touching anything, when VENICE_API_KEY is not set", async () => {
+    await setup();
+    delete process.env.VENICE_API_KEY;
+    const before = readFileSync(p.ledgerFile, "utf8");
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    delete deps.apiKey;
+    await expect(runFalsify(p, deps, io, log)).rejects.toThrow(/VENICE_API_KEY/);
+    expect(calls.chat).toEqual([]);
+    expect(readFileSync(p.ledgerFile, "utf8")).toBe(before);
+  });
+});

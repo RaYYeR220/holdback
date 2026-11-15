@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { constants, existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
@@ -12,6 +11,7 @@ import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { AcState, LedgerEvent } from "../ledger/types.js";
+import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type EventBody, type LedgerMark } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
 import { checkRecordings, checkSeal } from "../seal.js";
 import { checkRecordingsAnchor, gitConfigHash, markTampered, snapshotRecordings, tamperMarker, type RecordingsSnapshot } from "../tamper.js";
@@ -19,7 +19,6 @@ import { buildBrief, byAcId, type AcFailure } from "./brief.js";
 import { appSealFiles } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
-type EventBody = LedgerEvent extends infer E ? (E extends { at: string } ? Omit<E, "at"> : never) : never;
 type Manifest = Record<string, string>;
 
 export type BuildDeps = {
@@ -63,13 +62,13 @@ function lastIndex(events: LedgerEvent[], t: LedgerEvent["t"]): number {
   return -1;
 }
 
-function lastSeal(events: LedgerEvent[]): Manifest | undefined {
+export function lastSeal(events: LedgerEvent[]): Manifest | undefined {
   const e = events[lastIndex(events, "seal")];
   return e && e.t === "seal" ? e.manifest : undefined;
 }
 
 /** Test id -> absolute test file, from the latest `design` event that names one. */
-function testFileMap(events: LedgerEvent[], verifierDir: string): Map<string, string> {
+export function testFileMap(events: LedgerEvent[], verifierDir: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const e of events) {
     if (e.t !== "design") continue;
@@ -79,7 +78,7 @@ function testFileMap(events: LedgerEvent[], verifierDir: string): Map<string, st
 }
 
 /** The test files that verify `acs`, deduplicated in order. Fails when a test has no recorded file. */
-function filesOf(acs: AcState[], files: Map<string, string>): string[] {
+export function filesOf(acs: AcState[], files: Map<string, string>): string[] {
   const out: string[] = [];
   for (const ac of acs) {
     for (const id of ac.tests) {
@@ -91,7 +90,15 @@ function filesOf(acs: AcState[], files: Map<string, string>): string[] {
   return out;
 }
 
-function startFailureText(e: unknown): string {
+/** Every test Kane is about to run must be a tier-1 sealed file. */
+export function assertTestsSealed(verifierDir: string, manifest: Manifest | undefined, files: string[]): void {
+  for (const f of files) {
+    const rel = path.relative(verifierDir, f).split(path.sep).join("/");
+    if (!rel.startsWith(".testmuai/tests/") || !manifest || manifest[rel] === undefined) throw new Error(`test file not sealed: ${f}`);
+  }
+}
+
+export function startFailureText(e: unknown): string {
   if (e instanceof AppStartError) return [e.logs.replace(/\s+$/, ""), e.message].filter((s) => s.length > 0).join("\n");
   return e instanceof Error ? e.message : String(e);
 }
@@ -102,59 +109,7 @@ export function evidencePath(turn: number, testId: string, step: number | undefi
   return `${EVIDENCE_DIR}/turn-${turn}/${id}${step === undefined ? "" : `-step-${step}`}.png`;
 }
 
-/** Byte length + sha256 of the ledger as Holdback last wrote it. */
-type LedgerMark = { size: number; sha256: string };
-
-const sha256 = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
-
-async function readLedger(file: string): Promise<Buffer> {
-  try {
-    return await readFile(file);
-  } catch (e) {
-    // only "no ledger yet" is empty; any other error must not look like an empty (all-clear) ledger
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    return Buffer.alloc(0);
-  }
-}
-
-class LedgerTampered extends Error {
-  constructor(detail = "ledger modified outside Holdback") {
-    super(detail);
-  }
-}
-
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-/** Once Holdback vouches for the ledger, failing to read it is as bad as finding it changed. */
-async function readVouched(file: string): Promise<Buffer> {
-  try {
-    return await readLedger(file);
-  } catch (e) {
-    throw new LedgerTampered(`ledger unreadable: ${errText(e)}`);
-  }
-}
-
-/** Throws LedgerTampered unless the file is byte-for-byte what `mark` vouches for. */
-async function verifiedLedger(file: string, mark: LedgerMark): Promise<Buffer> {
-  const raw = await readVouched(file);
-  if (raw.length !== mark.size || sha256(raw) !== mark.sha256) throw new LedgerTampered();
-  return raw;
-}
-
-/** After appending `e`: the file must be the vouched-for bytes plus exactly that one event. Returns the new mark. */
-async function markAfterAppend(file: string, mark: LedgerMark, e: LedgerEvent): Promise<LedgerMark> {
-  const raw = await readVouched(file);
-  if (raw.length <= mark.size || sha256(raw.subarray(0, mark.size)) !== mark.sha256) throw new LedgerTampered();
-  const tail = raw.subarray(mark.size).toString("utf8").trim();
-  let added: unknown;
-  try {
-    added = JSON.parse(tail); // more than one line fails to parse
-  } catch {
-    throw new LedgerTampered();
-  }
-  if (JSON.stringify(added) !== JSON.stringify(e)) throw new LedgerTampered();
-  return { size: raw.length, sha256: sha256(raw) };
-}
 
 /**
  * Headless build loop: brief the agent with what Kane says is still owed, commit
@@ -187,13 +142,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
   const emit = async (body: EventBody) => {
     if (!mark) throw new Error("internal: ledger not read before the first append");
     const e = { at: at(), ...body } as LedgerEvent;
-    await verifiedLedger(p.ledgerFile, mark);
-    try {
-      await log(e);
-    } catch (err) {
-      throw new LedgerTampered(`ledger append failed: ${errText(err)}`);
-    }
-    mark = await markAfterAppend(p.ledgerFile, mark, e);
+    mark = await appendVouched(p.ledgerFile, mark, log, e);
     events.push(e);
   };
   /**
@@ -226,13 +175,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     await recordTamper(`sealed files changed: ${bad.join(", ")}`);
     return true;
   };
-  /** Every test Kane is about to run must be a tier-1 sealed file. */
-  const assertSealed = (files: string[]) => {
-    for (const f of files) {
-      const rel = path.relative(p.verifierDir, f).split(path.sep).join("/");
-      if (!rel.startsWith(".testmuai/tests/") || !manifest || manifest[rel] === undefined) throw new Error(`test file not sealed: ${f}`);
-    }
-  };
+  const assertSealed = (files: string[]) => assertTestsSealed(p.verifierDir, manifest, files);
   /** Copy a failed run's screenshot to where the agent may open it. A failed copy just drops the brief line. */
   const keepEvidence = async (r: TestRunResult, turn: number) => {
     if (r.status === "passed" || !r.screenshot || !r.testId) return;
@@ -282,7 +225,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     await mkdir(hooksDir, { recursive: true });
     if (!(await isRepoRoot(p.appDir, gitOpts))) return done(false, "error", `the app dir must be the root of a git repository: ${p.appDir}`);
     const found = await readLedger(p.ledgerFile); // trusted as found at loop start
-    mark = { size: found.length, sha256: sha256(found) };
+    mark = markOf(found);
     events = parseEvents(found.toString("utf8"));
     const initial = reduce(events);
     if (initial.tampered) return done(false, "tamper", RESEAL_HINT);

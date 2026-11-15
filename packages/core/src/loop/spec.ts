@@ -16,13 +16,13 @@ import { holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
 import { reduce } from "../ledger/reduce.js";
 import { readEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
+import type { EventBody } from "../ledger/vouched.js";
 import type { Project } from "../project.js";
 import { seal } from "../seal.js";
 import { clearTamper, logRecordings, tamperMarker } from "../tamper.js";
 import type { HumanIO } from "./human.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
-type EventBody = LedgerEvent extends infer E ? (E extends { at: string } ? Omit<E, "at"> : never) : never;
 
 const CLARIFICATIONS = "## Clarifications";
 const CONFIG_FILE = "holdback.config.json";
@@ -117,29 +117,44 @@ async function writeStartUrl(verifierDir: string, url: string): Promise<void> {
   await writeFile(file, JSON.stringify(doc, null, 2) + "\n", "utf8");
 }
 
+/** The Kane calls that continue a paused session (injectable for tests). */
+export type ResumeCalls = { extractResume: typeof extractResume; resumeSession: typeof resumeSession };
+
+/**
+ * Route every pause of a Kane session to the human until it completes. Each answer is appended
+ * to the PRD's Clarifications (re-seal afterwards); credits of a resumed call are logged in
+ * `spec.answered` and zeroed on the result, so the caller does not count them twice.
+ */
+export async function drivePaused<R extends IngestResult | DesignResult>(
+  p: Project,
+  io: HumanIO,
+  emit: (e: EventBody) => Promise<void>,
+  first: R,
+  kane: ResumeCalls = { extractResume, resumeSession },
+): Promise<Exclude<R, Paused>> {
+  const cwd = p.verifierDir;
+  let r: R = first;
+  while (r.status === "paused") {
+    const paused = r as Paused;
+    await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions });
+    const answers = await io.answer(paused.questions);
+    await appendClarifications(
+      p.appDir,
+      paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
+    );
+    r = (paused.verb === "extract" ? await kane.extractResume(cwd, paused.sid, answers) : await kane.resumeSession(cwd, paused, answers)) as R;
+    const credits = "credits" in r ? r.credits : 0;
+    await emit({ t: "spec.answered", sid: paused.sid, answers, credits });
+    if ("credits" in r) r = { ...r, credits: 0 };
+  }
+  return r as Exclude<R, Paused>;
+}
+
 export async function runSpecStage(p: Project, io: HumanIO, log: Log): Promise<void> {
   const emit = (e: EventBody) => log({ at: new Date().toISOString(), ...e } as LedgerEvent);
   const cwd = p.verifierDir;
 
-  /** Route every pause to the human until the session completes. */
-  async function drive<R extends IngestResult | DesignResult>(first: R): Promise<Exclude<R, Paused>> {
-    let r: R = first;
-    while (r.status === "paused") {
-      const paused = r as Paused;
-      await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions });
-      const answers = await io.answer(paused.questions);
-      await appendClarifications(
-        p.appDir,
-        paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
-      );
-      r = (paused.verb === "extract" ? await extractResume(cwd, paused.sid, answers) : await resumeSession(cwd, paused, answers)) as R;
-      // credits of a resumed call are logged here, so zero them on the result to avoid double counting in `design`
-      const credits = "credits" in r ? r.credits : 0;
-      await emit({ t: "spec.answered", sid: paused.sid, answers, credits });
-      if ("credits" in r) r = { ...r, credits: 0 };
-    }
-    return r as Exclude<R, Paused>;
-  }
+  const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first);
 
   checkSpecPaths(p);
 
