@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, driftRows, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, stateFromLedger, timeline } from "../src/model";
+import { board, driftRows, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -202,6 +202,12 @@ describe("meters and labels", () => {
     expect(gateLabel(stateFromLedger([], null))).toEqual({ word: "Held back", open: false, parts: ["no criteria yet"] });
     const green = [design(["ac-1"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
     expect(gateLabel(stateFromLedger(green, null))).toEqual({ word: "Released", open: true, parts: ["1/1 green"] });
+  });
+
+  it("lists the tests Kane's evolve retired: still sealed, never run (the rehearsal's t-1)", () => {
+    const events = parseEvents(readFileSync(REHEARSAL, "utf8"));
+    expect(retiredLine(events)).toBe("Retired by Kane's evolve, still sealed, never run again: t-1 Reject non-SNAP income above the two-person limit (uc-1).");
+    expect(retiredLine(parseEvents(fixtureText()))).toBeUndefined();
   });
 
   it("never says Released while a planted bug survived or a criterion has no test, though the gate is open: the CLI's verdict (R44)", () => {

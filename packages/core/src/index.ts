@@ -53,6 +53,7 @@ export { reduce } from "./ledger/reduce.js";
 export { KaneMeter, KaneCapReached, eventCredits, type BalanceReader, type KaneCap } from "./ledger/credits.js";
 export { gate } from "./ledger/gate.js";
 export { verdict, type Verdict, type VerdictState } from "./ledger/verdict.js";
+export { retiredTests, type RetiredTest } from "./ledger/retired.js";
 export { snapshot, type Snapshot } from "./snapshot.js";
 export { serve, DashboardHumanIO, DEFAULT_PORT, PromptRejected, type ServeOptions, type Served, type PendingPrompt } from "./server.js";
 export { loadProject, kaneCapCredits, type Project, type HoldbackConfig } from "./project.js";

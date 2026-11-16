@@ -236,11 +236,14 @@ describe("status and owed", () => {
       expect(human.out).toContain("uc-1 evolved again, to cover criteria its tests had lost: 2 tests minted, 0 retired (4 credits)");
       expect(human.out).not.toContain("household of 9");
       expect(human.out).not.toMatch(/because/i);
+      // the tests Kane retired stay sealed (their files are Kane's): listed as retired, never run again
+      expect(human.out).toContain("Retired by Kane's evolve (still sealed, never run): t-1, t-2");
       const doc = JSON.parse((await cli(["status", "--json"], { env })).out);
       expect(doc.evolved).toEqual([
         { uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39 },
         { uc: "uc-1", minted: ["t-5", "t-6"], retired: [], credits: 4, followUp: true },
       ]);
+      expect(doc.retired).toEqual(["t-1", "t-2"]);
       expect(JSON.stringify(doc)).not.toContain("household of 9");
     }
   });

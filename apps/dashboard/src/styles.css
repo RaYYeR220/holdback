@@ -86,6 +86,7 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 32px; letter-spac
 .sec-aside { font-size: 12px; color: var(--ink-3); white-space: nowrap; padding-bottom: 3px; }
 .tag { display: inline-block; font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--ink); border: 1px solid var(--hair-2); border-radius: var(--r-xs); padding: 1px 6px; line-height: 1.5; }
 .empty-line { font-size: 13.5px; line-height: 1.55; color: var(--ink-3); }
+.retired-line { margin-top: 14px; font-size: 13px; line-height: 1.5; color: var(--ink-3); }
 
 /* ---------------- board ---------------- */
 .board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; align-items: start; }

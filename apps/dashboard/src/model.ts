@@ -1,4 +1,4 @@
-import { eventCredits, gate as coreGate, notAnAppFailure, reduce, verdict as coreVerdict } from "@holdback/core/browser";
+import { eventCredits, gate as coreGate, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
 import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, TestRunResult, Verdict } from "@holdback/core/browser";
 
 /* ------------------------------------------------------------------ the wire: GET /api/state */
@@ -557,6 +557,15 @@ export function meters(api: ApiState, events: LedgerEvent[]): Meters {
     runs: api.state.runs,
     kaneS,
   };
+}
+
+/* ------------------------------------------------------------------ retired tests */
+
+/** The tests Kane's evolve retired, in one line: their files stay sealed and are never run again. Undefined when there are none. */
+export function retiredLine(events: LedgerEvent[]): string | undefined {
+  const list = retiredTests(events);
+  if (list.length === 0) return undefined;
+  return `Retired by Kane's evolve, still sealed, never run again: ${list.map((t) => `${t.id}${t.title ? ` ${t.title}` : ""} (${t.uc})`).join("; ")}.`;
 }
 
 /* ------------------------------------------------------------------ the gate pill */

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Board } from "./Board";
-import { board, byId, driftRows, fmtClock, fmtDay, gateLabel, meters, timeline, verdictOf, type ApiState, type EvalSummary } from "./model";
+import { board, byId, driftRows, fmtClock, fmtDay, gateLabel, meters, retiredLine, timeline, verdictOf, type ApiState, type EvalSummary } from "./model";
 import { Drift, HumanPanel, Inbox, Meters, Scoreboard } from "./Panels";
 import { connectLive, loadEval, loadReplay, readToken, type Live, type Snapshot, type Status } from "./source";
 import { Timeline } from "./Timeline";
@@ -117,6 +117,7 @@ function Dashboard({ snap, stream, summary, live }: { snap: Snapshot; stream: st
   const segs = useMemo(() => timeline(events), [events]);
   const m = useMemo(() => meters(api, events), [api, events]);
   const drift = useMemo(() => driftRows(events), [events]);
+  const retired = useMemo(() => retiredLine(events), [events]);
   const g = gateLabel(api);
   // an agent turn with no end on record is "running" only while the stream is up and the ledger is fresh
   const lastAt = events.at(-1)?.at;
@@ -149,6 +150,11 @@ function Dashboard({ snap, stream, summary, live }: { snap: Snapshot; stream: st
           aside={<p className="sec-aside mono">{api.counts.acs} criteria · {new Set(Object.values(api.state.acs).flatMap((a) => a.tests)).size} tests</p>}
         >
           <Board cols={cols} />
+          {retired && (
+            <p className="retired-line" data-testid="retired">
+              {retired}
+            </p>
+          )}
         </Section>
         <div className="split">
           <Section id="loop" title="Loop" note="Every agent turn, every Kane run after it, and every bug the breaker planted, in ledger order.">

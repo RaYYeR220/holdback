@@ -1,4 +1,4 @@
-import { loadProject } from "@holdback/core";
+import { loadProject, retiredTests } from "@holdback/core";
 import { EXIT, explainFailure, humanView, jsonForTerminal, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
 import { inconclusiveLine, kaneCreditsText } from "./messages.js";
 
@@ -24,6 +24,8 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   // R40: Kane's evolves of a use case. What slipped through (the because) is the target of the hidden
   // test: it is never printed here, whoever runs this (the agent may unset CLAUDECODE), only on the
   // token-gated dashboard (I-4)
+  // the tests an evolve retired stay sealed (Holdback never deletes Kane's files): ids only, never run again
+  const retired = retiredTests(s.events).map((t) => t.id);
   const evolved = s.events.flatMap((e) =>
     e.t === "falsify.evolved" ? [{ uc: e.uc, minted: e.minted, retired: e.retired, credits: e.credits, ...(e.followUp ? { followUp: true } : {}) }] : [],
   );
@@ -48,6 +50,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
           verdict: s.verdict,
           specChanged: s.specChanged,
           evolved,
+          retired,
         },
         null,
         2,
@@ -84,6 +87,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   for (const e of evolved) {
     ctx.out(`${e.uc} evolved${e.followUp ? " again, to cover criteria its tests had lost" : ""}: ${tests(e.minted.length)} minted, ${e.retired.length} retired (${e.credits} credits)`);
   }
+  if (retired.length > 0) ctx.out(`Retired by Kane's evolve (still sealed, never run): ${retired.join(", ")}`);
   if (s.specChanged.length > 0) ctx.out(`The spec changed since the last seal (${s.specChanged.join(", ")}): \`holdback run\` runs drift first.`);
   if (s.tamper !== null) {
     ctx.err(s.tamper);
