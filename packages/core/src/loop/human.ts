@@ -9,6 +9,8 @@ export type ApprovalItem = { ref: string; title: string; kind: string };
 export interface HumanIO {
   answer(qs: PendingQuestion[]): Promise<Record<string, string>>;
   approve(items: ApprovalItem[]): Promise<string[]>;
+  /** A person answers at the moment (the terminal, the dashboard), not a file: a drift they approve starts a fresh spec-provenance window (I-2). */
+  readonly interactive?: boolean;
 }
 
 /**
@@ -101,6 +103,7 @@ export async function confirmLine(input: NodeJS.ReadableStream, output: NodeJS.W
 
 /** Interactive terminal implementation. */
 export class CliHumanIO implements HumanIO {
+  readonly interactive = true;
   /** Shared with every other prompt on the same input (N-C1). */
   private readonly reader: LineReader;
   private holding = false;

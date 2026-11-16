@@ -146,6 +146,22 @@ describe("runDrift", { timeout: 60_000 }, () => {
     expect(again).toEqual([]);
   });
 
+  it("its seal starts a fresh spec-provenance window only when a human approved it interactively (I-2)", async () => {
+    const seals: (true | undefined)[] = [];
+    for (const [io, deps] of [
+      [{ ...human([], all), interactive: true }, {}],
+      [human([], all), { confirmed: true }],
+      [human([], all), {}],
+    ] as [HumanIO, { confirmed?: boolean }][]) {
+      writeFileSync(join(p.appDir, "PRD.md"), `# PRD\n\nRule 1.\nRule ${seals.length + 2}.\n`);
+      const calls: Calls = [];
+      expect(await runDrift(p, io, log, { kane: fakeKane(calls), ...deps })).toEqual({ changed: true, applied: true });
+      seals.push((await sealed()).checkpoint);
+    }
+    // the terminal or the dashboard, or a yes typed in the terminal: a checkpoint; an answers file alone: not
+    expect(seals).toEqual([true, true, undefined]);
+  });
+
   it("reads the Kane source id from the ledger, never from the file name", async () => {
     await log({ at, t: "spec.ingested", sources: [{ id: "product-req", cid: "sha256:x", status: "created", file: "PRD.md" }] });
     await reseal(p, log);

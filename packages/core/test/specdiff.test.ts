@@ -68,6 +68,49 @@ describe("the sealed spec and its diff (R37)", { timeout: 60_000 }, () => {
     expect((await readEvents(p.ledgerFile)).at(-1)).toMatchObject({ t: "tamper" });
   });
 
+  it("only a spec change a human approved interactively starts a fresh provenance window; Kane's seal and a re-seal do not (I-2)", async () => {
+    const now = () => new Date().toISOString();
+    const pause = () => new Promise((r) => setTimeout(r, 15));
+    await reseal(p, log);
+    await log({ at: now(), t: "turn.start", n: 1, owed: [] });
+    // Kane's evolve re-seals (spec kept): the agent's turn before it still counts
+    await reseal(p, log, undefined, { by: "kane" });
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1 changed after the evolve.\n");
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: true });
+    // a human re-seal (after a tamper) keeps the spec's old hash and does not vouch for it either
+    await reseal(p, log, undefined, { keep: { "app:PRD.md": (await manifest())["app:PRD.md"]! } });
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: true });
+
+    // a drift the human approved interactively is the checkpoint: a later change with no turn since is theirs
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1 approved.\n");
+    await reseal(p, log, undefined, { checkpoint: true });
+    expect((await readEvents(p.ledgerFile)).findLast((e) => e.t === "seal")).toMatchObject({ checkpoint: true });
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1 approved, then edited.\n");
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: false });
+
+    // a write at the spec the guard logged before Kane's seal is still a tamper after it
+    await reseal(p, log, undefined, { checkpoint: true });
+    await pause();
+    logSpecAttempt(p.home, { tool: "Bash", how: "shell" });
+    await pause();
+    await reseal(p, log, undefined, { by: "kane" });
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nWritten past the guard.\n");
+    expect((await settleSpecChange(p, log)).kind).toBe("tamper");
+  });
+
+  it("a human re-seal after a tamper leaves the attempts behind it, but not the agent's turns (I-2)", async () => {
+    const pause = () => new Promise((r) => setTimeout(r, 15));
+    await reseal(p, log);
+    await log({ at: new Date().toISOString(), t: "turn.start", n: 1, owed: [] });
+    await pause();
+    logSpecAttempt(p.home, { tool: "Bash", how: "shell" });
+    await pause();
+    await reseal(p, log); // the human accepted the tamper that attempt caused
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nThe human's later edit.\n");
+    // no deadlock on the old attempt, but the turn before the re-seal keeps it unverified
+    expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: true });
+  });
+
   it("a re-seal that keeps the spec's old hash keeps its old copy too", async () => {
     await reseal(p, log);
     const m = await manifest();

@@ -37,6 +37,7 @@ export class PromptRejected extends Error {
  * the dashboard POSTs its answer. Nothing resolves on its own.
  */
 export class DashboardHumanIO implements HumanIO {
+  readonly interactive = true;
   private waiters: Waiter[] = [];
 
   /** The dashboard is going away: nobody can answer any more, so every waiting run fails instead of hanging. */

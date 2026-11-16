@@ -92,8 +92,9 @@ async function fixture(opts: { seal?: boolean } = {}) {
 }
 
 /** A seal of the app as it is now (a drift approval, say): no agent turn has started since. */
+/** The seal after a drift the human approved interactively: no agent turn before it counts any more (I-2). */
 async function resealNow() {
-  await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+  await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }), checkpoint: true });
 }
 
 /** Like `fixture`, but ac-2 has passed too: every criterion is green. */
@@ -818,7 +819,7 @@ describe("run", () => {
     expect(r.code).toBe(3);
     expect(r.err).toContain("SPEC CHANGED — origin unverified (PRD.md)");
     // it says what Holdback knows, never more: an agent turn ran since the seal, not that the agent made it (N-m8)
-    expect(r.err).toContain("an agent turn has run since the last seal");
+    expect(r.err).toContain("an agent turn has run since the spec was last approved");
     expect(r.err).not.toMatch(/while the agent was working/i);
     expect(r.err).toContain("holdback drift");
   });
@@ -1104,6 +1105,33 @@ describe("drift and watch", () => {
     expect(r.code).toBe(1);
     expect(asked).toHaveLength(1);
     expect(r.err).toContain("origin unverified");
+  });
+
+  it("a spec change after Kane's evolve seal still counts as unverified when agent turns ran since the last human approval: run --answers stops, drift asks the terminal (I-2)", async () => {
+    await greenFixture(); // the agent's turns ran after the spec stage's seal
+    await log({ at, t: "falsify.evolved", uc: "uc-1", because: "b", minted: ["t-4"], retired: ["t-1"], credits: 11, mutants: [] });
+    await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }), by: "kane" });
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\nA rule nobody vouched for.\n");
+    const answers = join(root, "answers.json");
+    writeFileSync(answers, JSON.stringify({ answers: {}, approve: "all" }));
+    const run = await cli(["run", "--no-falsify", "--answers", answers], { runDrift: notCalled("drift") as never, runBuildLoop: notCalled("build") as never, confirm: notCalled("confirm") as never });
+    expect(run.code).toBe(3);
+    expect(run.err).toContain("origin unverified");
+    const asked: string[] = [];
+    const drift = await cli(["drift", "--answers", answers], { runDrift: notCalled("drift") as never, confirm: async (q) => (asked.push(q), false) });
+    expect(drift.code).toBe(1);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("a yes typed in the terminal to an unverified change tells drift so: its seal starts a fresh provenance window (I-2)", async () => {
+    await fixture();
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA rule after a turn.\n");
+    const answers = join(root, "answers.json");
+    writeFileSync(answers, JSON.stringify({ answers: {}, approve: "all" }));
+    const seen: { confirmed?: boolean }[] = [];
+    const runDrift = (async (_p: unknown, _io: unknown, _l: unknown, d: { confirmed?: boolean }) => (seen.push(d), { changed: true, applied: true })) as never;
+    expect((await cli(["drift", "--answers", answers], { runDrift, confirm: async () => true })).code).toBe(0);
+    expect(seen.map((d) => d.confirmed)).toEqual([true]);
   });
 
   it("drift of a change made with no agent turn since the seal shows the diff and asks nothing more (R38)", async () => {

@@ -148,7 +148,13 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       const review = await reviewSpecChange(ctx, p, { allowUnverified: on.allowUnverified === true });
       if ("stop" in review) return review.stop;
       // Kane re-plans, and the seal holds, the spec bytes whose diff was just shown (N-I2)
-      const d = await ctx.deps.runDrift(p, io, log, { balance: ctx.deps.balance, warn: ctx.err, ...capped, ...(review.reviewed ? { reviewed: review.reviewed } : {}) });
+      const d = await ctx.deps.runDrift(p, io, log, {
+        balance: ctx.deps.balance,
+        warn: ctx.err,
+        ...capped,
+        ...(review.reviewed ? { reviewed: review.reviewed } : {}),
+        ...(review.confirmed ? { confirmed: true } : {}),
+      });
       if (d.changed && !d.applied && d.specMoved) return specMovedStop(ctx, d.specMoved, d.reason);
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);

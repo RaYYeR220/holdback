@@ -70,6 +70,8 @@ export type DriftDeps = {
    * re-planned: it is recorded as an unverified change, for the human to review again.
    */
   reviewed?: Record<string, string>;
+  /** The human typed yes in the terminal to this spec change (an unverified one, R38): the drift counts as approved interactively (I-2). */
+  confirmed?: boolean;
 };
 
 export type DriftResult =
@@ -329,8 +331,10 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
   // The spec edit goes in too: left in the work tree, it would land in the agent's next turn commit
   await commitSpec(p, changed, clarifiedBefore, deps.warn, { unverified: latestSpecChange(events)?.duringAgentTurn === true });
   // the seal holds the reviewed bytes (and Holdback's Clarifications), whatever lands on disk now: an
-  // edit after the last check reads as an unverified change on the next run (N-I1, N-I2)
-  await reseal(p, log, gitOpts, pinnedSeal(pin));
+  // edit after the last check reads as an unverified change on the next run (N-I1, N-I2). A drift a
+  // person approved at the moment (not an answers file alone) starts a fresh provenance window (I-2)
+  const checkpoint = io.interactive === true || deps.confirmed === true;
+  await reseal(p, log, gitOpts, { ...pinnedSeal(pin), ...(checkpoint ? { checkpoint } : {}) });
   return { changed: true, applied: true };
 }
 

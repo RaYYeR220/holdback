@@ -76,11 +76,20 @@ export const driftHint = (files: string[]): string =>
 
 type SpecChanged = Extract<LedgerEvent, { t: "spec.changed" }>;
 
-/** The latest `spec.changed` since the latest seal: how Holdback first saw the spec edit a drift is about to re-plan. */
+/**
+ * Where the spec-provenance window starts (I-2): the index of the latest seal after a drift a human
+ * approved interactively, or -1 (the whole ledger: no agent turn comes before the spec stage's seal).
+ * Kane's seal after an evolve and a re-seal after a tamper never start one: neither is a human's
+ * word on the spec.
+ */
+export function provenanceStart(events: LedgerEvent[]): number {
+  return events.findLastIndex((e) => e.t === "seal" && e.checkpoint === true);
+}
+
+/** The latest `spec.changed` in the provenance window: how Holdback first saw the spec edit a drift is about to re-plan. */
 export function latestSpecChange(events: LedgerEvent[]): SpecChanged | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
+  for (let i = events.length - 1; i > provenanceStart(events); i--) {
     const e = events[i]!;
-    if (e.t === "seal") return undefined;
     if (e.t === "spec.changed") return e;
   }
   return undefined;
@@ -115,10 +124,13 @@ export async function specChangeEvent(
 
 /**
  * How a spec change (spec files only, nothing else sealed) seen now is classed (R38, fail closed):
- * - a write at the spec the guard logged since the latest seal makes it a tamper;
- * - otherwise it counts as the human's only when no agent turn started since that seal, no agent
- *   runs right now (`agentRunning`), and no record since the seal already calls it unverified (an
- *   unverified record stays so until the next seal or drift approval).
+ * - a write at the spec the guard logged since the latest human seal (any but Kane's) makes it a
+ *   tamper; a re-seal after a tamper leaves the attempt behind, so the tamper it caused does not
+ *   fire again forever;
+ * - otherwise it counts as the human's only when no agent turn started in the provenance window
+ *   (since the latest drift a human approved interactively, `provenanceStart`: Kane's seal and a
+ *   re-seal do not end it, I-2), no agent runs right now (`agentRunning`), and no record in that
+ *   window already calls it unverified.
  * `event`: the `spec.changed` to log, or undefined when the latest record already says the same.
  */
 export async function classifySpecChange(
@@ -128,11 +140,11 @@ export async function classifySpecChange(
   files: string[],
   agentRunning: boolean,
 ): Promise<{ tamper: string } | { unverified: boolean; event?: Omit<SpecChanged, "at"> }> {
-  const sealAt = events.findLastIndex((e) => e.t === "seal");
-  const sinceMs = sealAt < 0 ? 0 : Date.parse(events[sealAt]!.at) || 0;
+  const humanSeal = events.findLastIndex((e) => e.t === "seal" && e.by !== "kane");
+  const sinceMs = humanSeal < 0 ? 0 : Date.parse(events[humanSeal]!.at) || 0;
   const tries = await specAttemptsSince(p.home, sinceMs);
   if (tries.length > 0) return { tamper: `the spec changed (${files.join(", ")}) after the agent tried to write it: ${attemptsText(tries)}` };
-  const turned = events.slice(sealAt + 1).some((e) => e.t === "turn.start");
+  const turned = events.slice(provenanceStart(events) + 1).some((e) => e.t === "turn.start");
   const unverified = agentRunning || turned || latestSpecChange(events)?.duringAgentTurn === true;
   const event = await specChangeEvent(p, events, manifest, files, unverified);
   return event ? { unverified, event } : { unverified };
@@ -312,7 +324,7 @@ export async function reseal(p: Project, log: Log, git?: GitOptions, opts: Resea
   // an unreadable ledger throws here: nothing is sealed and the marker stays
   if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
   const manifest = { ...(await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) })), ...opts.keep };
-  await log({ at: at(), t: "seal", manifest, ...(opts.by ? { by: opts.by } : {}) });
+  await log({ at: at(), t: "seal", manifest, ...(opts.by ? { by: opts.by } : {}), ...(opts.checkpoint ? { checkpoint: true as const } : {}) });
   // a spec that differs from what this seal holds for it (a kept old hash, or bytes that moved while
   // it sealed) was never accepted by it: its change stays unverified past this seal, until a drift
   // the human approves in the terminal re-plans it (N-I1)
@@ -338,6 +350,8 @@ export type ResealOptions = {
   copies?: Record<string, Buffer>;
   /** `kane`: Kane authored the change this seal accepts (its evolve of a use case's tests, R40). */
   by?: "kane";
+  /** The seal after a drift a human approved interactively: it starts a fresh spec-provenance window (I-2). */
+  checkpoint?: boolean;
 };
 
 /** What a stage that changes no spec seals for it: each spec entry kept as `manifest` holds it (N-I2). */

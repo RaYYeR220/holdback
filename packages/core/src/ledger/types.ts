@@ -18,8 +18,12 @@ export type LedgerEvent = { at: string } & (
   | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number; rejected?: string[]; notes?: Record<string, string> }
   /** The spec stage's extraction finished for the spec files and links as they hash to `hash`: a resumed stage need not ingest again. */
   | { t: "spec.extracted"; hash: string }
-  /** `by: "kane"`: the seal after Kane's evolve of a use case, whose new tests Kane authored (R40). */
-  | { t: "seal"; manifest: Record<string, string>; by?: "kane" }
+  /**
+   * `by: "kane"`: the seal after Kane's evolve of a use case, whose new tests Kane authored (R40).
+   * `checkpoint`: the seal after a drift a human approved interactively (I-2): the only seal that
+   * starts a fresh spec-provenance window (agent turns and records before it no longer count).
+   */
+  | { t: "seal"; manifest: Record<string, string>; by?: "kane"; checkpoint?: true }
   | { t: "turn.start"; n: number; owed: string[] }
   | {
       t: "turn.end";

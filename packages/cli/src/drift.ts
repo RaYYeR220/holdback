@@ -19,10 +19,12 @@ export async function driftCmd(caller: Ctx, o: { answers?: string; dashboard?: b
     const locked = await withCheckLock(ctx, p, async () => {
       const s = await snapshot(p);
       let reviewed: Record<string, string> | undefined;
+      let confirmed = false;
       if (s.tamper === null && s.specChanged.length > 0) {
         const review = await reviewSpecChange(ctx, p, { allowUnverified: true });
         if ("stop" in review) return review.stop === EXIT.unfinished ? EXIT.error : review.stop;
         reviewed = review.reviewed;
+        confirmed = review.confirmed === true;
       }
       const kaneCap = parseKaneCap(o.kaneCap);
       r = await ctx.deps.runDrift(p, io, ledgerLog(p), {
@@ -30,6 +32,7 @@ export async function driftCmd(caller: Ctx, o: { answers?: string; dashboard?: b
         warn: ctx.err,
         ...(kaneCap === undefined ? {} : { kaneCap }),
         ...(reviewed === undefined ? {} : { reviewed }),
+        ...(confirmed ? { confirmed } : {}),
       });
       return EXIT.ok;
     });

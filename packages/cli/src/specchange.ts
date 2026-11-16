@@ -5,9 +5,10 @@ import { driftNotice, tamperMessage, unverifiedDrift } from "./messages.js";
 /**
  * What the review before a drift decided: `stop` with an exit code, or go on with `reviewed`, the
  * sha256 of each changed spec file as its diff was shown (N-I2): drift re-plans and seals only those
- * bytes. `reviewed` is undefined when the spec is not what changed.
+ * bytes. `reviewed` is undefined when the spec is not what changed. `confirmed`: the human typed yes
+ * in the terminal to an unverified change, so the drift's seal starts a fresh provenance window (I-2).
  */
-export type SpecReview = { stop: number } | { reviewed?: Record<string, string> };
+export type SpecReview = { stop: number } | { reviewed?: Record<string, string>; confirmed?: true };
 
 /**
  * Before a drift re-plans a spec change (`run`, `watch`, `drift`): Holdback classes it and logs what
@@ -33,7 +34,7 @@ export async function reviewSpecChange(ctx: Ctx, p: Project, opts: { allowUnveri
     ctx.err("Nothing applied. Undo the change if it is not yours, then save the spec again (or run `holdback drift` once you have reviewed it).");
     return { stop: EXIT.unfinished };
   }
-  return { reviewed };
+  return { reviewed, confirmed: true };
 }
 
 /**

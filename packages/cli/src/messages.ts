@@ -32,7 +32,7 @@ export function driftNotice(changed: string[]): string {
 
 /**
  * Why `run` stops, without re-planning, on a spec change whose origin Holdback cannot vouch for (R37,
- * R38): an agent turn has run since the last seal, so it may be the coding agent's. It says only that,
+ * R38): an agent turn has run since the spec was last approved (I-2), so it may be the coding agent's. It says only that,
  * not that the agent was working when the change landed (N-m8). Only the human, through
  * `holdback drift`, may accept it.
  */
@@ -40,7 +40,7 @@ export function unverifiedDrift(files: string[], movedAfterReview?: string): str
   const f = files.map((k) => k.replace(/^app:/, ""));
   const why = movedAfterReview
     ? `${movedAfterReview}. Holdback cannot tell who made that change, so it sealed nothing.`
-    : "Holdback cannot tell who made it: an agent turn has run since the last seal, so it may be the coding agent's.";
+    : "Holdback cannot tell who made it: an agent turn has run since the spec was last approved, so it may be the coding agent's.";
   return [
     `SPEC CHANGED — origin unverified (${f.join(", ")}).`,
     `${why} Review the diff (\`git diff -- ${f.join(" ")}\`), then run \`holdback drift\`: it asks you to accept the change as yours before Kane re-plans anything.`,
