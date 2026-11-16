@@ -183,6 +183,13 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       ctx.out("Gate open: falsifying the passing criteria with planted bugs");
       const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err, evolves, ...capped });
       falsified = f;
+      // every planted bug that got past the tests, and why Kane did not evolve its use case (R44):
+      // the human's own output, never `status` (I-4)
+      for (const v of f.survivors ?? []) {
+        const tag = v.recheck ? ", re-checked" : v.earlier ? ", from an earlier pass" : "";
+        ctx.out(`A planted bug got past the tests: ${v.ac} (${v.mutant}${tag}): ${v.slip}`);
+      }
+      for (const n of f.notEvolved ?? []) ctx.out(`Not sent to Kane: ${n.acs.join(", ")} (${n.uc}): ${n.why}`);
       stop = falsifyStop(f);
       if (f.reason === "drift") on.drifted?.(f.specChange?.duringAgentTurn === true);
       if (stop) break;

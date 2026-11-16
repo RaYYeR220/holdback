@@ -90,6 +90,14 @@ export type FalsifyResult = {
   replayError?: string;
   /** For a `drift` stop on a spec that moved while Kane evolved the tests (N-I2): what changed; its origin is unverified. */
   specChange?: { files: string[]; duringAgentTurn: boolean };
+  /**
+   * Every planted bug that got past the tests in this pass (or an earlier pass's, sent to Kane in
+   * this one: `earlier`): the criterion, the mutant and the slip in plain words. For the human's own
+   * output (`holdback run`), never `status` (I-4).
+   */
+  survivors?: { ac: string; mutant: string; slip: string; recheck?: true; earlier?: true }[];
+  /** Survivors whose use case Kane did not evolve in this pass, and why (R44). */
+  notEvolved?: { uc: string; acs: string[]; why: string }[];
 };
 
 const MUT_DIR = "mut";
@@ -130,7 +138,11 @@ function recentChanges(events: LedgerEvent[]): string[] {
   return out;
 }
 
-/** R40: at most this many `maintain evolve` calls per use case per run (the evolve and one follow-up). */
+/**
+ * R40, R44: at most this many survivor-triggered `maintain evolve` calls per use case per run. Each
+ * may be followed by one cover evolve (criteria its new set left without a test), which does not
+ * count; the Kane credit cap still bounds them all.
+ */
 export const MAX_EVOLVES = 2;
 /** The longest `--because` Holdback sends Kane. */
 const MAX_BECAUSE = 1500;
@@ -202,6 +214,12 @@ export function pendingRecheck(events: LedgerEvent[], ac: { id: string; useCase:
 
 /** Why a survivor whose use case Kane did not get to evolve this run stays vacuous for now: the next pass tries again (m-2). */
 export const EVOLVE_BOUND = "Kane already evolved this use case twice in this run: the next `holdback run` tries again";
+/** Why a re-checked survivor is not sent to Kane again. */
+export const RECHECK_SURVIVED = "the planted bug got past Kane's evolved tests too, so Kane is not asked again in this run";
+/** Why survivors wait when the pass stopped before their evolve. */
+const STOPPED = "the run was stopped before Kane could evolve its tests";
+/** Why survivors wait when the spec changed during the pass. */
+const SPEC_MOVED = "the spec changed during the pass: run `holdback drift`, then `holdback run`";
 export const EVOLVE_CAP = "the Kane credit cap was reached before Kane could evolve its tests";
 
 /**
@@ -492,6 +510,13 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   const allowedPaths = new Set<string>();
 
   const at = () => new Date().toISOString();
+  /** A survivor named for the human's output: the slip in plain words, else the breaker's rationale. */
+  const named = (ac: string, mutant: string, slip: Slip | undefined, rationale: string, extra: { recheck?: true; earlier?: true } = {}) =>
+    void (out.survivors ??= []).push({ ac, mutant, slip: oneLine(slip?.behaviour || rationale || "a planted change"), ...extra });
+  /** Survivors of `uc` Kane did not evolve in this pass, and why. */
+  const notEvolved = (uc: string, acs: string[], why: string) => {
+    if (acs.length > 0) (out.notEvolved ??= []).push({ uc, acs, why });
+  };
   /** Every append goes through the same integrity check as the build loop's. */
   const append = async (e: LedgerEvent) => {
     if (!mark) throw new Error("internal: ledger not read before the first append");
@@ -618,9 +643,13 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       });
       for (const r of results) await emit({ t: "run", kind: "falsify", mutantId: id, result: r });
       (verdict === "killed" ? out.killed : verdict === "invalid" ? out.invalid : out.survived).push(ac.id);
+      const survived = verdict === "survived" || verdict === "survived-by-heal";
+      if (survived) named(ac.id, id, slip, rationale, recheck ? { recheck: true } : {});
       // a re-checked survivor never goes back to Kane: killed proves it, anything else leaves it vacuous
-      if (recheck && verdict !== "killed") out.vacuous.push(ac.id);
-      else if (verdict === "survived" || verdict === "survived-by-heal") survivors.push({ ac, id, patch, rationale, ...(slip ? { slip } : {}) });
+      if (recheck && verdict !== "killed") {
+        out.vacuous.push(ac.id);
+        if (survived) notEvolved(ac.useCase, [ac.id], RECHECK_SURVIVED);
+      } else if (survived) survivors.push({ ac, id, patch, rationale, ...(slip ? { slip } : {}) });
     };
     // at the Kane credit cap no batch could judge the mutant: never pay the breaker for one (N-m2)
     await meter.assertBudget();
@@ -787,10 +816,13 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     const giveUp = async (detail: string, credits: number, reason = NO_TEST) => {
       out.redesignError = detail;
       out.vacuous.push(...ids);
+      notEvolved(uc, ids, reason === NO_TEST ? `${NO_TEST}: ${detail}` : reason);
       await emit({ t: "redesign.dropped", useCases: [uc], detail, credits, acs: ids, reason });
       return undefined;
     };
     if (spent >= MAX_EVOLVES) return giveUp(`Kane already evolved ${uc} ${MAX_EVOLVES} times in this run`, 0, EVOLVE_BOUND);
+    // R44: only this survivor-triggered evolve counts toward the run's bound; its follow-up does not
+    evolves.set(uc, spent + 1);
     const because = becauseText(list);
     const first = await evolveOnce(uc, because, list);
     if ("stray" in first) return strayTamper(uc, first.stray, first.credits);
@@ -802,8 +834,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     if (left.length > 0) {
       // measured as the ledger will be once this evolve is logged
       const capped = capCredits !== undefined && reduce([...events, ...(out_ as LedgerEvent[])]).kaneCredits >= capCredits;
-      if (evolves.get(uc)! >= MAX_EVOLVES) why = `${UNCOVERED}; no follow-up evolve: ${uc} was evolved ${MAX_EVOLVES} times in this run`;
-      else if (capped) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
+      if (capped) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
       else {
         const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
         // the follow-up may retire what the first evolve minted, as it may the sealed tests
@@ -854,7 +885,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   };
 
   /**
-   * One `maintain evolve` of `uc`: a metered Kane batch, counted against the run's bound. Kane's new
+   * One `maintain evolve` of `uc`: a metered Kane batch (the caller counts it against the run's bound). Kane's new
    * set is checked before anything is logged: it minted a test with a file, changed no sealed verifier
    * entry but its minted tests and the tests of this use case it retired, and still holds every
    * criterion of the use case. Otherwise the verifier is put back as it was before this call and the
@@ -869,7 +900,6 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     /** Tests an earlier evolve of this use case retired in this pass (the ledger still has them live). */
     priorRetired: string[] = [],
   ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
-    evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
     /** A verifier path exactly: relative to the verifier, `/`-separated. The allowlist matches only these. */
     const key = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
     /** The same, case-folded on every platform: only to catch a collision (a duplicate, a shared file), which is stricter. */
@@ -1144,6 +1174,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     for (const m of unevolvedSurvivors(events)) {
       const ac = state.acs[m.ac]!;
       survivors.push({ ac, id: m.id, patch: m.patch, rationale: "", ...(m.slip ? { slip: m.slip } : {}) });
+      named(m.ac, m.id, m.slip, "", { earlier: true });
     }
     const budget = new Budget(p.config.breaker.capUsd, state.breakerUsd);
     const fileOf = testFileMap(events, p.verifierDir);
@@ -1192,7 +1223,12 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       drifted = specDrift.length > 0;
       if (drifted) driftFiles = specDrift;
     }
-    if (drifted) out.vacuous.push(...survivors.map((s) => s.ac.id));
+    if (drifted || aborted) {
+      if (drifted) out.vacuous.push(...survivors.map((s) => s.ac.id));
+      for (const uc of [...new Set(survivors.map((s) => s.ac.useCase))].sort()) {
+        notEvolved(uc, survivors.filter((s) => s.ac.useCase === uc).map((s) => s.ac.id), drifted ? SPEC_MOVED : STOPPED);
+      }
+    }
     /** The Kane credit cap met at a use case's evolve (m-1): the rest wait, what passed is still sealed. */
     let capStop: string | undefined;
     // R40: each use case with a survivor goes back to Kane, which evolves its tests
@@ -1221,6 +1257,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           }
           const ids = list.map((s) => s.ac.id);
           out.vacuous.push(...ids);
+          notEvolved(uc, ids, EVOLVE_CAP);
           await emit({ t: "redesign.dropped", useCases: [uc], detail: `no evolve of ${uc}: ${capStop}`, credits: 0, acs: ids, reason: EVOLVE_CAP });
         }
         if (evolved.length > 0) {
@@ -1263,6 +1300,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
               reason: "the spec changed while Kane evolved its tests, so nothing was sealed: run `holdback drift`, then `holdback run`",
             });
             out.vacuous.push(...ids);
+            for (const uc of evolved) notEvolved(uc, survivors.filter((s) => s.ac.useCase === uc).map((s) => s.ac.id), SPEC_MOVED);
             out.specChange = { files: moved, duringAgentTurn: true };
             drifted = true;
             driftFiles = moved;

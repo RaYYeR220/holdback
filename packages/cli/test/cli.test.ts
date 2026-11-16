@@ -793,6 +793,26 @@ describe("run", () => {
     expect(r.code).toBe(3);
   });
 
+  it("names every planted bug that got past the tests, in plain words, and why Kane did not evolve its use case (R44)", async () => {
+    await greenFixture();
+    const s = stages();
+    s.deps.runFalsify = async () => {
+      s.calls.push("falsify");
+      await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "survived" });
+      return {
+        ...falsifyOk,
+        survived: ["ac-1"],
+        vacuous: ["ac-1"],
+        survivors: [{ ac: "ac-1", mutant: "m-ac-1-1", slip: "A one-person household at exactly $2,461 is told it is not eligible\u001b[31m." }],
+        notEvolved: [{ uc: "uc-1", acs: ["ac-1"], why: "Kane already evolved this use case twice in this run: the next `holdback run` tries again" }],
+      };
+    };
+    const r = await cli(["run"], s.deps);
+    expect(r.code).toBe(3);
+    expect(r.out).toContain("A planted bug got past the tests: ac-1 (m-ac-1-1): A one-person household at exactly $2,461 is told it is not eligible\\x1b[31m.");
+    expect(r.out).toContain("Not sent to Kane: ac-1 (uc-1): Kane already evolved this use case twice in this run: the next `holdback run` tries again");
+  });
+
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {
     await greenFixture();
     await resealNow();

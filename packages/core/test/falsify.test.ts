@@ -1121,6 +1121,42 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(tl.indexOf("falsify.evolved")).toBeLessThan(tl.indexOf("redesign.dropped"));
   });
 
+  it("a follow-up cover evolve does not count toward the run's bound: after one evolve and its follow-up, a later survivor is still evolved (R44)", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({
+      mutantRun: survives3,
+      evolve: (n, kit) => {
+        // the first evolve loses ac-1; the follow-up covers it again
+        if (n === 0) kit.mint("t-4", ["ac-3"]);
+        else kit.mint("t-5", ["ac-1"]);
+        kit.retire("t-1", "t-3");
+        return n === 0 ? EVOLVED : { ...EVOLVED, minted: [{ scenario: "sc-5", test: "t-5" }], superseded: [], credits: 5 };
+      },
+    });
+    // one survivor-triggered evolve of uc-1 already happened in this run, followed by its cover evolve
+    const evolves = new Map([["uc-1", 1]]);
+    const r = await runFalsify(p, deps, io, log, { evolves });
+    expect(r.redesigned).toEqual(["uc-1"]);
+    expect(calls.evolve).toHaveLength(2); // the evolve and its follow-up both ran
+    expect(evolves.get("uc-1")).toBe(2); // only the survivor's evolve counted
+    expect(r.evolved?.map((e) => e.followUp === true)).toEqual([false, true]);
+  });
+
+  it("names every survivor of the pass, with the slip in plain words, and why one was not sent to Kane (R44)", async () => {
+    await setup();
+    const { deps, io } = fakes({ mutantRun: survives3 });
+    const r = await runFalsify(p, deps, io, log, { evolves: new Map([["uc-1", 2]]) });
+    expect(r.survivors).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", slip: SLIP["ac-3"]!.behaviour }]);
+    expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-3"], why: "Kane already evolved this use case twice in this run: the next `holdback run` tries again" }]);
+  });
+
+  it("names a survivor the breaker did not describe by its rationale", async () => {
+    await setup();
+    const { deps, io } = fakes({ mutantRun: survives3, noSlip: true });
+    const r = await runFalsify(p, deps, io, log, { evolves: new Map([["uc-1", 2]]) });
+    expect(r.survivors).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", slip: "breaks ac-3" }]);
+  });
+
   it("a credit cap reached at a later use case's evolve keeps the earlier use case's evolve; the later survivors stay vacuous with that reason (m-1)", async () => {
     await setup({
       before: async () => {
@@ -1425,7 +1461,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const { deps, io, calls } = fakes({
       mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : (f) => ({ ...pass(f), healTriggered: true })),
     });
-    // this run already evolved uc-1 twice (an evolve and its follow-up)
+    // this run already evolved uc-1 twice after a survivor (each perhaps with a follow-up)
     const evolves = new Map([["uc-1", 2]]);
     const r = await runFalsify(p, deps, io, log, { evolves });
     expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], invalid: [], redesigned: [], vacuous: ["ac-3"], reason: "done" });
