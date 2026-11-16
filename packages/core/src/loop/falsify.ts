@@ -237,6 +237,8 @@ export const EVOLVE_BOUND = "Kane already evolved this use case twice in this ru
 export const RECHECK_SURVIVED = "the planted bug got past Kane's evolved tests too, so Kane is not asked again";
 /** Why survivors wait when the pass stopped before their evolve. */
 const STOPPED = "the run was stopped before Kane could evolve its tests";
+/** Why survivors wait when the pass stopped on an error before their evolve. */
+const STOPPED_ON_ERROR = "the pass stopped on an error before Kane could evolve its tests";
 /** Why survivors wait when the spec changed during the pass. */
 const SPEC_MOVED = "the spec changed during the pass: run `holdback drift`, then `holdback run`";
 export const EVOLVE_CAP = "the Kane credit cap was reached before Kane could evolve its tests";
@@ -1421,11 +1423,23 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     }
   };
 
+  /** A pass that stopped before Kane got to its survivors still says why, for each one no line names yet (wave-4 m-2). */
+  const unevolvedOnStop = (why: string) => {
+    const said = new Set((out.notEvolved ?? []).flatMap((n) => n.acs));
+    for (const uc of [...new Set(survivors.map((s) => s.ac.useCase))].sort()) {
+      if (out.redesigned.includes(uc)) continue;
+      notEvolved(uc, survivors.filter((s) => s.ac.useCase === uc && !said.has(s.ac.id)).map((s) => s.ac.id), why);
+    }
+  };
   try {
     return await finalize(await run());
   } catch (e) {
-    if (e instanceof KaneCapReached) return await finalize(result("kane-budget", e.message));
+    if (e instanceof KaneCapReached) {
+      unevolvedOnStop(EVOLVE_CAP);
+      return await finalize(result("kane-budget", e.message));
+    }
     if (e instanceof EvolveTampered) return await finalize(result("tamper", e.message));
+    unevolvedOnStop(STOPPED_ON_ERROR);
     return await finalize(result("error", errText(e)), e);
   } finally {
     await stopApp().catch(() => {});

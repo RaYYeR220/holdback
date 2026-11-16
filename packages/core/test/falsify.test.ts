@@ -1655,6 +1655,31 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
   });
 
+  it("a pass stopped by the Kane credit cap after a survivor still says why Kane did not evolve its use case (wave-4 m-2)", async () => {
+    await setup();
+    let bal = 1000;
+    const capped = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? pass : failOn(ac)) });
+    const tests = capped.deps.tests;
+    capped.deps.tests = async (...a) => ((bal -= 10), tests(...a));
+    capped.deps.balance = async () => bal;
+    // the fixture has 12 credits on record; ac-1's replay spends 10 more, past a cap of 20
+    const r = await runFalsify(p, capped.deps, capped.io, log, { kaneCap: 20 });
+    expect(r).toMatchObject({ reason: "kane-budget", survived: ["ac-1"] });
+    expect(r.survivors).toEqual([{ ac: "ac-1", mutant: "m-ac-1-1", slip: SLIP["ac-1"]!.behaviour }]);
+    expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-1"], why: "the Kane credit cap was reached before Kane could evolve its tests" }]);
+  });
+
+  it("a pass stopped by an error after a survivor says why Kane did not evolve its use case (wave-4 m-2)", async () => {
+    await setup();
+    const { deps, io } = fakes({
+      mutantRun: (ac, files) => files.map(ac === "ac-1" ? pass : failOn(ac)),
+      chatError: (ac) => (ac === "ac-3" ? new Error("disk full") : undefined),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ reason: "error", error: "disk full" });
+    expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-1"], why: "the pass stopped on an error before Kane could evolve its tests" }]);
+  });
+
   it("checks the Kane credit cap before the breaker's paid call: at the cap, no breaker spend and no mutant (N-m2)", async () => {
     await setup();
     const since = (await readEvents(p.ledgerFile)).length;
