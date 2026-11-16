@@ -806,8 +806,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           const opts = { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: replays };
           results = (await runSettled(deps.tests, cwd, files, opts, relaunch(dir, port, id))).map((r, i) => attribute(r, files[i]!));
           // R44: a kill counts only when a second replay of that same test, on the same mutant started
-          // afresh, fails the criterion again for the app's fault; a pure replay costs no Kane credits
-          // (Kane's verdict on a failure does). The first killing test that reproduces is enough.
+          // afresh, fails the criterion again for the app's fault. It is not free: Kane bills its verdict
+          // on a replay that fails (about 3 credits in the rehearsal). The first killing test that
+          // reproduces is enough.
           if (falsifyVerdict(ac.id, results).verdict === "killed") {
             unconfirmed = [];
             for (const [i, r] of results.entries()) {
