@@ -988,6 +988,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(r).toMatchObject({ redesigned: ["uc-1"], reason: "done" });
       expect(reduce(await readEvents(p.ledgerFile)).acs["ac-12"]).toMatchObject({ useCase: "uc-1", tests: ["t-4"] });
     });
+
   });
 
   it("rolls Kane's evolve back when it reports a minted test the verifier has no file of", async () => {
@@ -1088,6 +1089,40 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const r = await runFalsify(p, deps, io, log, { kaneCap: 16 });
     expect(r).toMatchObject({ killed: ["ac-3"], survived: ["ac-1"], reason: "kane-budget" });
     expect(calls.evolve).toEqual([]);
+    expect(existsSync(testFile("t-4"))).toBe(false);
+  });
+
+  it("a config edited while Kane evolves the tests is never sealed: the evolve is rolled back and the change is a tamper (I-1)", async () => {
+    await setup();
+    const sealsBefore = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
+    const { deps, io } = fakes({ mutantRun: survives3, onEvolve: () => writeFileSync(join(appDir, "holdback.config.json"), '{"start":{"cmd":"evil"}}') });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    const all = await readEvents(p.ledgerFile);
+    expect(all.filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+    expect(all.some((e) => e.t === "falsify.evolved")).toBe(false);
+    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ credits: 11.39, acs: ["ac-3"] });
+    expect(reduce(all).tampered).toBe(true);
+    expect(await tamperMarker(p)).toContain("holdback.config.json");
+    expect(existsSync(testFile("t-4"))).toBe(false);
+  });
+
+  it("a sealed verifier file changed after Kane's evolve was checked is caught before the seal: every change since the pass's copy must be one an evolve was allowed (I-1)", async () => {
+    await setup();
+    const sealsBefore = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
+    const { deps, io } = fakes({ mutantRun: survives3 });
+    // balance is read before and after each Kane batch: the 6th read follows the evolve's own check
+    let reads = 0;
+    deps.balance = async () => {
+      if (++reads === 6) writeFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), JSON.stringify({ start_url: { value: "http://evil.example/" } }));
+      return 100;
+    };
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe("tamper");
+    const all = await readEvents(p.ledgerFile);
+    expect(all.filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+    expect(all.some((e) => e.t === "falsify.evolved")).toBe(false);
+    expect(await tamperMarker(p)).toContain(".testmuai/variables/assurance.json");
     expect(existsSync(testFile("t-4"))).toBe(false);
   });
 

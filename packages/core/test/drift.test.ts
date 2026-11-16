@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -542,6 +542,99 @@ describe("runDrift", { timeout: 60_000 }, () => {
       const sealAt = events.findLastIndex((e) => e.t === "seal");
       expect((events[sealAt] as Extract<LedgerEvent, { t: "seal" }>).manifest["app:PRD.md"]).toBe(reviewedHash);
       expect(events.slice(sealAt).find((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true, after: { "PRD.md": sha(prd()) } });
+    });
+
+    const config = () => join(p.appDir, "holdback.config.json");
+    it("a config edited while Kane re-plans is never sealed: the re-plan is rolled back and the change is a tamper (I-1)", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const sealAt = await lastSealIndex();
+      const calls: Calls = [];
+      const kane = fakeKane(calls);
+      const design = kane.designTests;
+      kane.designTests = async (...a) => {
+        writeFileSync(config(), '{"start":{"cmd":"evil"}}');
+        return design(...a);
+      };
+      await expect(runDrift(p, human(calls, all), log, { kane, reviewed })).rejects.toThrow(/holdback\.config\.json/);
+      const events = await readEvents(p.ledgerFile);
+      expect(events.findLastIndex((e) => e.t === "seal")).toBe(sealAt);
+      expect(reduce(events).tampered).toBe(true);
+      expect(await tamperMarker(p)).toContain("holdback.config.json");
+      expect(existsSync(join(p.verifierDir, T2))).toBe(false);
+    });
+
+    it("a config edited after the last check is not sealed either: the seal holds the config as drift found it, and the change is a tamper (I-1)", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const before = existsSync(config()) ? sha(readFileSync(config())) : "absent";
+      const calls: Calls = [];
+      const late = async (e: LedgerEvent) => {
+        await log(e);
+        if (e.t === "design") writeFileSync(config(), '{"start":{"cmd":"evil"}}');
+      };
+      expect(await runDrift(p, human(calls, all), late, { kane: fakeKane(calls), reviewed })).toEqual({ changed: true, applied: true });
+      const events = await readEvents(p.ledgerFile);
+      const sealAt = events.findLastIndex((e) => e.t === "seal");
+      expect((events[sealAt] as Extract<LedgerEvent, { t: "seal" }>).manifest["app:holdback.config.json"]).toBe(before);
+      expect(events.slice(sealAt).some((e) => e.t === "tamper")).toBe(true);
+      expect(await tamperMarker(p)).toContain("holdback.config.json");
+    });
+
+    it("drift handed a review that lacks a changed file treats it as moved (m-6)", async () => {
+      editPrd();
+      const calls: Calls = [];
+      const r = await runDrift(p, human(calls, all), log, { kane: fakeKane(calls), reviewed: {} });
+      expect(r).toMatchObject({ changed: true, applied: false, specMoved: ["PRD.md"] });
+      expect(calls).toEqual([]);
+    });
+  });
+
+  describe("a spec in more than one file (m-4, m-5)", () => {
+    const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
+    const RULES = "# Rules\n\nRule A.\n";
+    beforeEach(async () => {
+      writeFileSync(join(p.appDir, "holdback.config.json"), JSON.stringify({ spec: ["PRD.md", "rules.md"] }));
+      writeFileSync(join(p.appDir, "rules.md"), RULES);
+      writeFileSync(join(p.verifierDir, "rules.md"), RULES);
+      p = await loadProject(p.appDir);
+      await log({ at, t: "spec.ingested", sources: [{ id: "prd", cid: "sha256:abc", status: "created", file: "PRD.md" }, { id: "rules", cid: "sha256:def", status: "created", file: "rules.md" }] });
+      await reseal(p, log);
+    });
+
+    it("a Clarification Holdback appends to a spec file that did not change is pinned with it, never read as someone else's edit", async () => {
+      writeFileSync(join(p.appDir, "rules.md"), "# Rules\n\nRule A.\nRule B.\n");
+      const reviewed = { "rules.md": sha(readFileSync(join(p.appDir, "rules.md"))) };
+      const calls: Calls = [];
+      const kane = fakeKane(calls);
+      const reconcile = kane.reconcile;
+      kane.reconcile = async (cwd, file, id, mode) =>
+        mode === "plan"
+          ? {
+              status: "paused",
+              verb: "reconcile",
+              sid: "r1",
+              resume: "kane-cli maintain reconcile --resume r1 --mode agent",
+              questions: [{ id: "q1", text: "Does rule B apply to SNAP households?", risk: "low", rationale: "", options: [{ label: "Yes" }], recommendedIndex: 0, allowFreeText: false }],
+              credits: 1,
+            }
+          : reconcile(cwd, file, id, mode);
+      kane.resumeSession = async () => ({ status: "complete", rows: [MODIFY], summary: {}, credits: 4 });
+      const io = { ...human(calls, all), answer: async () => ({ q1: "Yes" }) };
+      expect(await runDrift(p, io, log, { kane, reviewed })).toEqual({ changed: true, applied: true });
+      const prd = readFileSync(join(p.appDir, "PRD.md"));
+      expect(prd.toString()).toContain("- Q: Does rule B apply to SNAP households? — A: Yes");
+      const manifest = (await sealed()).manifest;
+      expect(manifest["app:PRD.md"]).toBe(sha(prd));
+      expect(manifest["app:rules.md"]).toBe(reviewed["rules.md"]);
+    });
+
+    it("a spec file the human deleted, reviewed as absent, is not taken for one that changed again (m-5)", async () => {
+      rmSync(join(p.appDir, "rules.md"));
+      const calls: Calls = [];
+      const r = await runDrift(p, human(calls, all), log, { kane: fakeKane(calls), reviewed: { "rules.md": "absent" } });
+      expect(r).not.toMatchObject({ specMoved: expect.anything() });
+      expect(calls[0]).toBe("reconcile:plan:rules.md:rules");
     });
   });
 

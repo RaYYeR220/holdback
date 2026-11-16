@@ -26,6 +26,8 @@ import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed, stateDiffersFrom, verifierDiffersFrom } from "./falsify.js";
 import type { HumanIO } from "./human.js";
 import {
+  appPinOf,
+  appMovedFrom,
   checkSpecPaths,
   clarifiedFile,
   classifySpecChange,
@@ -146,11 +148,20 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     throw new Error(`drift refused: ${anchor.moved.join(", ")} changed since Holdback last recorded them`);
   }
 
-  // N-I2: the bytes of each changed spec file, read once: what Kane re-plans and the seal holds, plus
-  // the Clarifications Holdback appends meanwhile. They must be the bytes the human reviewed
+  // N-I2: the bytes of every spec file, read once: what Kane re-plans and the seal holds, plus the
+  // Clarifications Holdback appends meanwhile (m-4: the unchanged files too, at the bytes the last
+  // seal hashed, so an append to one is Holdback's, and an edit to one is never sealed). A changed
+  // file must be the bytes the human reviewed; a deleted one is pinned as absent (m-5)
   const pin: SpecPin = { bytes: new Map() };
   const norm = (rel: string) => specFileOf(appSealKey(rel));
-  for (const rel of changed) pin.bytes.set(norm(rel), await readFile(path.join(p.appDir, ...rel.split("/"))).catch(() => Buffer.alloc(0)));
+  const readSpec = (rel: string) => readFile(path.join(p.appDir, ...rel.split("/"))).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? null : Promise.reject(e)));
+  for (const rel of specs) pin.bytes.set(norm(rel), await readSpec(rel));
+  const pinHashOf = (rel: string) => {
+    const b = pin.bytes.get(norm(rel));
+    return b === null || b === undefined ? "absent" : createHash("sha256").update(b).digest("hex");
+  };
+  /** Every app-side file as this drift pinned it (I-1): the config as the last seal holds it, the spec as pinned. */
+  const appPin = () => ({ ...appPinOf(p, manifest), ...pinnedSeal(pin).keep });
   /**
    * The spec moved away from what the human reviewed: an unverified change on record (a tamper when
    * the guard logged a write at the spec since the seal), never one Kane re-plans or Holdback seals.
@@ -164,7 +175,7 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     if (c.event) await emit(c.event);
     return { changed: true, applied: false, reason, specMoved: files };
   };
-  const reviewedAway = (rel: string) => deps.reviewed !== undefined && deps.reviewed[norm(rel)] !== createHash("sha256").update(pin.bytes.get(norm(rel))!).digest("hex");
+  const reviewedAway = (rel: string) => deps.reviewed !== undefined && deps.reviewed[norm(rel)] !== pinHashOf(rel);
   const away = changed.filter(reviewedAway);
   if (away.length > 0) return specMoved(away.map(norm), `the spec changed again after you reviewed it (${away.map(norm).join(", ")}): nothing was re-planned; review it again`);
 
@@ -240,7 +251,9 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
       for (const rel of changed) {
         const dest = path.join(cwd, rel);
         await mkdir(path.dirname(dest), { recursive: true });
-        await writeFile(dest, pin.bytes.get(norm(rel))!);
+        const bytes = pin.bytes.get(norm(rel))!;
+        if (bytes === null) await rm(dest, { force: true });
+        else await writeFile(dest, bytes);
         const plan = await drivePaused(p, io, emit, await kane.reconcile(cwd, rel, sourceIds.get(rel)!, "plan"), kane, "later", pin);
         rows.push(...plan.rows);
         planCredits += plan.credits;
@@ -303,10 +316,18 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
       if (unapproved.length > 0) throw new DriftDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
       const moved = await recordingsMoved();
       if (moved.length > 0) throw new DriftTamper(`${moved.join(", ")} changed while Kane ran`);
-      // what is sealed next is what the human reviewed: a spec that moved meanwhile is not re-planned (N-I2)
-      const specNow = await specMovedFrom(p, pin, manifest);
-      if (specNow.length > 0) throw new SpecMoved(`the spec changed while Kane re-planned it (${specNow.join(", ")}): nothing was applied; review it again`);
+      // what is sealed next is what the human reviewed and the config as drift found it (N-I2, I-1):
+      // a config that moved is a tamper; a spec that moved is not re-planned. Checked before Kane
+      // hears of the approval, and again after it, right before the events and the seal
+      const pinsHold = async () => {
+        const config = (await appMovedFrom(p, appPin())).filter((k) => !specs.some((rel) => isAppKeyOf(k, rel)));
+        if (config.length > 0) throw new DriftTamper(`${config.join(", ")} changed while Kane re-planned the spec`);
+        const specNow = await specMovedFrom(p, pin, manifest);
+        if (specNow.length > 0) throw new SpecMoved(`the spec changed while Kane re-planned it (${specNow.join(", ")}): nothing was applied; review it again`);
+      };
+      await pinsHold();
       await kane.review(cwd, refs);
+      await pinsHold();
     } catch (e) {
       let specGone: string[];
       try {
@@ -336,7 +357,7 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
   // edit after the last check reads as an unverified change on the next run (N-I1, N-I2). A drift a
   // person approved at the moment (not an answers file alone) starts a fresh provenance window (I-2)
   const checkpoint = io.interactive === true || deps.confirmed === true;
-  await reseal(p, log, gitOpts, { ...pinnedSeal(pin), ...(checkpoint ? { checkpoint } : {}) });
+  await reseal(p, log, gitOpts, { app: appPin(), copies: pinnedSeal(pin).copies, ...(checkpoint ? { checkpoint } : {}) });
   return { changed: true, applied: true };
 }
 

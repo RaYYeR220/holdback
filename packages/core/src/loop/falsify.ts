@@ -21,7 +21,7 @@ import { byAcId } from "./brief.js";
 import { logMarkedTamper, recordTamperIn } from "./session.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
-import { appSealFiles, classifySpecChange, driftHint, isSpecKey, reseal, specFileOf, specKept, specMovedFrom, type Warn } from "./spec.js";
+import { appMovedFrom, appPinOf, appSealFiles, classifySpecChange, driftHint, isSpecKey, reseal, specFileOf, type AppPin, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 type Verdict = Extract<LedgerEvent, { t: "mutant" }>["verdict"];
@@ -453,6 +453,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   /** This pass's surviving mutants, for Kane's evolve (R40). */
   const survivors: Survivor[] = [];
   const evolves = opts.evolves ?? new Map<string, number>();
+  /** The config and spec as the pass found them sealed: what Kane's seal holds for them (I-1). */
+  let appPin: AppPin = {};
+  /** Every verifier path an evolve of this pass was allowed to change (its minted and retired tests): nothing else may differ at the seal (I-1). */
+  const allowedPaths = new Set<string>();
 
   const at = () => new Date().toISOString();
   /** Every append goes through the same integrity check as the build loop's. */
@@ -902,6 +906,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         const had = Object.values(reduce(events).acs).filter((a) => a.useCase === uc).map((a) => a.id);
         const gone = [...new Set([...had, ...list.map((s) => s.ac.id)])].filter((id) => !now.has(id));
         if (gone.length > 0) throw new EvolveFailed(`Kane's evolve of ${uc} no longer holds ${gone.join(", ")}`);
+        for (const k of allowed.keys()) allowedPaths.add(k);
         return { minted, retired, credits, graph: g };
       } catch (e) {
         if (e instanceof LedgerTampered || e instanceof KaneCapReached) throw e;
@@ -1041,6 +1046,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       return result("tamper");
     }
     if (!anchor.anchored) await emit({ t: "recordings", digest: baseline.digest, gitConfig: baseline.gitConfig });
+    // checked against the disk just above: the seal after an evolve holds these, never a fresh read (I-1)
+    appPin = appPinOf(p, manifest);
 
     const budget = new Budget(p.config.breaker.capUsd, state.breakerUsd);
     const fileOf = testFileMap(events, p.verifierDir);
@@ -1107,8 +1114,28 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           }
         }
         if (evolved.length > 0) {
+          const ids = survivors.filter((s) => evolved.includes(s.ac.useCase)).map((s) => s.ac.id);
+          const spent = logged.reduce((n, e) => n + (e.t === "falsify.evolved" || e.t === "redesign.dropped" ? e.credits : 0), 0);
+          // I-1: the config, and every sealed verifier file but the ones an evolve was allowed to
+          // change, are as the pass found them; anything else is a tamper, never sealed
+          const appMoved = await appMovedFrom(p, appPin);
+          const strays = [...appMoved.filter((k) => !isSpecKey(p, k)), ...(await verifierDiffersFrom(p, before)).filter((k) => !allowedPaths.has(k))];
+          if (strays.length > 0) {
+            await rollBack(before);
+            await emit({
+              t: "redesign.dropped",
+              useCases: evolved,
+              detail: `sealed files changed while Kane evolved the tests (${strays.join(", ")}): nothing was sealed`,
+              credits: spent,
+              acs: ids,
+              reason: "sealed files changed while Kane evolved its tests, so nothing was sealed: a human re-seals (`holdback reseal`), then `holdback run`",
+            });
+            out.vacuous.push(...ids);
+            await recordTamper(`sealed files changed while Kane evolved the tests: ${strays.join(", ")}`);
+            return result("tamper");
+          }
           // N-I2: the seal after it holds the spec as it was sealed; one that moved meanwhile is not sealed
-          const moved = await specMovedFrom(p, { bytes: new Map() }, manifest!);
+          const moved = appMoved.map(specFileOf);
           if (moved.length > 0) {
             await rollBack(before);
             const c = await classifySpecChange(p, events, manifest!, moved, true);
@@ -1117,8 +1144,6 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
               return result("tamper");
             }
             if (c.event) await emit(c.event);
-            const spent = logged.reduce((n, e) => n + (e.t === "falsify.evolved" ? e.credits : 0), 0);
-            const ids = survivors.filter((s) => evolved.includes(s.ac.useCase)).map((s) => s.ac.id);
             await emit({
               t: "redesign.dropped",
               useCases: evolved,
@@ -1136,8 +1161,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
               await emit(e);
               if (e.t === "falsify.evolved") (out.evolved ??= []).push({ uc: e.uc, because: e.because, ...(e.followUp ? { followUp: true } : {}) });
             }
-            // Kane authored the change: the new tests are sealed, the spec as it was (N-I2)
-            await reseal(p, append, gitOpts, { keep: specKept(p, manifest!), by: "kane" }); // also anchors the recordings
+            // Kane authored the change: the new tests are sealed, the config and spec as pinned (N-I2, I-1)
+            await reseal(p, append, gitOpts, { app: appPin, by: "kane" }); // also anchors the recordings
             sealed = true;
             kaneWindow = false;
             manifest = lastSeal(events);

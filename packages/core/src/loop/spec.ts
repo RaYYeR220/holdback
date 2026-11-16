@@ -211,10 +211,14 @@ async function keepSealedCopies(p: Project, manifest: Record<string, string>, ke
 
 /**
  * The spec bytes a stage re-plans and seals, by spec file (as `specFileOf` names it): the bytes the
- * human reviewed, plus the Clarifications Holdback itself appends meanwhile (N-I2). Whatever else
- * lands in a spec file while the stage runs is not in here, so it is never sealed unseen.
+ * human reviewed, plus the Clarifications Holdback itself appends meanwhile (N-I2); null for a file
+ * that is absent (m-5). Whatever else lands in a spec file while the stage runs is not in here, so
+ * it is never sealed unseen.
  */
-export type SpecPin = { bytes: Map<string, Buffer> };
+export type SpecPin = { bytes: Map<string, Buffer | null> };
+
+/** A pinned file's hash as the seal writes it: "absent" for a file that is not there. */
+const pinHash = (b: Buffer | null): string => (b === null ? "absent" : sha256(b));
 
 /**
  * The spec files that are not what the stage expects: a pinned file whose bytes differ from its pin,
@@ -226,7 +230,7 @@ export async function specMovedFrom(p: Project, pin: SpecPin, manifest: Record<s
     const key = appSealKey(f);
     const rel = specFileOf(key);
     const pinned = pin.bytes.get(rel);
-    const want = pinned !== undefined ? sha256(pinned) : (manifest[key] ?? "absent");
+    const want = pinned !== undefined ? pinHash(pinned) : (manifest[key] ?? "absent");
     if ((await hashOf(path.join(p.appDir, ...rel.split("/")))) !== want) out.push(rel);
   }
   return out;
@@ -237,8 +241,8 @@ export function pinnedSeal(pin: SpecPin): Required<Pick<ResealOptions, "keep" | 
   const keep: Record<string, string> = {};
   const copies: Record<string, Buffer> = {};
   for (const [rel, bytes] of pin.bytes) {
-    keep[appSealKey(rel)] = sha256(bytes);
-    copies[appSealKey(rel)] = bytes;
+    keep[appSealKey(rel)] = pinHash(bytes);
+    if (bytes !== null) copies[appSealKey(rel)] = bytes;
   }
   return { keep, copies };
 }
@@ -297,6 +301,31 @@ export async function reviewSpecFile(p: Project, manifest: Record<string, string
   }
 }
 
+/**
+ * The app-side sealed files (the config and every spec file) as an operation pins them when it
+ * starts (I-1): sha256 (or "absent") by seal key. A re-seal at its end seals these, never a fresh read.
+ */
+export type AppPin = Record<string, string>;
+
+/** The pin of an operation that changes no app-side file: each one as `manifest` holds it (checked against the disk when the operation started). */
+export function appPinOf(p: Project, manifest: Record<string, string>): AppPin {
+  return Object.fromEntries(appSealFiles(p).map((f) => appSealKey(f)).map((k) => [k, manifest[k] ?? "absent"]));
+}
+
+/** Every app-side file as it is on disk now: the pin of an operation that seals what a human reviewed (`holdback reseal`). */
+export async function appPinOnDisk(p: Project): Promise<AppPin> {
+  const out: AppPin = {};
+  for (const f of appSealFiles(p)) out[appSealKey(f)] = await hashOf(path.join(p.appDir, ...specFileOf(appSealKey(f)).split("/")));
+  return out;
+}
+
+/** The app-side seal keys whose bytes on disk are not what `pin` holds for them. */
+export async function appMovedFrom(p: Project, pin: AppPin): Promise<string[]> {
+  const out: string[] = [];
+  for (const [key, want] of Object.entries(pin)) if ((await hashOf(path.join(p.appDir, ...specFileOf(key).split("/")))) !== want) out.push(key);
+  return out;
+}
+
 /** The spec files (as `specFileOf` names them) whose bytes on disk are not what `manifest` holds for them. */
 async function specFilesDiffering(p: Project, manifest: Record<string, string>): Promise<string[]> {
   const out: string[] = [];
@@ -321,9 +350,16 @@ export async function reseal(p: Project, log: Log, git?: GitOptions, opts: Resea
   const at = () => new Date().toISOString();
   const gitOpts = git ?? (await holdbackGitOptions(p.home));
   const marker = await tamperMarker(p);
+  const pinned = opts.app;
+  if (pinned) {
+    const missing = appSealFiles(p).map((f) => appSealKey(f)).filter((k) => !(k in pinned));
+    if (missing.length > 0) throw new Error(`internal: a pinned re-seal must pin every app-side file (${missing.join(", ")})`);
+  }
   // an unreadable ledger throws here: nothing is sealed and the marker stays
   if (marker !== null && !reduce(await readEvents(p.ledgerFile)).tampered) await log({ at: at(), t: "tamper", detail: marker });
-  const manifest = { ...(await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) })), ...opts.keep };
+  // I-1: pinned app files are sealed as pinned, never re-read: what moved since is never sealed unseen
+  const fresh = pinned ? { ...(await seal(p.verifierDir)), ...pinned } : await seal(p.verifierDir, { appDir: p.appDir, files: appSealFiles(p) });
+  const manifest = { ...fresh, ...opts.keep };
   await log({ at: at(), t: "seal", manifest, ...(opts.by ? { by: opts.by } : {}), ...(opts.checkpoint ? { checkpoint: true as const } : {}) });
   // a spec that differs from what this seal holds for it (a kept old hash, or bytes that moved while
   // it sealed) was never accepted by it: its change stays unverified past this seal, until a drift
@@ -331,8 +367,19 @@ export async function reseal(p: Project, log: Log, git?: GitOptions, opts: Resea
   const differing = await specFilesDiffering(p, manifest);
   const unaccepted = differing.length > 0 ? await specChangeEvent(p, [], manifest, differing, true) : undefined;
   if (unaccepted) await log({ at: at(), ...unaccepted });
-  await keepSealedCopies(p, manifest, opts.keep ?? {}, opts.copies ?? {});
+  await keepSealedCopies(p, manifest, { ...opts.keep, ...pinned }, opts.copies ?? {});
   await clearTamper(p);
+  // a config that is not what this seal holds (it moved after the pin) was never accepted: a tamper
+  const config = appSealKey(CONFIG_FILE);
+  if ((await hashOf(path.join(p.appDir, CONFIG_FILE))) !== manifest[config]) {
+    let detail = `sealed files changed: ${config} is not what the seal holds (it changed while Holdback sealed)`;
+    try {
+      await markTampered(p, detail);
+    } catch (e) {
+      detail = `${detail} (tamper marker not written: ${e instanceof Error ? e.message : String(e)})`;
+    }
+    await log({ at: at(), t: "tamper", detail });
+  }
   if (await isRepoRoot(p.appDir, gitOpts)) await logRecordings(p, log, gitOpts);
   return manifest;
 }
@@ -352,6 +399,12 @@ export type ResealOptions = {
   by?: "kane";
   /** The seal after a drift a human approved interactively: it starts a fresh spec-provenance window (I-2). */
   checkpoint?: boolean;
+  /**
+   * Every app-side file (config, spec) as the operation pinned it (I-1): sealed as is, never re-read
+   * from disk; one that moved since is recorded right after the seal (a spec as an unverified change,
+   * the config as a tamper). `keep` still applies on top.
+   */
+  app?: AppPin;
 };
 
 /** What a stage that changes no spec seals for it: each spec entry kept as `manifest` holds it (N-I2). */
@@ -375,8 +428,10 @@ async function appendClarifications(appDir: string, lines: string[], pin?: SpecP
   }
   const add = clarificationsText(existing, lines);
   await appendFile(file, add, "utf8");
-  const pinned = pin?.bytes.get(CLARIFIED_FILE);
-  if (pin && pinned !== undefined) pin.bytes.set(CLARIFIED_FILE, Buffer.concat([pinned, Buffer.from(clarificationsText(pinned.toString("utf8"), lines), "utf8")]));
+  if (pin?.bytes.has(CLARIFIED_FILE)) {
+    const pinned = pin.bytes.get(CLARIFIED_FILE) ?? Buffer.alloc(0);
+    pin.bytes.set(CLARIFIED_FILE, Buffer.concat([pinned, Buffer.from(clarificationsText(pinned.toString("utf8"), lines), "utf8")]));
+  }
 }
 
 /** What `appendClarifications` adds after `existing`. */

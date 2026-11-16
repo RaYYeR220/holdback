@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
-import { escapeControls, reseal, SEALED_DIR, settleSpecChange, specDiff } from "../src/loop/spec.js";
+import { appMovedFrom, appPinOf, escapeControls, reseal, SEALED_DIR, settleSpecChange, specDiff } from "../src/loop/spec.js";
 import { logSpecAttempt } from "../src/agent/attempts.js";
 import { tamperMarker } from "../src/tamper.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -109,6 +109,28 @@ describe("the sealed spec and its diff (R37)", { timeout: 60_000 }, () => {
     writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nThe human's later edit.\n");
     // no deadlock on the old attempt, but the turn before the re-seal keeps it unverified
     expect(await settleSpecChange(p, log)).toEqual({ kind: "drift", files: ["PRD.md"], unverified: true });
+  });
+
+  it("a re-seal given pinned app files seals the pins, never what is on disk, and records whatever moved (I-1)", async () => {
+    writeFileSync(join(p.appDir, "holdback.config.json"), "{}");
+    await reseal(p, log);
+    const pin = appPinOf(p, await manifest());
+    expect(Object.keys(pin).sort()).toEqual(["app:PRD.md", "app:holdback.config.json"]);
+    expect(await appMovedFrom(p, pin)).toEqual([]);
+    // both move after the pin was taken
+    writeFileSync(join(p.appDir, "holdback.config.json"), '{"start":{"cmd":"evil"}}');
+    writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nmoved\n");
+    expect((await appMovedFrom(p, pin)).sort()).toEqual(["app:PRD.md", "app:holdback.config.json"]);
+    await reseal(p, log, undefined, { app: pin, by: "kane" });
+    const m = await manifest();
+    expect(m["app:holdback.config.json"]).toBe(pin["app:holdback.config.json"]);
+    expect(m["app:PRD.md"]).toBe(pin["app:PRD.md"]);
+    const after = (await readEvents(p.ledgerFile)).slice((await readEvents(p.ledgerFile)).findLastIndex((e) => e.t === "seal"));
+    expect(after.find((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true });
+    expect(after.find((e) => e.t === "tamper")).toMatchObject({ detail: expect.stringContaining("holdback.config.json") });
+    expect(await tamperMarker(p)).toContain("holdback.config.json");
+    // a pin must name every app-side file
+    await expect(reseal(p, log, undefined, { app: { "app:PRD.md": pin["app:PRD.md"]! } })).rejects.toThrow(/holdback\.config\.json/);
   });
 
   it("a re-seal that keeps the spec's old hash keeps its old copy too", async () => {
