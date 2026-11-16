@@ -746,7 +746,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
         // the follow-up may retire what the first evolve minted, as it may the sealed tests
         const minted1 = g.tests.filter((t) => first.minted.includes(t.id));
-        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list, minted1);
+        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list, minted1, first.retired);
         if ("stray" in again) return strayTamper(uc, again.stray, again.credits);
         if ("failed" in again) {
           // the first evolve stands; the follow-up's spend is still on record
@@ -799,6 +799,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     list: Survivor[],
     /** Tests an earlier evolve of this use case minted in this pass (not sealed yet): this one may retire them too. */
     prior: TestNode[] = [],
+    /** Tests an earlier evolve of this use case retired in this pass (the ledger still has them live). */
+    priorRetired: string[] = [],
   ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
     evolves.set(uc, (evolves.get(uc) ?? 0) + 1);
     /** A verifier path exactly: relative to the verifier, `/`-separated. The allowlist matches only these. */
@@ -824,6 +826,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     const state = reduce(events);
     const ucAcs = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).map((a) => a.id));
     const ucTests = new Set(Object.values(state.acs).filter((a) => a.useCase === uc).flatMap((a) => a.tests));
+    /** Every test live in the ledger before this evolve, of any use case (with this pass's earlier evolve applied). */
+    const liveBefore = new Set([...Object.values(state.acs).flatMap((a) => a.tests), ...prior.map((t) => t.id)].filter((id) => !priorRetired.includes(id)));
     for (const t of prior) {
       sealedTests.set(t.id, { file: t.file, verifies: t.verifies });
       ucTests.add(t.id);
@@ -861,21 +865,41 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         // criteria this use case may be verified by: the ledger's own, and ones Kane newly adds under it
         // (never one the ledger has under another use case)
         const mayVerify = new Set([...ucAcs, ...g.acs.filter((a) => a.useCase === uc && !(a.id in state.acs)).map((a) => a.id)]);
-        const sealedKeys = [...copy.verifier.keys()].map(folded);
+        const sealedKeys = [...copy.verifier.keys()];
         const sealedFiles = [...sealedTests.values()].map((s) => s.file);
-        // a minted test: a new regular file under the tests folder, verifying this use case's criteria only
+        /**
+         * I-5: Kane may name a new test as a retired one (it names files by their title) when every
+         * test the ledger has at that exact path is a retired test of this use case (reported retired
+         * now, or no longer live), none of them is in the new graph, and the new test is the only one
+         * there. Then only that path may be taken over: any other sealed entry it collides with
+         * (by case or by being the same file) is still a tamper.
+         */
+        const takesOver = (t: TestNode): boolean => {
+          const at = [...sealedTests].filter(([, s]) => key(s.file) === key(t.file));
+          if (at.length === 0) return false;
+          for (const [old, s] of at) {
+            if (old === t.id || g.tests.some((x) => x.id === old)) return false;
+            if (!retired.includes(old) && !priorRetired.includes(old) && liveBefore.has(old)) return false;
+            if (s.verifies.length === 0 || !s.verifies.every((v) => mayVerify.has(v))) return false;
+          }
+          return g.tests.filter((x) => x.file && folded(x.file) === folded(t.file)).length === 1;
+        };
+        // a minted test: a new regular file under the tests folder (or a retired test's, I-5), verifying this use case's criteria only
         for (const id of minted) {
           const t = g.tests.find((x) => x.id === id)!;
           const k = key(t.file);
           const st = await lstat(path.resolve(p.verifierDir, t.file)).catch(() => undefined);
+          const over = takesOver(t);
+          const collides = over
+            ? sealedKeys.some((s) => s !== k && s.toLowerCase() === folded(t.file)) || (await sameAsAny(t.file, sealedFiles.filter((f) => key(f) !== k)))
+            : sealedKeys.some((s) => s.toLowerCase() === folded(t.file)) || (await sameAsAny(t.file, sealedFiles));
           const ok =
             k.startsWith(".testmuai/tests/") &&
             !k.split("/").includes("..") &&
             st !== undefined &&
             st.isFile() &&
             !st.isSymbolicLink() &&
-            !sealedKeys.includes(folded(t.file)) &&
-            !(await sameAsAny(t.file, sealedFiles)) &&
+            !collides &&
             t.verifies.length > 0 &&
             t.verifies.every((v) => mayVerify.has(v));
           if (ok) allowed.set(k, t.file);

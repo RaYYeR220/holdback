@@ -989,6 +989,93 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(reduce(await readEvents(p.ledgerFile)).acs["ac-12"]).toMatchObject({ useCase: "uc-1", tests: ["t-4"] });
     });
 
+    describe("a minted test at a retired test's path (I-5)", () => {
+      it("is allowed when the old test is retired and gone from the graph, the path is the new test's alone, it verifies this use case only, and no other sealed test maps to it", async () => {
+        await setup();
+        const { deps, io } = fakes({
+          mutantRun: survives3,
+          ...evolveWith((kit) => {
+            kit.retire("t-1", "t-3");
+            kit.mint("t-4", ["ac-1", "ac-3"], T3); // Kane named the new test as the old one
+          }),
+        });
+        const r = await runFalsify(p, deps, io, log);
+        expect(r).toMatchObject({ redesigned: ["uc-1"], reason: "done" });
+        const all = await readEvents(p.ledgerFile);
+        const design = all.findLast((e) => e.t === "design") as Extract<LedgerEvent, { t: "design" }>;
+        expect(design.tests.map((t) => [t.id, t.file])).toEqual([["t-4", T3]]);
+        const sealEv = all.findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
+        expect(sealEv.by).toBe("kane");
+        expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
+        expect(readFileSync(T3, "utf8")).toContain("id: t-4");
+      });
+
+      it("is a tamper when Kane did not report the old test retired", async () => {
+        await strayed(
+          {
+            evolve: (_n: number, kit: EvolveKit) => {
+              kit.retire("t-1", "t-3");
+              kit.mint("t-4", ["ac-1", "ac-3"], T3);
+              return { ...EVOLVED, superseded: [{ scenario: "sc-1", test: "t-1" }] };
+            },
+          },
+          [".testmuai/tests/t3_test.md"],
+        );
+      });
+
+      it("is a tamper when the old test is still in the graph", async () => {
+        await strayed(
+          {
+            ...evolveWith((kit) => {
+              kit.retire("t-1", "t-3");
+              kit.mint("t-4", ["ac-1", "ac-3"], T3);
+              kit.alias("t-3", T1, []); // still listed, now under another file
+            }),
+          },
+          [".testmuai/tests/t3_test.md"],
+        );
+      });
+
+      it("is a tamper when two minted tests claim the path", async () => {
+        await strayed(
+          {
+            evolve: (_n: number, kit: EvolveKit) => {
+              kit.retire("t-1", "t-3");
+              kit.mint("t-4", ["ac-1"], T3);
+              kit.alias("t-5", T3, ["ac-3"]);
+              return { ...EVOLVED, minted: [...EVOLVED.minted, { scenario: "sc-5", test: "t-5" }] };
+            },
+          },
+          [".testmuai/tests/t3_test.md"],
+        );
+      });
+
+      it("is a tamper when the new test verifies another use case's criterion", async () => {
+        await strayed(
+          {
+            ...evolveWith((kit) => {
+              kit.retire("t-1", "t-3");
+              kit.mint("t-4", ["ac-1", "ac-3", "ac-9"], T3);
+            }),
+          },
+          [".testmuai/tests/t3_test.md"],
+          otherUseCase(),
+        );
+      });
+
+      it("is a tamper when another sealed test maps to the path", async () => {
+        await strayed(
+          {
+            ...evolveWith((kit) => {
+              kit.retire("t-1", "t-3");
+              kit.mint("t-4", ["ac-1", "ac-3"], T3);
+            }),
+          },
+          [".testmuai/tests/t3_test.md"],
+          otherUseCase(() => T3),
+        );
+      });
+    });
   });
 
   it("rolls Kane's evolve back when it reports a minted test the verifier has no file of", async () => {
