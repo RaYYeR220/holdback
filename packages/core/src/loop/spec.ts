@@ -420,8 +420,8 @@ export function specKept(p: Project, manifest: Record<string, string>): Record<s
  * pin moves on by exactly what was appended to the pinned bytes (N-I2): a change someone else made
  * before the append is never folded into it.
  */
-async function appendClarifications(appDir: string, lines: string[], pin?: SpecPin): Promise<void> {
-  if (lines.length === 0) return;
+async function appendClarifications(appDir: string, lines: string[], pin?: SpecPin): Promise<string> {
+  if (lines.length === 0) return "";
   const file = path.join(appDir, CLARIFIED_FILE);
   let existing = "";
   try {
@@ -435,6 +435,7 @@ async function appendClarifications(appDir: string, lines: string[], pin?: SpecP
     const pinned = pin.bytes.get(CLARIFIED_FILE) ?? Buffer.alloc(0);
     pin.bytes.set(CLARIFIED_FILE, Buffer.concat([pinned, Buffer.from(clarificationsText(pinned.toString("utf8"), lines), "utf8")]));
   }
+  return add;
 }
 
 /** What `appendClarifications` adds after `existing`. */
@@ -485,9 +486,9 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   /**
    * n-3, the spec stage: `unchanged` throws when the spec is no longer what the stage last knew (run
    * after the human answers, before Holdback appends the answers or Kane is called); `appended`
-   * refreshes what the stage knows right after Holdback's own write.
+   * tells the stage what Holdback appended, right after its own write.
    */
-  watch?: { unchanged: () => Promise<void>; appended: () => Promise<void> },
+  watch?: { unchanged: () => Promise<void>; appended: (added: string) => Promise<void> },
 ): Promise<Exclude<R, Paused>> {
   const cwd = p.verifierDir;
   let r: R = first;
@@ -499,12 +500,12 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
     await watch?.unchanged();
     // an answer is always on the ledger (`spec.answered`); whether it also goes into PRD.md is the config's call
     if (stage === "spec" || p.config.loop.appendClarifications !== "spec-only") {
-      await appendClarifications(
+      const added = await appendClarifications(
         p.appDir,
         paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
         pin,
       );
-      await watch?.appended();
+      await watch?.appended(added);
     }
     await watch?.unchanged();
     r = (paused.verb === "extract" ? await kane.extractResume(cwd, paused.sid, answers) : await kane.resumeSession(cwd, paused, answers)) as R;
@@ -595,11 +596,38 @@ export function designCapNotes(acs: Pick<AcNode, "id">[], tests: Pick<TestNode, 
   return bare.length > 0 ? Object.fromEntries(bare.map((a) => [a.id, designCapNote(max)])) : undefined;
 }
 
-/** sha256 over the spec files' bytes (as they are in the app dir) and the spec links: what an extraction was made from. */
-async function specSourceHash(p: Project): Promise<string> {
-  const files: [string, string][] = [];
-  for (const rel of p.config.spec) files.push([rel, await hashOf(path.join(p.appDir, rel))]);
+/** The spec's hash from each spec file's bytes (null: absent) and the spec links. */
+function hashOfSpec(p: Project, bytes: Map<string, Buffer | null>): string {
+  const files: [string, string][] = p.config.spec.map((rel) => {
+    const b = bytes.get(rel);
+    return [rel, b === undefined || b === null ? "absent" : sha256(b)];
+  });
   return createHash("sha256").update(JSON.stringify({ files, urls: p.config.specUrls })).digest("hex");
+}
+
+/**
+ * sha256 over the spec files' bytes (as they are in the app dir) and the spec links: what an
+ * extraction was made from. `bytes`: the bytes it was taken over, for `specHashAfterAppend`.
+ */
+export async function specSource(p: Project): Promise<{ hash: string; bytes: Map<string, Buffer | null> }> {
+  const bytes = new Map<string, Buffer | null>();
+  for (const rel of p.config.spec) {
+    bytes.set(rel, await readFile(path.join(p.appDir, rel)).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? null : Promise.reject(e))));
+  }
+  return { hash: hashOfSpec(p, bytes), bytes };
+}
+
+/**
+ * The spec's hash once Holdback appended `added` to its Clarifications file, from the bytes it last
+ * checked (wave-4 m-3): never a fresh read, so an edit that lands between the check and the append
+ * makes the disk differ from it, and the next check stops the stage.
+ */
+export function specHashAfterAppend(p: Project, checked: Map<string, Buffer | null>, added: string): string {
+  const rel = p.config.spec.find((f) => path.normalize(f) === path.normalize(CLARIFIED_FILE));
+  if (rel === undefined || added === "") return hashOfSpec(p, checked);
+  const next = new Map(checked);
+  next.set(rel, Buffer.concat([checked.get(rel) ?? Buffer.alloc(0), Buffer.from(added, "utf8")]));
+  return hashOfSpec(p, next);
 }
 
 /** The spec on disk is not what the stage extracted from: nothing is sealed. The CLI exits 3. */
@@ -637,13 +665,17 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   // the seal, the disk must still be that: an edit made meanwhile (while the human answers or
   // approves) stops the stage rather than reach Kane, or the seal, unread.
   let known = "";
+  /** The spec's bytes at the last check: what Holdback's own append is added to (wave-4 m-3). */
+  let checked = new Map<string, Buffer | null>();
   const unchanged = async () => {
-    if ((await specSourceHash(p)) !== known) throw new SpecChangedDuringStage();
+    const now = await specSource(p);
+    if (now.hash !== known) throw new SpecChangedDuringStage();
+    checked = now.bytes;
   };
   const watch = {
     unchanged,
-    appended: async () => {
-      known = await specSourceHash(p);
+    appended: async (added: string) => {
+      known = specHashAfterAppend(p, checked, added);
     },
   };
   const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first, undefined, "spec", undefined, watch);
@@ -659,8 +691,10 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   // 1-2. the spec copied into the verifier store (kept outside the app repo), then ingest and
   // extraction, answering Kane's questions (one metered Kane batch); skipped when an earlier attempt
   // finished them for the spec as it is now
-  const hash = await specSourceHash(p);
+  const first = await specSource(p);
+  const hash = first.hash;
   known = hash;
+  checked = first.bytes;
   if (!earlier.some((e) => e.t === "spec.extracted" && e.hash === hash)) {
     for (const rel of p.config.spec) {
       const dest = path.join(cwd, rel);

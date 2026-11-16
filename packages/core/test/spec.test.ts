@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
-import { checkSpecPaths, mapIngestedFiles, runSpecStage } from "../src/loop/spec.js";
+import { checkSpecPaths, mapIngestedFiles, runSpecStage, specHashAfterAppend, specSource } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { gate } from "../src/ledger/gate.js";
@@ -56,6 +56,23 @@ function setup(prd: string) {
   process.env.FAKE_KANE_SEQUENCE = seq;
   return appDir;
 }
+
+describe("the spec as the stage knows it (n-3, wave-4 m-3)", () => {
+  it("after Holdback's own append, the expected hash comes from the bytes it checked plus what it appended: an edit that lands in between is caught", async () => {
+    const appDir = join(root, "app");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "PRD.md"), "# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const checked = await specSource(p);
+    const added = "\n## Clarifications\n\n- Q: a — A: b\n";
+    // a clean append: what the stage expects is what the disk holds
+    appendFileSync(join(appDir, "PRD.md"), added);
+    expect(specHashAfterAppend(p, checked.bytes, added)).toBe((await specSource(p)).hash);
+    // a human edit between the check and the append: the disk no longer matches what the stage expects
+    writeFileSync(join(appDir, "PRD.md"), "# PRD\n\nSnap rules, edited.\n" + added);
+    expect(specHashAfterAppend(p, checked.bytes, added)).not.toBe((await specSource(p)).hash);
+  });
+});
 
 describe("runSpecStage", () => {
   it("runs ingest -> answers -> approvals -> design -> seal", async () => {
