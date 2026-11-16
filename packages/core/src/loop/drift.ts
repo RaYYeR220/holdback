@@ -176,7 +176,9 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     return { changed: true, applied: false, reason, specMoved: files };
   };
   const reviewedAway = (rel: string) => deps.reviewed !== undefined && deps.reviewed[norm(rel)] !== pinHashOf(rel);
-  const away = changed.filter(reviewedAway);
+  // every pin must be the state the human reviewed: a changed file the bytes whose diff they saw, an
+  // unchanged one the bytes the last seal hashed (it may have moved since the seal check)
+  const away = specs.filter((rel) => (changed.includes(rel) ? reviewedAway(rel) : pinHashOf(rel) !== (manifest[appSealKey(rel)] ?? "absent")));
   if (away.length > 0) return specMoved(away.map(norm), `the spec changed again after you reviewed it (${away.map(norm).join(", ")}): nothing was re-planned; review it again`);
 
   // Kane's source id for each changed file comes from the ledger (spec.ingested), else Kane's own source list
