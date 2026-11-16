@@ -14,7 +14,7 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
-import { falsifyVerdict, pendingRecheck, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
+import { falsifyVerdict, killsAc, pendingRecheck, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -123,7 +123,7 @@ const failOn =
     status: "failed",
     failedStep: 2,
     criteriaFailed: acs,
-    verdict: { bugTitle: "Eligibility check approves income above displayed limit" },
+    verdict: { bugTitle: "Eligibility check approves income above displayed limit", family: "application_issue" },
     credits: 4.7,
   });
 
@@ -362,20 +362,23 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
     // each mutant ran from a worktree of HEAD with the patch applied, its own data dir and the app's deps
     const mutantApps = calls.apps.filter((a) => a.cwd !== appDir);
-    expect(mutantApps.map((a) => a.cwd)).toEqual([mutDir("m-ac-1-1"), mutDir("m-ac-3-1")]);
+    // each mutant started twice: its replay, then the second replay that confirms the kill (R44)
+    expect(mutantApps.map((a) => a.cwd)).toEqual([mutDir("m-ac-1-1"), mutDir("m-ac-1-1"), mutDir("m-ac-3-1"), mutDir("m-ac-3-1")]);
     expect(mutantApps[1]).toMatchObject({ cmd: "npm start", port: 5178, readyPath: "/", env: { DATA_DIR: expect.any(String), VENICE_API_KEY: "" } });
     // a data dir of its own under the home, never one inside the worktree (a committed database would seed it)
     const dataDirs = calls.apps.map((a) => a.env!.DATA_DIR!);
     expect(new Set(dataDirs).size).toBe(calls.apps.length);
     for (const d of dataDirs) expect(d.startsWith(join(p.home, "data"))).toBe(true);
     expect(calls.mutantSrc[0]!.src).toContain("if (snap && income < 0)");
-    expect(calls.mutantSrc[1]!.src).toContain("LIMITS[size] + 1");
+    expect(calls.mutantSrc[2]!.src).toContain("LIMITS[size] + 1");
     expect(calls.mutantSrc.every((m) => m.deps)).toBe(true);
 
     // Kane replays only the AC's tests, from the sealed verifier, against the mutant, healing off
     const falsify = calls.tests.filter((t) => t.opts.noHeal);
     expect(falsify.map((t) => [t.ac, t.files])).toEqual([
       ["ac-1", [T1]],
+      ["ac-1", [T1]],
+      ["ac-3", [T3]],
       ["ac-3", [T3]],
     ]);
     expect(falsify[0]!.cwd).toBe(p.verifierDir);
@@ -394,17 +397,20 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "recordings", // seeded: nothing anchored the recordings since the seal
       "mutant:ac-1:killed",
       "run:falsify:t-1:failed",
+      "run:falsify:t-1:failed", // the second replay that confirmed the kill
       "recordings",
       "mutant:ac-3:killed",
+      "run:falsify:t-3:failed",
       "run:falsify:t-3:failed",
       "recordings",
       "run:build:t-1:passed",
       "run:build:t-3:passed",
       "recordings",
     ]);
-    expect(ev[4]).toEqual({ at: expect.any(String), t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"], model: MODEL, usd: expect.closeTo(USD_PER_CALL, 12), verdict: "killed", slip: SLIP["ac-3"] });
-    expect(ev[5]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1" });
-    expect(ev[7]).toMatchObject({ t: "run", kind: "build", turn: 1 });
+    expect(ev[5]).toEqual({ at: expect.any(String), t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"], model: MODEL, usd: expect.closeTo(USD_PER_CALL, 12), verdict: "killed", slip: SLIP["ac-3"] });
+    expect(ev[6]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1" });
+    expect(ev[7]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1", confirm: true });
+    expect(ev[9]).toMatchObject({ t: "run", kind: "build", turn: 1 });
 
     const state = reduce(await readEvents(p.ledgerFile));
     expect(state.acs["ac-1"]!.status).toBe("proved");
@@ -420,6 +426,70 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(readFileSync(join(appDir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
     expect(readFileSync(join(appDir, "src", "eligibility.js"), "utf8")).toBe(SRC);
     expect(git(appDir, "status", "--porcelain")).toBe("");
+  });
+
+  it("a kill counts only when a second replay of the same test on the same mutant, on a fresh start, fails the criterion again: both runs on the ledger (R44)", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], invalid: [] });
+    expect(calls.tests.filter((t) => t.opts.noHeal).map((t) => [t.ac, t.files])).toEqual([
+      ["ac-1", [T1]],
+      ["ac-1", [T1]],
+      ["ac-3", [T3]],
+      ["ac-3", [T3]],
+    ]);
+    // the mutant started again, on a new data dir, for the second replay
+    const m1 = calls.apps.filter((a) => a.cwd === mutDir("m-ac-1-1"));
+    expect(m1).toHaveLength(2);
+    expect(m1[0]!.env!.DATA_DIR).not.toBe(m1[1]!.env!.DATA_DIR);
+    const runs = (await readEvents(p.ledgerFile)).filter((e): e is Extract<LedgerEvent, { t: "run" }> => e.t === "run" && e.mutantId === "m-ac-1-1");
+    expect(runs.map((e) => [e.result.testId, e.result.status, e.confirm ?? false])).toEqual([
+      ["t-1", "failed", false],
+      ["t-1", "failed", true],
+    ]);
+  });
+
+  it("a kill the second replay does not reproduce is inconclusive: never a kill, never a survival (R44)", async () => {
+    await setup();
+    const n = new Map<string, number>();
+    const { deps, io, calls } = fakes({
+      mutantRun: (ac, files) => {
+        n.set(ac, (n.get(ac) ?? 0) + 1);
+        return files.map(n.get(ac) === 1 ? failOn(ac) : pass);
+      },
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: [], survived: [], invalid: ["ac-1", "ac-3"], vacuous: [], redesigned: [] });
+    expect(r.survivors).toBeUndefined();
+    expect(calls.evolve).toEqual([]);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "mutant" && e.ac === "ac-1")).toMatchObject({
+      verdict: "invalid",
+      note: "inconclusive: the kill did not reproduce: t-1 passed on a second replay of the same mutant",
+    });
+    expect(all.filter((e) => e.t === "run" && e.mutantId === "m-ac-1-1")).toHaveLength(2);
+    expect(reduce(all).acs["ac-1"]!.status).toBe("passing");
+  });
+
+  it("a second replay that fails for another reason, or on another criterion, does not confirm the kill (R44)", async () => {
+    await setup();
+    const n = new Map<string, number>();
+    const { deps, io } = fakes({
+      mutantRun: (ac, files) => {
+        n.set(ac, (n.get(ac) ?? 0) + 1);
+        if (n.get(ac) === 1) return files.map(failOn(ac));
+        // the second replay of ac-1's test fails ac-6; ac-3's fails ac-3 but blames the automation, twice
+        return files.map(ac === "ac-1" ? failOn("ac-6") : (f) => ({ ...failOn(ac)(f), verdict: { bugTitle: "label assertion no longer matches", family: "automation_bug" } }));
+      },
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: [], invalid: ["ac-1", "ac-3"] });
+    const ms = (await readEvents(p.ledgerFile)).filter((e) => e.t === "mutant");
+    expect(ms.map((m) => (m.t === "mutant" ? m.note : ""))).toEqual([
+      "inconclusive: the kill did not reproduce: t-1 failed ac-6, not ac-1, on a second replay of the same mutant",
+      "inconclusive: the kill did not reproduce: t-3 proved nothing on a second replay of the same mutant (automation_bug: label assertion no longer matches)",
+    ]);
   });
 
   it("breaker.parallel sets how many of falsify's replays run at once, whatever kane.parallel (the build checks) says (R44)", async () => {
@@ -475,6 +545,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "recordings",
       "mutant:ac-1:killed",
       "run:falsify:t-1:failed",
+      "run:falsify:t-1:failed",
       "recordings",
       "mutant:ac-3:survived",
       "run:falsify:t-3:passed",
@@ -486,13 +557,13 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "run:build:t-4:passed",
       "recordings",
     ]);
-    expect(ev[4]).toMatchObject({ t: "mutant", id: "m-ac-3-1", slip: SLIP["ac-3"] });
-    expect(ev[7]).toEqual({ at: expect.any(String), t: "falsify.evolved", uc: "uc-1", because, minted: ["t-4"], retired: ["t-1", "t-3"], credits: 11.39, mutants: ["m-ac-3-1"] });
+    expect(ev[5]).toMatchObject({ t: "mutant", id: "m-ac-3-1", slip: SLIP["ac-3"] });
+    expect(ev[8]).toEqual({ at: expect.any(String), t: "falsify.evolved", uc: "uc-1", because, minted: ["t-4"], retired: ["t-1", "t-3"], credits: 11.39, mutants: ["m-ac-3-1"] });
     // Kane's new set replaces the old one: no retired test is run or kept on any criterion
-    const design = ev[8] as Extract<LedgerEvent, { t: "design" }>;
+    const design = ev[9] as Extract<LedgerEvent, { t: "design" }>;
     expect(design).toMatchObject({ useCase: "uc-1", acs: [AC1, AC3], credits: 0 });
     expect(design.tests.map((t) => t.id)).toEqual(["t-4"]);
-    const sealEv = ev[9] as Extract<LedgerEvent, { t: "seal" }>;
+    const sealEv = ev[10] as Extract<LedgerEvent, { t: "seal" }>;
     expect(sealEv.by).toBe("kane");
     expect(Object.keys(sealEv.manifest)).toContain(".testmuai/tests/t4_test.md");
     expect(sealEv.manifest["app:PRD.md"]).toBe(sealedBefore.manifest["app:PRD.md"]);
@@ -500,12 +571,13 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
     // every criterion of the use case was owed again; the closing replay ran the new tests against the real build
     const all = await readEvents(p.ledgerFile);
-    const beforeReplay = reduce(all.slice(0, since + 11));
+    const beforeReplay = reduce(all.slice(0, since + 12));
     expect(beforeReplay.acs["ac-1"]).toMatchObject({ status: "owed", tests: ["t-4"] });
     expect(beforeReplay.acs["ac-3"]).toMatchObject({ status: "owed", tests: ["t-4"] });
     expect(calls.tests.filter((t) => !t.opts.noHeal).map((t) => t.files)).toEqual([[testFile("t-4")]]);
     expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
-    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(4.7 + 11.39, 9);
+    // the kill's two failed replays (Kane bills its verdict on a failure) and the evolve
+    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(2 * 4.7 + 11.39, 9);
   });
 
   it("logs Kane's balance drop for each mutant's batch, the evolve (before its seal) and the closing replay, counting the evolve once (R34, R40)", async () => {
@@ -533,13 +605,13 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "credits",
     ]);
     expect(ev.filter((e) => e.t === "credits").map((e) => e.t === "credits" && [e.source, e.delta, e.perRunSum])).toEqual([
-      ["falsify", 6, 4.7],
+      ["falsify", 12, 9.4], // the kill's replay and its second replay, one batch
       ["falsify", 6, 0],
       ["evolve", 12, 11.39],
       ["falsify", 6, 0],
     ]);
-    // by the balance: 6 + 6 + 12 + 6, the evolve's own figure never added on top
-    expect(reduce(all).kaneCredits - reduce(all.slice(0, since)).kaneCredits).toBeCloseTo(30, 9);
+    // by the balance: 12 + 6 + 12 + 6, the evolve's own figure never added on top
+    expect(reduce(all).kaneCredits - reduce(all.slice(0, since)).kaneCredits).toBeCloseTo(36, 9);
   });
 
   it("a survivor's test that proved nothing twice in the closing replay is re-checked by the next build loop, and the gate can open", async () => {
@@ -603,9 +675,11 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], survived: [], vacuous: [], redesigned: [], reason: "done" });
     expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]); // ac-3's bug is the one that slipped through before
-    expect(calls.mutantSrc[1]!.src).toContain("LIMITS[size] + 1");
+    expect(calls.mutantSrc[2]!.src).toContain("LIMITS[size] + 1");
     expect(calls.tests.filter((t) => t.opts.noHeal).map((t) => [t.ac, t.files])).toEqual([
       ["ac-1", [testFile("t-4")]],
+      ["ac-1", [testFile("t-4")]],
+      ["ac-3", [testFile("t-4")]],
       ["ac-3", [testFile("t-4")]],
     ]);
     const m = (await after(since)).find((e) => e.t === "mutant" && e.ac === "ac-3");
@@ -652,6 +726,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "recordings",
       "mutant:ac-1:killed",
       "run:falsify:t-1:failed",
+      "run:falsify:t-1:failed",
       "recordings",
       "mutant:ac-3:survived",
       "run:falsify:t-3:passed",
@@ -664,7 +739,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     ]);
     expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 5.69, acs: ["ac-3"], reason: "Kane could not add a test that catches this planted bug" });
     expect(reduce(all).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: "Kane could not add a test that catches this planted bug" });
-    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(4.7 + 5.69, 9);
+    expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(2 * 4.7 + 5.69, 9);
     const sealEv = all.filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>;
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
     expect((await checkRecordingsAnchor(p, all)).moved).toEqual([]);
@@ -1443,6 +1518,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     // the same test, the same mutant, run once more before the verdict
     expect(calls.tests.filter((t) => t.opts.noHeal).map((t) => [t.ac, t.files])).toEqual([
       ["ac-1", [T1]],
+      ["ac-1", [T1]], // the kill confirmed by a second replay (R44)
       ["ac-3", [T3]],
       ["ac-3", [T3]],
     ]);
@@ -1470,7 +1546,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     });
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], invalid: [], reason: "done" });
-    expect(calls.tests.filter((t) => t.opts.noHeal)).toHaveLength(4);
+    // per AC: the timeout, its re-run, then the second replay that confirms the kill
+    expect(calls.tests.filter((t) => t.opts.noHeal)).toHaveLength(6);
   });
 
   it("counts a pass after a heal as survived-by-heal; at most two evolves per use case per run, so a later survivor stays vacuous with the reason (R40)", async () => {
@@ -1748,10 +1825,23 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
 describe("falsifyVerdict", () => {
   const r = (over: Partial<TestRunResult>): TestRunResult => ({ ...pass(T3 ?? "t3_test.md"), testId: "t-3", ...over });
-  it("only a failure Kane blames on the app kills; any other failure of the AC is inconclusive", () => {
+  it("only a failure Kane blames on the app (application_issue) on the attacked criterion kills; any other failure of the AC is inconclusive (R44)", () => {
     const app = r({ status: "failed", criteriaFailed: ["ac-3"], verdict: { bugTitle: "b", family: "application_issue" } });
     expect(falsifyVerdict("ac-3", [app])).toEqual({ verdict: "killed" });
-    expect(falsifyVerdict("ac-3", [r({ status: "failed", criteriaFailed: ["ac-3"] })])).toEqual({ verdict: "killed" }); // no verdict at all
+    // a failure Kane did not put down to the app, or to anything: never a kill
+    expect(falsifyVerdict("ac-3", [r({ status: "failed", criteriaFailed: ["ac-3"] })])).toEqual({
+      verdict: "invalid",
+      note: "inconclusive: t-3 failed ac-3 but Kane did not blame the app (no verdict)",
+    });
+    expect(falsifyVerdict("ac-3", [r({ status: "failed", criteriaFailed: ["ac-3"], verdict: { bugTitle: "b", family: "product_gap" } })])).toEqual({
+      verdict: "invalid",
+      note: "inconclusive: t-3 failed ac-3 but Kane did not blame the app (verdict family product_gap)",
+    });
+    // the rehearsal's m-ac-8-2: an application_issue on another criterion (a replay-ordering error) never kills
+    const other = r({ status: "failed", criteriaFailed: ["ac-1"], verdict: { bugTitle: "SNAP household marked Not eligible", family: "application_issue" } });
+    expect(falsifyVerdict("ac-8", [other]).verdict).toBe("invalid");
+    expect(killsAc(other, "ac-8")).toBe(false);
+    expect(killsAc(app, "ac-3")).toBe(true);
     const automation = r({ status: "failed", criteriaFailed: ["ac-3"], verdict: { bugTitle: "empty form", family: "automation_bug" } });
     expect(falsifyVerdict("ac-3", [automation])).toEqual({ verdict: "invalid", note: "inconclusive: t-3: automation_bug: empty form" });
     // an inconclusive test next to tests that passed may have been the one that caught it

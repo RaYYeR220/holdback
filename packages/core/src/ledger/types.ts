@@ -37,7 +37,11 @@ export type LedgerEvent = { at: string } & (
       agentUsd?: number;
       agentTurns?: number;
     }
-  | { t: "run"; kind: RunKind; turn?: number; mutantId?: string; result: TestRunResult }
+  /**
+   * `confirm`: the second replay of a test that killed mutant `mutantId` (R44), on the same mutant
+   * started afresh: the kill counts only when it fails the criterion again.
+   */
+  | { t: "run"; kind: RunKind; turn?: number; mutantId?: string; result: TestRunResult; confirm?: true }
   | {
       t: "mutant";
       id: string;

@@ -108,13 +108,39 @@ const NO_SEAL = "no seal in the ledger: run the spec stage first";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * The verdict on one mutant from its Kane runs (healing off). Only a failure Kane blames on the app
- * kills it; a run that failed for any other reason (R34: after one re-run) leaves it `invalid`.
+ * True when `r` kills a mutant of `acId` (R44): it failed the criterion and Kane blamed the app, its
+ * verdict family `application_issue`. A failure with no family, or one Holdback does not know, fails
+ * closed here: it is never a kill.
+ */
+export function killsAc(r: TestRunResult, acId: string): boolean {
+  return r.status !== "passed" && r.inconclusive === undefined && r.criteriaFailed.includes(acId) && r.verdict?.family?.trim().toLowerCase() === "application_issue";
+}
+
+/** Why a second replay of a killing test did not fail the criterion again, in one phrase. */
+function secondReplayNote(r: TestRunResult, acId: string): string {
+  const t = r.testId ?? r.testFile;
+  const where = "on a second replay of the same mutant";
+  if (r.status === "passed") return `${t} passed ${where}`;
+  const why = notAnAppFailure(r);
+  if (why !== undefined) return `${t} proved nothing ${where} (${why})`;
+  if (!r.criteriaFailed.includes(acId)) return `${t} failed ${r.criteriaFailed.join(", ") || "no criterion"}, not ${acId}, ${where}`;
+  return `${t} failed ${acId} ${where} but Kane did not blame the app (${r.verdict?.family ? `verdict family ${r.verdict.family}` : "no verdict"})`;
+}
+
+/**
+ * The verdict on one mutant from its Kane runs (healing off). Only a failure of the criterion Kane
+ * blames on the app (`killsAc`) kills it, and the caller then has it reproduced (R44); a run that
+ * failed for any other reason (R34: after one re-run) leaves it `invalid`.
  */
 export function falsifyVerdict(acId: string, results: TestRunResult[]): { verdict: Verdict; note?: string } {
-  if (results.some((r) => notAnAppFailure(r) === undefined && r.criteriaFailed.includes(acId))) return { verdict: "killed" };
+  if (results.some((r) => killsAc(r, acId))) return { verdict: "killed" };
   const unsure = results.filter((r) => notAnAppFailure(r) !== undefined);
   if (unsure.length > 0) return { verdict: "invalid", note: `inconclusive: ${unsure.map(inconclusiveNote).join("; ")}` };
+  const unblamed = results.filter((r) => r.status !== "passed" && r.criteriaFailed.includes(acId));
+  if (unblamed.length > 0) {
+    const what = unblamed.map((r) => `${r.testId ?? r.testFile} failed ${acId} but Kane did not blame the app (${r.verdict?.family ? `verdict family ${r.verdict.family}` : "no verdict"})`);
+    return { verdict: "invalid", note: `inconclusive: ${what.join("; ")}` };
+  }
   const failed = results.filter((r) => r.status !== "passed");
   if (failed.length > 0) {
     const what = failed.map((r) => `${r.testId ?? r.testFile} ${r.status}${r.criteriaFailed.length > 0 ? ` (${r.criteriaFailed.join(", ")})` : ""}`);
@@ -628,7 +654,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     let rationale = "";
     let logged = false;
     let stopNote = "results discarded: the pass stopped";
-    const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = []) => {
+    const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = [], again: TestRunResult[] = []) => {
       logged = true;
       out.usd += usd;
       await emit({
@@ -644,6 +670,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         ...(recheck ? { recheck: recheck.id } : {}),
       });
       for (const r of results) await emit({ t: "run", kind: "falsify", mutantId: id, result: r });
+      for (const r of again) await emit({ t: "run", kind: "falsify", mutantId: id, result: r, confirm: true });
       (verdict === "killed" ? out.killed : verdict === "invalid" ? out.invalid : out.survived).push(ac.id);
       const survived = verdict === "survived" || verdict === "survived-by-heal";
       if (survived) named(ac.id, id, slip, rationale, recheck ? { recheck: true } : {});
@@ -768,10 +795,40 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       return await meter.batch("falsify", async () => {
         kaneWindow = true;
         attacked = true;
+        const fileId = testIdsByFile();
+        const attribute = (r: TestRunResult, file: string): TestRunResult => (r.testId == null ? { ...r, testId: fileId.get(file) ?? null } : r);
         let results: TestRunResult[];
+        /** The second replays of the tests that killed it (R44). */
+        const again: TestRunResult[] = [];
+        /** Why the kill did not reproduce; undefined when it did, or when nothing killed it. */
+        let unconfirmed: string[] | undefined;
         try {
           const opts = { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: replays };
-          results = await runSettled(deps.tests, cwd, files, opts, relaunch(dir, port, id));
+          results = (await runSettled(deps.tests, cwd, files, opts, relaunch(dir, port, id))).map((r, i) => attribute(r, files[i]!));
+          // R44: a kill counts only when a second replay of that same test, on the same mutant started
+          // afresh, fails the criterion again for the app's fault; a pure replay costs no Kane credits
+          // (Kane's verdict on a failure does). The first killing test that reproduces is enough.
+          if (falsifyVerdict(ac.id, results).verdict === "killed") {
+            unconfirmed = [];
+            for (const [i, r] of results.entries()) {
+              if (!killsAc(r, ac.id)) continue;
+              let url: string;
+              try {
+                url = await relaunch(dir, port, `${id}-again`)();
+              } catch (e) {
+                unconfirmed.push(`${r.testId ?? r.testFile}: the mutant did not start again for a second replay (${startFailureText(e).slice(-300)})`);
+                break;
+              }
+              const [second] = await runSettled(deps.tests, cwd, [files[i]!], { ...opts, startUrl: url }, relaunch(dir, port, `${id}-again`));
+              const a = attribute(second!, files[i]!);
+              again.push(a);
+              if (killsAc(a, ac.id)) {
+                unconfirmed = undefined;
+                break;
+              }
+              unconfirmed.push(secondReplayNote(a, ac.id));
+            }
+          }
         } finally {
           await stopApp();
         }
@@ -781,10 +838,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           await recordTamper(bad);
           return "tamper";
         }
-        const fileId = testIdsByFile();
-        const attributed = results.map((r, i) => (r.testId == null ? { ...r, testId: fileId.get(files[i]!) ?? null } : r));
-        const v = falsifyVerdict(ac.id, attributed);
-        await finish(v.verdict, v.note, attributed);
+        const v = unconfirmed === undefined ? falsifyVerdict(ac.id, results) : { verdict: "invalid" as const, note: `inconclusive: the kill did not reproduce: ${unconfirmed.join("; ")}` };
+        await finish(v.verdict, v.note, results, again);
         await closeKaneWindow();
         return "done";
       });

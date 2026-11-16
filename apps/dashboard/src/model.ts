@@ -126,6 +126,8 @@ export type Observation = {
   title?: string;
   screenshot?: string;
   healed: boolean;
+  /** The second replay of a test that killed the mutant (R44): the kill counts only when it fails again. */
+  again?: true;
 };
 
 export type MutantView = {
@@ -185,6 +187,7 @@ function observe(e: RunEvent, at?: string): Observation {
     ...(v?.bugTitle && r.status !== "passed" ? { title: v.bugTitle } : {}),
     ...(r.screenshot ? { screenshot: r.screenshot } : {}),
     healed: r.healTriggered,
+    ...(e.confirm ? { again: true as const } : {}),
   };
 }
 

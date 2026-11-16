@@ -65,7 +65,7 @@ function Row({ item, live }: { item: Item; live: boolean }) {
       title = (
         <>
           <span className="mono">{o.test}</span> {item.title ?? ""}
-          {o.kind === "falsify" && o.mutantId && <span className="r-ctx"> replayed against {o.mutantId}</span>}
+          {o.kind === "falsify" && o.mutantId && <span className="r-ctx"> {o.again ? "replayed again against" : "replayed against"} {o.mutantId}</span>}
         </>
       );
       detail = (

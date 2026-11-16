@@ -88,6 +88,21 @@ describe("board", () => {
     expect(c.observation).toMatchObject({ kind: "falsify", mutantId: "m-ac-1-1", step: 2, observed: "Eligible." });
   });
 
+  it("a proved criterion shows the second replay that confirmed the kill (R44)", () => {
+    const failed = result("t-1", "failed", { failedStep: 2, criteriaFailed: ["ac-1"], verdict: { bugTitle: "Eligible above limit", family: "application_issue" } });
+    const events = [
+      design(["ac-1"], [["t-1", ["ac-1"]]]),
+      run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] })),
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0.0004, verdict: "killed" }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: failed }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: failed, confirm: true }),
+    ];
+    const c = board(stateFromLedger(events, null), events).proved[0]!;
+    expect(c.observation).toMatchObject({ kind: "falsify", mutantId: "m-ac-1-1", again: true });
+    const runs = timeline(events).flatMap((sg) => sg.items).filter((i) => i.kind === "run");
+    expect(runs.map((i) => (i.kind === "run" ? i.run.again ?? false : null))).toEqual([false, false, true]);
+  });
+
   it("on the fixture: the owed criteria point at t-3, the run that has not passed them", () => {
     const events = parseEvents(fixtureText());
     const cols = board(stateFromLedger(events, null), events);
