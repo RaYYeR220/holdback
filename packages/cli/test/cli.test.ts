@@ -410,7 +410,38 @@ describe("spec", () => {
     expect(calls).toBe(1);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Sealed 2 acceptance criteria");
+    expect(r.out).not.toContain("without a test");
     expect(io.closed).toBe(1);
+  });
+
+  it("says how many criteria were sealed without a test, and why: Kane's design cap or nothing to test them by (rehearsal issue 7)", async () => {
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n");
+    writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ kane: { designMax: 1 } }));
+    p = await loadProject(appDir);
+    const ac = (id: string) => ({ id, text: `criterion ${id}`, useCase: "uc-1", cites: [], trust: "derived" as const });
+    const r = await cli(["spec"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async (_p, _io, logFn) => {
+        await logFn({
+          at,
+          t: "design",
+          useCase: "uc-1",
+          acs: [ac("ac-1"), ac("ac-2"), ac("ac-3"), ac("ac-4")],
+          tests: [{ id: "t-1", title: "one", file: ".testmuai/tests/t1_test.md", verifies: ["ac-1"] }],
+          gaps: [],
+          credits: 1,
+          notes: { "ac-2": "no test designed (design cap 1)", "ac-3": "no test designed (design cap 1)" },
+        });
+        await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Sealed 4 acceptance criteria");
+    expect(r.out).toContain("2 sealed without a test (ac-2, ac-3): no test designed (design cap 1). kane.designMax caps the tests Kane designs per use case.");
+    expect(r.out).toContain("1 sealed without a test (ac-4): Kane designed no test for it.");
+    expect(r.out).toContain("They stay unproved: `holdback run` ends held back while a criterion has no test.");
+    // status names the reason too
+    expect((await cli(["status"])).out).toMatch(/ac-2\s+needs-spec\s+no test designed \(design cap 1\)/);
   });
 
   it("--dashboard answers through the in-process server: a pending approval shows in /api/state and a POST resolves the stage", async () => {

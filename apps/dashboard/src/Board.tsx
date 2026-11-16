@@ -5,7 +5,8 @@ const MARK_LABEL = { pass: "passed", fail: "failed", inconclusive: "inconclusive
 
 function Observed({ card }: { card: Card }) {
   const o = card.observation;
-  if (!o) return <p className="c-none">Kane has not run a test for it yet.</p>;
+  // a criterion no test verifies has nothing to run: its reason and its column say why
+  if (!o) return card.ac.tests.length === 0 ? null : <p className="c-none">Kane has not run a test for it yet.</p>;
   // a plain pass on a passing criterion says nothing the test marks below do not
   if (card.ac.status === "passing" && o.status === "passed" && !o.note && !o.screenshot) return null;
   const v = runVerdict(o);
@@ -92,6 +93,7 @@ function AcCard({ card }: { card: Card }) {
           </span>
         </p>
       ))}
+      {(ac.status === "needs-spec" || ac.status === "vacuous") && ac.reason && <p className="c-why">{ac.reason}</p>}
       <Observed card={card} />
       {card.mutant && <Breaker m={card.mutant} />}
       {card.tests.length > 0 && (

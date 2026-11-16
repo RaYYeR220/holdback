@@ -14,6 +14,8 @@ import {
   type IngestResult,
   type ReconcileResult,
   type Paused,
+  type AcNode,
+  type TestNode,
 } from "../kane/assurance.js";
 import { commitPaths, git, headSha, holdbackGitOptions, isRepoRoot, type GitOptions } from "../git.js";
 import { KaneMeter, type BalanceReader, type KaneCap } from "../ledger/credits.js";
@@ -578,6 +580,21 @@ export function ledgerCap(p: Project, override?: number): KaneCap | undefined {
   return credits === undefined ? undefined : { credits, spent: async () => reduce(await readEvents(p.ledgerFile)).kaneCredits };
 }
 
+/** Why a criterion has no test when Kane's design used every scenario `kane.designMax` allows (rehearsal issue 7). */
+export const designCapNote = (max: number): string => `no test designed (design cap ${max})`;
+
+/**
+ * The notes a design carries for its criteria no test verifies, when Kane designed as many tests as
+ * `max` allows: it stopped at the cap, so the spec is not what left them out. Still `needs-spec` for
+ * the gate (never proved). Under the cap, none: Kane found nothing in the spec to test them by.
+ */
+export function designCapNotes(acs: Pick<AcNode, "id">[], tests: Pick<TestNode, "verifies">[], max: number): Record<string, string> | undefined {
+  if (!(Number.isFinite(max) && max > 0 && tests.length >= max)) return undefined;
+  const covered = new Set(tests.flatMap((t) => t.verifies));
+  const bare = acs.filter((a) => !covered.has(a.id));
+  return bare.length > 0 ? Object.fromEntries(bare.map((a) => [a.id, designCapNote(max)])) : undefined;
+}
+
 /** sha256 over the spec files' bytes (as they are in the app dir) and the spec links: what an extraction was made from. */
 async function specSourceHash(p: Project): Promise<string> {
   const files: [string, string][] = [];
@@ -696,14 +713,9 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
       const g = await readGraph(cwd);
       const acs = g.acs.filter((a) => a.useCase === uc);
       const acIds = new Set(acs.map((a) => a.id));
-      const e: Extract<EventBody, { t: "design" }> = {
-        t: "design",
-        useCase: uc,
-        acs,
-        tests: g.tests.filter((t) => t.verifies.some((v) => acIds.has(v))),
-        gaps: g.gaps,
-        credits: d.credits,
-      };
+      const tests = g.tests.filter((t) => t.verifies.some((v) => acIds.has(v)));
+      const notes = designCapNotes(acs, tests, p.config.kane.designMax);
+      const e: Extract<EventBody, { t: "design" }> = { t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: d.credits, ...(notes ? { notes } : {}) };
       await emit(e);
       designed.set(uc, e);
     });

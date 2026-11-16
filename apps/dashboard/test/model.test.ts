@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, driftRows, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
+import { board, COLUMNS, driftRows, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -217,6 +217,13 @@ describe("meters and labels", () => {
     expect(gateLabel(stateFromLedger([], null))).toEqual({ word: "Held back", open: false, parts: ["no criteria yet"] });
     const green = [design(["ac-1"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
     expect(gateLabel(stateFromLedger(green, null))).toEqual({ word: "Released", open: true, parts: ["1/1 green"] });
+  });
+
+  it("a criterion with no test because of Kane's design cap says so on its card, and its column no longer blames the spec alone (rehearsal issue 7)", () => {
+    const events = [ev({ ...design(["ac-1", "ac-2"], [["t-1", ["ac-1"]]]), notes: { "ac-2": "no test designed (design cap 1)" } })];
+    const card = board(stateFromLedger(events, null), events)["needs-spec"][0]!;
+    expect(card.ac).toMatchObject({ id: "ac-2", status: "needs-spec", reason: "no test designed (design cap 1)" });
+    expect(COLUMNS.find((c) => c.key === "needs-spec")!.note).toBe("No test verifies it: Kane's design cap left it out, or the spec gives Kane nothing to test");
   });
 
   it("lists the tests Kane's evolve retired: still sealed, never run (the rehearsal's t-1)", () => {

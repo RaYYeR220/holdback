@@ -11,6 +11,7 @@ import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { gate } from "../src/ledger/gate.js";
 import { loadProject } from "../src/project.js";
+import type { LedgerEvent } from "../src/ledger/types.js";
 import { markTampered, tamperMarker } from "../src/tamper.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,17 @@ afterEach(() => {
     else process.env[k] = saved[k];
   }
 });
+
+/** Kane's graph with no test verifying `uncovered` (written for the test from the recorded view): the sequence reads it instead. */
+function withUncovered(...uncovered: string[]) {
+  const view = JSON.parse(readFileSync(fx("context-view.json"), "utf8")) as { nodes: { cid: string; slug: string; label: string }[]; edges: { src: string; dst: string; type: string }[] };
+  const slugOf = new Map(view.nodes.map((n) => [n.cid, n.slug]));
+  view.edges = view.edges.filter((e) => !(e.type === "verifies" && uncovered.includes(slugOf.get(e.dst) ?? "")));
+  const file = join(root, "view-uncovered.json");
+  writeFileSync(file, JSON.stringify(view));
+  const seq = join(root, "seq.txt");
+  writeFileSync(seq, readFileSync(seq, "utf8").replace(fx("context-view.json"), file));
+}
 
 function setup(prd: string) {
   const appDir = join(root, "app");
@@ -416,6 +428,33 @@ describe("runSpecStage", () => {
     writeFileSync(join(appDir, "PRD.md"), "tampered");
     writeFileSync(join(appDir, "holdback.config.json"), "{}");
     expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual(["app:PRD.md", "app:holdback.config.json"]);
+  }, 60_000);
+
+  it("a criterion left without a test because Kane's design hit kane.designMax says so: not the spec's fault, still not proved (rehearsal issue 7)", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ kane: { designMax: 3 } }));
+    withUncovered("ac-2", "ac-3");
+    const p = await loadProject(appDir);
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+    const events = await readEvents(p.ledgerFile);
+    const design = events.findLast((e) => e.t === "design") as Extract<LedgerEvent, { t: "design" }>;
+    expect(design.tests).toHaveLength(3); // as many tests as the cap allows
+    const bare = Object.values(reduce(events).acs).filter((a) => a.tests.length === 0);
+    expect(bare.map((a) => a.id)).toEqual(["ac-2", "ac-3"]);
+    for (const a of bare) expect(a).toMatchObject({ status: "needs-spec", reason: "no test designed (design cap 3)" });
+    expect(Object.keys(design.notes ?? {}).sort()).toEqual(bare.map((a) => a.id).sort());
+    expect(gate(reduce(events)).needsSpec.map((a) => a.id).sort()).toEqual(bare.map((a) => a.id).sort());
+  }, 60_000);
+
+  it("with room left under kane.designMax, a criterion without a test carries no design-cap reason", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    withUncovered("ac-2", "ac-3");
+    const p = await loadProject(appDir); // designMax 5, and Kane designed 3 tests
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+    const bare = Object.values(reduce(await readEvents(p.ledgerFile)).acs).filter((a) => a.tests.length === 0);
+    expect(bare.map((a) => a.id)).toEqual(["ac-2", "ac-3"]);
+    for (const a of bare) expect(a).toMatchObject({ status: "needs-spec" });
+    for (const a of bare) expect(a.reason).toBeUndefined();
   }, 60_000);
 
   it("a spec edited after the extraction is never sealed: the stage stops before the seal and says to run it again (n-3)", async () => {

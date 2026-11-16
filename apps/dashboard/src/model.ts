@@ -162,7 +162,7 @@ export const COLUMNS: { key: ColumnKey; label: string; note: string }[] = [
   { key: "passing", label: "Passing", note: "Kane passed every test that verifies it" },
   { key: "proved", label: "Proved", note: "Passing, and Kane caught a planted bug" },
   { key: "vacuous", label: "Vacuous", note: "A planted bug got past its tests" },
-  { key: "needs-spec", label: "Needs spec", note: "No test verifies it: the spec is too thin" },
+  { key: "needs-spec", label: "Needs spec", note: "No test verifies it: Kane's design cap left it out, or the spec gives Kane nothing to test" },
   { key: "rejected", label: "Rejected", note: "You turned it down when approving the design: never owed" },
 ];
 
