@@ -1123,6 +1123,15 @@ describe("drift and watch", () => {
     expect(asked).toHaveLength(1);
   });
 
+  it("drift always hands core what it reviewed, an empty review when it showed nothing: a spec that changes after the check is never re-planned unseen (m-6)", async () => {
+    await fixture();
+    await resealNow();
+    const seen: (Record<string, string> | undefined)[] = [];
+    const runDrift = (async (_p: unknown, _io: unknown, _l: unknown, d: { reviewed?: Record<string, string> }) => (seen.push(d.reviewed), { changed: false })) as never;
+    expect((await cli(["drift"], { runDrift })).code).toBe(0);
+    expect(seen).toEqual([{}]);
+  });
+
   it("a yes typed in the terminal to an unverified change tells drift so: its seal starts a fresh provenance window (I-2)", async () => {
     await fixture();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA rule after a turn.\n");
@@ -1358,6 +1367,32 @@ describe("reseal", () => {
     expect(r.out.toLowerCase()).toContain("\\u202e");
     expect(r.out.toLowerCase()).toContain("evil\\u200b_test.md");
     expect(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\p{Cf}/u.test(r.out + r.err)).toBe(false);
+  });
+
+  it("seals the config and spec as they were when it listed the differences: one that moves while the human decides is not re-sealed (I-1)", async () => {
+    await fixture();
+    await log({ at, t: "tamper", detail: "sealed files changed: .testmuai/tests/t1_test.md" });
+    writeFileSync(join(p.verifierDir, ".testmuai", "tests", "t1_test.md"), "# changed\n");
+    const sealsBefore = (await readEventsOf()).filter((e) => e.t === "seal").length;
+    // the config moves while the human reads the list
+    const confirm = async () => (writeFileSync(join(appDir, "holdback.config.json"), '{"start":{"cmd":"evil"}}'), true);
+    const r = await cli(["reseal"], { confirm });
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("holdback.config.json");
+    expect((await readEventsOf()).filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+    // and a spec edited then is recorded as an unverified change, never sealed
+    writeFileSync(join(appDir, "holdback.config.json"), "{}");
+    const spec = async () => (writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nWritten while the human decided.\n"), true);
+    const s = await cli(["reseal"], { confirm: spec });
+    expect(s.code).toBe(3);
+    expect((await readEventsOf()).filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+    expect((await readEventsOf()).findLast((e) => e.t === "spec.changed")).toMatchObject({ files: ["PRD.md"], duringAgentTurn: true });
+    // the pin reaches core's re-seal: every app-side file as listed
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\n");
+    const seen: unknown[] = [];
+    const reseal = (async (_p: Project, _l: unknown, _g: unknown, o?: { app?: Record<string, string> }) => void seen.push(o?.app)) as never;
+    expect((await cli(["reseal", "--yes"], { reseal })).code).toBe(0);
+    expect(Object.keys(seen[0] as object).sort()).toEqual(["app:PRD.md", "app:holdback.config.json"]);
   });
 
   it("refuses when nothing is sealed yet", async () => {

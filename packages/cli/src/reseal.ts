@@ -1,10 +1,11 @@
-import { holdbackGitOptions, loadProject, type Project } from "@holdback/core";
+import { appMovedFrom, appPinOnDisk, appSealKey, holdbackGitOptions, isAppKeyOf, loadProject, readEvents, specChangeEvent, type Project } from "@holdback/core";
 import { EXIT, explainFailure, humanView, ledgerLog, refuseInsideClaudeCode, snapshot, withCheckLock, type Ctx } from "./context.js";
 
 /**
  * The human re-seal: accepts what is on disk now as the sealed state, which lifts a tamper. A spec
  * edit is never re-sealed here: alone it is drift (refused: `holdback drift`), and next to a tamper
- * the spec keeps its old hash, so Kane still re-plans it.
+ * the spec keeps its old hash, so Kane still re-plans it. The config and spec are sealed as they were
+ * when the differences were listed (I-1): one that moves while the human decides is not re-sealed.
  */
 export async function resealCmd(caller: Ctx, o: { yes?: boolean }): Promise<number> {
   // the marker carries hook tool names and the entries are file names others wrote (N-m7)
@@ -21,6 +22,8 @@ async function reseal(ctx: Ctx, p: Project, o: { yes?: boolean }): Promise<numbe
       ctx.err("Nothing is sealed yet: run `holdback spec` first.");
       return EXIT.error;
     }
+    // I-1: the app-side files as they are now, while the human reads the list, are what the seal holds
+    const pin = await appPinOnDisk(p);
     const differ = [...s.specChanged, ...s.changed].sort();
     if (s.tamper === null && s.specChanged.length > 0) {
       ctx.err(`Only the spec changed since the last seal (${s.specChanged.join(", ")}): that is drift, not a tamper, and a re-seal would skip Kane's re-plan.`);
@@ -35,9 +38,20 @@ async function reseal(ctx: Ctx, p: Project, o: { yes?: boolean }): Promise<numbe
       ctx.err("Not re-sealed.");
       return EXIT.error;
     }
+    const moved = await appMovedFrom(p, pin);
+    if (moved.length > 0) {
+      // a spec edited meanwhile is recorded as an unverified change; a config is a tamper already on record
+      const specs = moved.filter((k) => p.config.spec.some((f) => isAppKeyOf(k, f))).map((k) => appSealKey(k).slice("app:".length));
+      if (specs.length > 0) {
+        const e = await specChangeEvent(p, await readEvents(p.ledgerFile), s.manifest, specs, true);
+        if (e) await ledgerLog(p)({ at: new Date().toISOString(), ...e });
+      }
+      ctx.err(`${moved.join(", ")} changed while you decided: nothing was re-sealed. Look at it, then run \`holdback reseal\` again.`);
+      return EXIT.unfinished;
+    }
     // the spec's old hash stays: the edit still reads as drift, for Kane to re-plan
     const keep = Object.fromEntries(s.specChanged.map((k) => [k, s.manifest![k]!]));
-    await ctx.deps.reseal(p, ledgerLog(p), await holdbackGitOptions(p.home), { keep });
+    await ctx.deps.reseal(p, ledgerLog(p), await holdbackGitOptions(p.home), { keep, app: { ...pin, ...keep } });
     if (s.specChanged.length > 0) ctx.out(`The spec changed too (${s.specChanged.join(", ")}): it keeps its old seal, so \`holdback drift\` (or \`holdback run\`) re-plans it with Kane.`);
     ctx.out("Re-sealed. The gate reopens when Kane proves the criteria again: run `holdback run`.");
     return EXIT.ok;

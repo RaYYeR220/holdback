@@ -31,7 +31,9 @@ export async function driftCmd(caller: Ctx, o: { answers?: string; dashboard?: b
         balance: ctx.deps.balance,
         warn: ctx.err,
         ...(kaneCap === undefined ? {} : { kaneCap }),
-        ...(reviewed === undefined ? {} : { reviewed }),
+        // what the human reviewed, an empty review when nothing was shown: a spec that changed after
+        // the check is never re-planned unseen (m-6)
+        reviewed: reviewed ?? {},
         ...(confirmed ? { confirmed } : {}),
       });
       return EXIT.ok;

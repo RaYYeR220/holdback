@@ -152,7 +152,7 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
         balance: ctx.deps.balance,
         warn: ctx.err,
         ...capped,
-        ...(review.reviewed ? { reviewed: review.reviewed } : {}),
+        reviewed: review.reviewed ?? {},
         ...(review.confirmed ? { confirmed: true } : {}),
       });
       if (d.changed && !d.applied && d.specMoved) return specMovedStop(ctx, d.specMoved, d.reason);
