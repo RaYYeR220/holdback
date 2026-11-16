@@ -450,6 +450,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect([cwd, uc]).toEqual([p.verifierDir, "uc-1"]);
     for (const part of [`ac-3 ("${AC3.text}")`, SLIP["ac-3"]!.behaviour, SLIP["ac-3"]!.inputs, SLIP["ac-3"]!.expected, SLIP["ac-3"]!.observed]) expect(because).toContain(part);
     expect(because).not.toContain("LIMITS[size]"); // the bug in a user's terms, not its code
+    // the human's own output (`holdback run`) shows what Kane was told (I-4)
+    expect(r.evolved).toEqual([{ uc: "uc-1", because }]);
 
     const ev = await after(since);
     expect(tags(ev)).toEqual([

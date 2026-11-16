@@ -198,7 +198,7 @@ describe("status and owed", () => {
     expect(doc.gate).toMatchObject({ open: false, owed: ["ac-2"], tampered: false });
   });
 
-  it("status shows Kane's evolve as a loop event (minted, retired, the because) and why a criterion is vacuous or needs the spec; the agent never sees the because (R40)", async () => {
+  it("status shows Kane's evolve as a loop event (tests minted and retired) and why a criterion is vacuous or needs the spec, never the because, with or without CLAUDECODE (R40, I-4)", async () => {
     await greenFixture();
     const because = "A planted bug got past every test of this use case. ac-2 (\"criterion ac-2\"): a household of 9 is held to the 8-person limit.";
     await log({ at, t: "mutant", id: "m-ac-2-1", ac: "ac-2", patch: "p", model: "m", usd: 0, verdict: "survived" });
@@ -213,18 +213,22 @@ describe("status and owed", () => {
       credits: 0,
       notes: { "ac-1": "Kane's evolved tests no longer cover it" },
     });
-    const human = await cli(["status"]);
-    expect(human.out).toMatch(/ac-1\s+needs-spec\s+Kane's evolved tests no longer cover it/);
-    expect(human.out).toContain("Kane evolved uc-1 after a planted bug got past its tests: minted t-4; retired t-1, t-2 (11.39 credits)");
-    expect(human.out).toContain(`Because: ${because}`);
-    const doc = JSON.parse((await cli(["status", "--json"])).out);
-    expect(doc.evolved).toEqual([{ uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39, because }]);
-
-    const agent = await cli(["status"], { env: { CLAUDECODE: "1" } });
-    expect(agent.out).toContain("Kane evolved uc-1 after a planted bug got past its tests: minted t-4; retired t-1, t-2");
-    expect(agent.out).not.toContain("household of 9");
-    const agentDoc = JSON.parse((await cli(["status", "--json"], { env: { CLAUDECODE: "1" } })).out);
-    expect(agentDoc.evolved).toEqual([{ uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39 }]);
+    await log({ at, t: "falsify.evolved", uc: "uc-1", because: "cover ac-1 again: a household of 9", minted: ["t-5", "t-6"], retired: [], credits: 4, mutants: ["m-ac-2-1"], followUp: true });
+    // `env -u CLAUDECODE holdback status` is open to the agent: the because (the target of the hidden test) is never printed
+    for (const env of [{}, { CLAUDECODE: "1" }]) {
+      const human = await cli(["status"], { env });
+      expect(human.out).toMatch(/ac-1\s+needs-spec\s+Kane's evolved tests no longer cover it/);
+      expect(human.out).toContain("uc-1 evolved: 1 test minted, 2 retired (11.39 credits)");
+      expect(human.out).toContain("uc-1 evolved again, to cover criteria its tests had lost: 2 tests minted, 0 retired (4 credits)");
+      expect(human.out).not.toContain("household of 9");
+      expect(human.out).not.toMatch(/because/i);
+      const doc = JSON.parse((await cli(["status", "--json"], { env })).out);
+      expect(doc.evolved).toEqual([
+        { uc: "uc-1", minted: ["t-4"], retired: ["t-1", "t-2"], credits: 11.39 },
+        { uc: "uc-1", minted: ["t-5", "t-6"], retired: [], credits: 4, followUp: true },
+      ]);
+      expect(JSON.stringify(doc)).not.toContain("household of 9");
+    }
   });
 
   it("status keeps the gate closed while every criterion passes but a test's latest run proved nothing (R34)", async () => {
@@ -719,11 +723,14 @@ describe("run", () => {
 
   it("goes back to the build loop while falsify re-opens criteria, with one count of Kane's evolves for the whole run (R40)", async () => {
     await greenFixture();
-    const s = stages({ falsify: [{ ...falsifyOk, redesigned: ["uc-1"] }, falsifyOk] });
+    const evolved = [{ uc: "uc-1", because: "A planted bug got past every test. ac-2 (\"limit\"): a household of 9\u001b[31m." }];
+    const s = stages({ falsify: [{ ...falsifyOk, redesigned: ["uc-1"], evolved }, falsifyOk] });
     const r = await cli(["run"], s.deps);
     expect(r.code).toBe(0);
     expect(s.calls).toEqual(["build", "falsify", "build", "falsify"]);
     expect(r.out).toContain("Kane evolved the tests of uc-1 after a planted bug got past them: building again");
+    // the human sees what Kane was told (I-4: here and on the dashboard, never in `status`), escaped
+    expect(r.out).toContain('  uc-1, Kane was told: A planted bug got past every test. ac-2 ("limit"): a household of 9\\x1b[31m.');
     // the bound of two evolves per use case holds across the run's falsify passes
     const [first, second] = s.seen.falsify as { evolves?: Map<string, number> }[];
     expect(first!.evolves).toBeInstanceOf(Map);

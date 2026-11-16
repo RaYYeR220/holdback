@@ -182,6 +182,8 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       if (stop) break;
       if (f.redesigned.length > 0) {
         ctx.out(`Kane evolved the tests of ${f.redesigned.join(", ")} after a planted bug got past them: building again`);
+        // what Kane was told is the target of its hidden new test: the human's own output and the dashboard only (I-4)
+        for (const e of f.evolved ?? []) ctx.out(`  ${e.uc}${e.followUp ? " (follow-up)" : ""}, Kane was told: ${e.because}`);
         continue;
       }
       // the closing replay against the real build can leave criteria owed or regressed: that is the

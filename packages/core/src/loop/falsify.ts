@@ -71,6 +71,8 @@ export type FalsifyResult = {
   invalid: string[];
   /** Use cases Kane evolved after a survivor (R40): their ACs are `owed` again (back to the build loop, then a re-check). */
   redesigned: string[];
+  /** What Kane was told for each evolve that was sealed: for the human's own output (`holdback run`), never `status` (I-4). */
+  evolved?: { uc: string; because: string; followUp?: boolean }[];
   /**
    * Survivors left `vacuous`: Kane's evolve added no test, the run's evolves of the use case are
    * spent, or a re-checked survivor got past the new tests too. Reported, not blocked on.
@@ -1065,7 +1067,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
             drifted = true;
             driftFiles = moved;
           } else {
-            for (const e of logged) await emit(e);
+            for (const e of logged) {
+              await emit(e);
+              if (e.t === "falsify.evolved") (out.evolved ??= []).push({ uc: e.uc, because: e.because, ...(e.followUp ? { followUp: true } : {}) });
+            }
             // Kane authored the change: the new tests are sealed, the spec as it was (N-I2)
             await reseal(p, append, gitOpts, { keep: specKept(p, manifest!), by: "kane" }); // also anchors the recordings
             sealed = true;
