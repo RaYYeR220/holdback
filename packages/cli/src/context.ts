@@ -347,7 +347,7 @@ export function parseKaneCap(raw: string | undefined): number | undefined {
 
 /**
  * Prints why a command failed. A tamper (on record or just found) is reported as one and exits 2;
- * the Kane credit cap reached is a stop (exit 3), not an error.
+ * the Kane credit cap reached, or a spec that changed during the spec stage, is a stop (exit 3), not an error.
  */
 export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise<number> {
   const msg = e instanceof Error ? e.message : String(e);
@@ -355,7 +355,7 @@ export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise
     ctx.err(tamperMessage(msg));
     return EXIT.tamper;
   }
-  if (e instanceof Error && e.name === "KaneCapReached") {
+  if (e instanceof Error && (e.name === "KaneCapReached" || e.name === "SpecChangedDuringStage")) {
     ctx.err(msg);
     return EXIT.unfinished;
   }

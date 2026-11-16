@@ -88,7 +88,8 @@ export function provenanceStart(events: LedgerEvent[]): number {
 
 /** The latest `spec.changed` in the provenance window: how Holdback first saw the spec edit a drift is about to re-plan. */
 export function latestSpecChange(events: LedgerEvent[]): SpecChanged | undefined {
-  for (let i = events.length - 1; i > provenanceStart(events); i--) {
+  const start = provenanceStart(events);
+  for (let i = events.length - 1; i > start; i--) {
     const e = events[i]!;
     if (e.t === "spec.changed") return e;
   }
@@ -575,6 +576,14 @@ async function specSourceHash(p: Project): Promise<string> {
   return createHash("sha256").update(JSON.stringify({ files, urls: p.config.specUrls })).digest("hex");
 }
 
+/** The spec on disk is not what the stage extracted from: nothing is sealed. The CLI exits 3. */
+export class SpecChangedDuringStage extends Error {
+  constructor() {
+    super("the spec changed during the spec stage — run `holdback spec` again");
+    this.name = "SpecChangedDuringStage";
+  }
+}
+
 export const ALREADY_SEALED =
   "already sealed: to change the criteria, edit the spec and run `holdback drift` (after a tamper, `holdback reseal`)";
 
@@ -597,7 +606,14 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   };
   const cwd = p.verifierDir;
 
-  const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first, undefined, "spec");
+  // n-3: the spec as the stage last knew it: the bytes it extracted from, plus the Clarifications it
+  // appended itself (read right after each Kane call, never across a human's approval)
+  let known = "";
+  const drive = async <R extends IngestResult | DesignResult>(first: R) => {
+    const r = await drivePaused(p, io, emit, first, undefined, "spec");
+    known = await specSourceHash(p);
+    return r;
+  };
 
   checkSpecPaths(p);
   const earlier = await readEvents(p.ledgerFile);
@@ -611,6 +627,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   // extraction, answering Kane's questions (one metered Kane batch); skipped when an earlier attempt
   // finished them for the spec as it is now
   const hash = await specSourceHash(p);
+  known = hash;
   if (!earlier.some((e) => e.t === "spec.extracted" && e.hash === hash)) {
     for (const rel of p.config.spec) {
       const dest = path.join(cwd, rel);
@@ -630,7 +647,8 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
       const extracted = await drive<IngestResult>(first);
       if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
       // hashed after the answers went into PRD.md: a resumed stage compares the spec as it is now
-      await emit({ t: "spec.extracted", hash: await specSourceHash(p) });
+      known = await specSourceHash(p);
+      await emit({ t: "spec.extracted", hash: known });
     });
   }
 
@@ -698,6 +716,8 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   }
 
   // 6. point the tests at the app, commit Holdback's own spec edit, then seal (a fresh seal is the only thing that lifts a tamper)
+  // n-3: the seal hashes the disk, so a spec edited since Kane last read it would be sealed as approved
+  if ((await specSourceHash(p)) !== known) throw new SpecChangedDuringStage();
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
   await commitClarifications(p, clarifiedBefore, deps.warn);
   await reseal(p, log);

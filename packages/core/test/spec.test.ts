@@ -417,4 +417,23 @@ describe("runSpecStage", () => {
     writeFileSync(join(appDir, "holdback.config.json"), "{}");
     expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual(["app:PRD.md", "app:holdback.config.json"]);
   }, 60_000);
+
+  it("a spec edited after the extraction is never sealed: the stage stops before the seal and says to run it again (n-3)", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const io: HumanIO = {
+      async answer(qs) {
+        return Object.fromEntries(qs.map((q) => [q.id, "Show errors"]));
+      },
+      async approve(items) {
+        // the design approval takes minutes: an edit lands while the human reads it
+        if (items.some((i) => i.ref === "t-1")) appendFileSync(join(appDir, "PRD.md"), "\nA late rule.\n");
+        return items.map((i) => i.ref);
+      },
+    };
+    const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
+    expect(err?.message).toContain("the spec changed during the spec stage — run `holdback spec` again");
+    expect(err?.name).toBe("SpecChangedDuringStage");
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "seal")).toBe(false);
+  }, 60_000);
 });

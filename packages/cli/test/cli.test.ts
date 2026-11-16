@@ -712,6 +712,18 @@ describe("run", () => {
     expect(r.err).toContain("Kane credit cap reached: 13 of 12.5");
   });
 
+  it("a spec stage that finds the spec changed under it exits 3 (n-3)", async () => {
+    writeFileSync(join(appDir, "PRD.md"), "# PRD\n");
+    const r = await cli(["spec"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async () => {
+        throw Object.assign(new Error("the spec changed during the spec stage — run `holdback spec` again"), { name: "SpecChangedDuringStage" });
+      },
+    });
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("run `holdback spec` again");
+  });
+
   it("skips falsify with --no-falsify and passes --max-turns on", async () => {
     await greenFixture();
     const s = stages();
