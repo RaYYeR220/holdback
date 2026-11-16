@@ -15,6 +15,17 @@ export async function resealCmd(caller: Ctx, o: { yes?: boolean }): Promise<numb
   return withCheckLock(ctx, p, () => reseal(ctx, p, o));
 }
 
+/**
+ * What the re-seal pins (I-1, n-1): the config as read now, a spec file the listing showed as
+ * changed as read now (it keeps its old seal either way), and every other spec file at the hash the
+ * manifest holds: a spec edit that landed after the snapshot is then seen as moved, never sealed.
+ */
+export function pinForReseal(onDisk: Record<string, string>, manifest: Record<string, string>, specKeys: string[], specChanged: string[]): Record<string, string> {
+  const pin = { ...onDisk };
+  for (const k of specKeys) if (!specChanged.includes(k)) pin[k] = manifest[k] ?? "absent";
+  return pin;
+}
+
 async function reseal(ctx: Ctx, p: Project, o: { yes?: boolean }): Promise<number> {
   try {
     const s = await snapshot(p);
@@ -23,7 +34,7 @@ async function reseal(ctx: Ctx, p: Project, o: { yes?: boolean }): Promise<numbe
       return EXIT.error;
     }
     // I-1: the app-side files as they are now, while the human reads the list, are what the seal holds
-    const pin = await appPinOnDisk(p);
+    const pin = pinForReseal(await appPinOnDisk(p), s.manifest, p.config.spec.map((f) => appSealKey(f)), s.specChanged);
     const differ = [...s.specChanged, ...s.changed].sort();
     if (s.tamper === null && s.specChanged.length > 0) {
       ctx.err(`Only the spec changed since the last seal (${s.specChanged.join(", ")}): that is drift, not a tamper, and a re-seal would skip Kane's re-plan.`);

@@ -1358,7 +1358,7 @@ describe("reseal", () => {
     const calls: string[] = [];
     const reseal = (async (_p: Project, logFn: (e: LedgerEvent) => Promise<void>) => {
       calls.push("reseal");
-      await logFn({ at, t: "seal", manifest: {} });
+      await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
     }) as never;
     const asked: string[] = [];
     const yes = await cli(["reseal"], { reseal, confirm: async (q) => (asked.push(q), true) });
@@ -1523,5 +1523,17 @@ describe("clean, serve and help", () => {
 describe("exit codes", () => {
   it("keeps 2 for tampers only", () => {
     expect(EXIT).toEqual({ ok: 0, error: 1, tamper: 2, unfinished: 3, aborted: 130 });
+  });
+});
+
+describe("reseal's pin (n-1)", () => {
+  it("pins every spec file the listing did not show as changed at the manifest's hash, so an edit after the snapshot is caught", async () => {
+    const { pinForReseal } = await import("../src/reseal.js");
+    const manifest = { "app:holdback.config.json": "c0", "app:PRD.md": "old", "app:rules.md": "r0" };
+    const onDisk = { "app:holdback.config.json": "c1", "app:PRD.md": "new", "app:rules.md": "r1" };
+    const pin = pinForReseal(onDisk, manifest, ["app:PRD.md", "app:rules.md"], ["app:rules.md"]);
+    // the config as read after the listing; the unchanged spec as the seal holds it; the already changed one as read
+    expect(pin).toEqual({ "app:holdback.config.json": "c1", "app:PRD.md": "old", "app:rules.md": "r1" });
+    expect(pinForReseal({ "app:PRD.md": "x" }, {}, ["app:PRD.md"], [])).toEqual({ "app:PRD.md": "absent" });
   });
 });
