@@ -42,7 +42,7 @@ describe("@holdback/core/browser", () => {
     const g = graph(path.join(SRC, "browser.ts"));
     expect(g.external).toEqual([]);
     expect(g.external.filter((s) => s.startsWith("node:") || builtins.has(s))).toEqual([]);
-    expect(g.files).toEqual(["browser.ts", "kane/outcome.ts", "ledger/credits.ts", "ledger/gate.ts", "ledger/parse.ts", "ledger/reduce.ts"]);
+    expect(g.files).toEqual(["browser.ts", "kane/outcome.ts", "ledger/credits.ts", "ledger/gate.ts", "ledger/parse.ts", "ledger/reduce.ts", "ledger/verdict.ts"]);
   });
 
   it("exports the same functions as the node entry", () => {
@@ -51,5 +51,6 @@ describe("@holdback/core/browser", () => {
     expect(browser.parseEvents).toBe(core.parseEvents);
     expect(browser.eventCredits).toBe(core.eventCredits);
     expect(browser.notAnAppFailure).toBe(core.notAnAppFailure);
+    expect(browser.verdict).toBe(core.verdict);
   });
 });

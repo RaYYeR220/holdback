@@ -45,6 +45,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
             inconclusive: agent ? s.gate.inconclusive.length : s.gate.inconclusive.map((u) => u.test),
           },
           tamper: s.tamper === null ? null : { marker: s.marker, changed: s.changed },
+          verdict: s.verdict,
           specChanged: s.specChanged,
           evolved,
         },
@@ -73,6 +74,8 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
     for (const r of rows) ctx.out(`${pad(r.id, wi)}  ${pad(r.status, ws)}  ${pad(r.tests, wt)}  ${r.failure}`.trimEnd());
   }
   ctx.out("");
+  // the one verdict (R44): what `holdback run` would exit with and what the dashboard says
+  ctx.out(`Verdict: ${s.verdict.headline}`);
   ctx.out(`Gate: ${open ? "open" : "closed"} | owed ${s.gate.owed.length + s.gate.regressed.length} | turn ${s.state.turn} | Kane credits ${kaneCreditsText(s.state)} | breaker $${s.state.breakerUsd.toFixed(4)}`);
   // the agent's count is what keeps the gate shut
   const unsure = agent ? inconclusiveLine(s.gate.inconclusive, true) : inconclusiveLine(s.state.inconclusive);

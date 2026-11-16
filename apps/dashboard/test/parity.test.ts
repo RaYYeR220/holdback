@@ -1,12 +1,16 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
-import { gate, loadProject, readEvents, reduce, serve } from "@holdback/core";
+import { appendEvent, appSealFiles, gate, loadProject, readEvents, reduce, seal, serve, type Verdict } from "@holdback/core";
 import { gate as browserGate, parseEvents as browserParse, reduce as browserReduce } from "@holdback/core/browser";
-import { stateFromLedger } from "../src/model";
+import { gateLabel, stateFromLedger } from "../src/model";
 import { loadReplay } from "../src/source";
-import { FIXTURE, fixtureFetch, fixtureText } from "./helpers";
+import { DASH, FIXTURE, fixtureFetch, fixtureText, REHEARSAL } from "./helpers";
+
+/** The built CLI (`pnpm -r build` runs before the tests). */
+const CLI = path.resolve(DASH, "..", "..", "packages", "cli", "dist", "index.js");
 
 const json = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
@@ -55,6 +59,51 @@ describe("the replay reduces the ledger exactly as core does", () => {
   });
 });
 
+describe("the CLI and the dashboard give one verdict (R44)", () => {
+  let tmp: string;
+  beforeAll(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "hb-dash-verdict-"));
+  });
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("on the rehearsal's ledger: `holdback status --json`, the server and the dashboard's headline all hold it back, as `run`'s exit 3 did", async () => {
+    // a throwaway app with the rehearsal's ledger, sealed as it is on disk: no tamper anywhere
+    const home = path.join(tmp, "home");
+    const app = path.join(tmp, "app");
+    mkdirSync(app, { recursive: true });
+    writeFileSync(path.join(app, "PRD.md"), "# Pantry\n");
+    const prevHome = process.env.HOLDBACK_HOME;
+    process.env.HOLDBACK_HOME = home;
+    let srv: Awaited<ReturnType<typeof serve>> | undefined;
+    try {
+      const p = await loadProject(app);
+      writeFileSync(p.ledgerFile, readFileSync(REHEARSAL, "utf8"));
+      await appendEvent(p.ledgerFile, { at: "2026-11-16T03:00:00.000Z", t: "seal", manifest: await seal(p.verifierDir, { appDir: app, files: appSealFiles(p) }) });
+      const events = await readEvents(p.ledgerFile);
+
+      // the CLI, as a human runs it (no Claude Code session in its environment)
+      const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE")));
+      const out = execFileSync(process.execPath, [CLI, "status", "--json"], { cwd: app, env: { ...env, HOLDBACK_HOME: home }, encoding: "utf8" });
+      const cli = (JSON.parse(out) as { verdict: Verdict }).verdict;
+      const dash = stateFromLedger(browserParse(readFileSync(p.ledgerFile, "utf8")), null);
+      expect(cli).toEqual(json(dash.verdict));
+      expect(cli).toMatchObject({ released: false, exit: 3, headline: "Held back — 8/10 green, 2 criteria unproved: a planted bug survived" });
+      expect(gateLabel(dash)).toMatchObject({ word: "Held back", open: false });
+      expect(`${gateLabel(dash).word} — ${gateLabel(dash).parts.join(", ")}`).toBe(cli.headline);
+
+      // and the live dashboard's /api/state carries the same verdict
+      srv = await serve(p, { port: 0 });
+      const r = await fetch(`http://127.0.0.1:${srv.port}/api/state`, { headers: { "x-holdback-token": srv.token } });
+      expect(((await r.json()) as { verdict: Verdict }).verdict).toEqual(cli);
+      expect(events.length).toBe(102);
+    } finally {
+      await srv?.close();
+      if (prevHome === undefined) delete process.env.HOLDBACK_HOME;
+      else process.env.HOLDBACK_HOME = prevHome;
+    }
+  });
+});
+
 describe("the browser's /api/state equals the server's", () => {
   let tmp: string;
   let prevHome: string | undefined;
@@ -81,6 +130,9 @@ describe("the browser's /api/state equals the server's", () => {
       const server = (await r.json()) as Record<string, unknown>;
       const mine = json(stateFromLedger(browserParse(fixtureText()), null));
       for (const k of ["state", "gate", "counts", "credits", "breakerUsd", "pending"] as const) expect({ [k]: mine[k] }).toEqual({ [k]: server[k] });
+      // the server also counts the disk's tamper in its verdict; on the ledger alone they agree
+      expect(server.verdict).toMatchObject({ state: "tampered", exit: 2 });
+      expect(mine.verdict).toMatchObject({ state: "held-back", exit: 3 });
       // the seal is checked against disk only on the server: this throwaway project has none of the sealed files
       expect(server.tamper).not.toBeNull();
       expect(mine.tamper).toBeNull();

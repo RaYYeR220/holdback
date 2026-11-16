@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acquireCheckLock,
@@ -27,6 +28,8 @@ import { defaultCtx, terminalConfirm } from "../src/context.js";
 import { EXIT, installSignals, main, scrubAgentEnv, type Deps } from "../src/index.js";
 
 const at = "2026-11-15T00:00:00.000Z";
+/** The live rehearsal's ledger (2026-11-16), sanitized: 10 criteria, 5 proved, 3 passing, 2 vacuous. */
+const REHEARSAL = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "core", "test", "fixtures", "rehearsal", "ledger.jsonl");
 const saved = { ...process.env };
 let root: string;
 let appDir: string;
@@ -197,6 +200,16 @@ describe("status and owed", () => {
     expect(doc.state.acs["ac-2"]).toMatchObject({ status: "owed", lastFailure: { test: "t-2", verdict: { bugTitle: "Limit off by one" } } });
     expect(doc.state.credits).toBe(15);
     expect(doc.gate).toMatchObject({ open: false, owed: ["ac-2"], tampered: false });
+    expect(doc.verdict).toMatchObject({ state: "held-back", released: false, exit: 3, headline: "Held back — 1/2 green, 1 owed" });
+  });
+
+  it("status leads with the one verdict, the same the run's summary and the dashboard give (R44)", async () => {
+    await greenFixture();
+    await log({ at, t: "mutant", id: "m-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "survived" });
+    const r = await cli(["status"]);
+    expect(r.out).toContain("Verdict: Held back — 1/2 green, 1 criterion unproved: a planted bug survived");
+    // the gate the coding agent works toward is open; that is not a release
+    expect(r.out).toContain("Gate: open");
   });
 
   it("status shows Kane's evolve as a loop event (tests minted and retired) and why a criterion is vacuous or needs the spec, never the because, with or without CLAUDECODE (R40, I-4)", async () => {
@@ -658,20 +671,39 @@ describe("run", () => {
     expect(r.out).toContain("Turns this run: 2");
     expect(r.out).toContain("Kane credits: 16.5\n"); // no metered batch: the per-run sum is all there is
     expect(r.out).toContain("Breaker spend: $0.0000 of $2");
+    expect(r.out).toContain("Verdict: Released — 2/2 green, 0/2 proved");
     expect(s.io.closed).toBe(1);
   });
 
-  it("exits 3 when the run finishes with the gate not fully green (owed, vacuous or needs-spec left)", async () => {
+  it("exits 3 when the run finishes held back (owed, vacuous or needs-spec left)", async () => {
     await fixture(); // ac-2 is still owed (after falsify it would go back to building: I5)
     const owed = await cli(["run", "--no-falsify"], stages().deps);
     expect(owed.code).toBe(3);
     expect(owed.out).toContain("Criteria: 1 owed");
-    expect(owed.err).toContain("not fully green");
+    expect(owed.err).toContain("Finished, but held back (1 owed)");
     await log({ at, t: "run", kind: "build", turn: 2, result: result("t-2", "passed") });
     await log({ at, t: "mutant", id: "m-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "survived" });
     const vacuous = await cli(["run"], stages().deps);
     expect(vacuous.code).toBe(3);
     expect(vacuous.out).toContain("1 vacuous");
+    expect(vacuous.out).toContain("Verdict: Held back — 1/2 green, 1 criterion unproved: a planted bug survived");
+    expect(vacuous.err).toContain("Finished, but held back");
+  });
+
+  it("on the live rehearsal's ledger, `run` ends held back with exit 3 and the dashboard's headline, though the gate is open (R44)", async () => {
+    // the rehearsal's ledger (sanitized), then a seal of this throwaway app as it is: nothing on disk differs
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n");
+    writeFileSync(join(appDir, "holdback.config.json"), "{}");
+    p = await loadProject(appDir);
+    writeFileSync(p.ledgerFile, readFileSync(REHEARSAL, "utf8"));
+    await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+    const r = await cli(["run", "--no-falsify"], stages().deps);
+    expect(r.code).toBe(3);
+    expect(r.out).toContain("Gate: open");
+    expect(r.out).toContain("Criteria: 0 owed, 3 passing, 5 proved, 2 vacuous, 0 needs-spec");
+    expect(r.out).toContain("Verdict: Held back — 8/10 green, 2 criteria unproved: a planted bug survived");
+    const doc = JSON.parse((await cli(["status", "--json"])).out);
+    expect(doc.verdict).toMatchObject({ released: false, exit: 3, headline: "Held back — 8/10 green, 2 criteria unproved: a planted bug survived" });
   });
 
   it("counts criteria the human turned down apart, and they never keep the run from finishing green (I3)", async () => {
@@ -1478,7 +1510,7 @@ describe("clean, serve and help", () => {
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/Never delete the mut\/ or bisect\//);
     expect(r.out).toContain("`holdback clean`");
-    expect(r.out).toMatch(/3 `run` finished but the gate is not fully green/);
+    expect(r.out).toMatch(/3 `run` finished but held back/);
     for (const c of ["init", "spec", "run", "drift", "watch", "status", "owed", "reseal", "clean"]) expect(r.out).toContain(c);
   });
 

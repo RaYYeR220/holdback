@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 export const DASH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const FIXTURE = path.join(DASH, "fixtures");
 export const fixtureText = () => readFileSync(path.join(FIXTURE, "ledger.jsonl"), "utf8");
+/** The live rehearsal's ledger (2026-11-16), sanitized: core's test fixture. */
+export const REHEARSAL = path.resolve(DASH, "..", "..", "packages", "core", "test", "fixtures", "rehearsal", "ledger.jsonl");
 
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jsonl": "application/x-ndjson", ".png": "image/png", ".woff2": "font/woff2" };
 

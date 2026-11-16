@@ -41,7 +41,7 @@ import {
 import { defaultHookDeps, type HookDeps } from "./hooks.js";
 import { HUMAN_ONLY, tamperMessage } from "./messages.js";
 
-/** Process exit codes: 2 is only ever a tamper, 3 a finished run that is not fully green, 130 an interrupt. */
+/** Process exit codes: 2 is only ever a tamper, 3 a finished run held back (see `verdict`), 130 an interrupt. */
 export const EXIT = { ok: 0, error: 1, tamper: 2, unfinished: 3, aborted: 130 } as const;
 
 export type ClosableIO = HumanIO & { close(): void };

@@ -6,6 +6,7 @@
 export { parseEvents } from "./ledger/parse.js";
 export { reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
+export { verdict, type Verdict, type VerdictState } from "./ledger/verdict.js";
 export { eventCredits } from "./ledger/credits.js";
 export { notAnAppFailure } from "./kane/outcome.js";
 export type { RunKind, LedgerEvent, AcStatus, AcState, LedgerState } from "./ledger/types.js";

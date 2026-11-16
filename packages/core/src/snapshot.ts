@@ -2,6 +2,7 @@ import { checkSeal, isAppKeyOf } from "./seal.js";
 import { readEvents } from "./ledger/store.js";
 import { reduce } from "./ledger/reduce.js";
 import { gate } from "./ledger/gate.js";
+import { verdict, type Verdict } from "./ledger/verdict.js";
 import { lastSeal } from "./loop/build.js";
 import { tamperMarker } from "./tamper.js";
 import type { LedgerEvent, LedgerState } from "./ledger/types.js";
@@ -20,6 +21,8 @@ export type Snapshot = {
   specChanged: string[];
   /** Why the gate is shut by a tamper (marker, ledger record or changed files); null when there is none. */
   tamperDetail: string | null;
+  /** The one verdict (R44): what `holdback run` would exit with, `status` and the dashboard say, with the disk's tamper counted. */
+  verdict: Verdict;
 };
 
 /**
@@ -49,5 +52,6 @@ export async function snapshot(p: Project): Promise<Snapshot> {
     changed,
     specChanged,
     tamperDetail: tampered ? (detail ?? "the ledger records a tamper") : null,
+    verdict: verdict(state, { tampered }),
   };
 }

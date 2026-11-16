@@ -1,5 +1,5 @@
-import { eventCredits, gate as coreGate, notAnAppFailure, reduce } from "@holdback/core/browser";
-import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, TestRunResult } from "@holdback/core/browser";
+import { eventCredits, gate as coreGate, notAnAppFailure, reduce, verdict as coreVerdict } from "@holdback/core/browser";
+import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, TestRunResult, Verdict } from "@holdback/core/browser";
 
 /* ------------------------------------------------------------------ the wire: GET /api/state */
 
@@ -36,6 +36,8 @@ export type ApiState = {
   tamper: { detail: string; marker: string | null; changed: string[] } | null;
   specChanged: string[];
   pending: PendingPrompt[];
+  /** The one verdict (R44): what `holdback run` exits with and `status` prints (older servers leave it out). */
+  verdict?: Verdict;
 };
 
 /**
@@ -70,6 +72,7 @@ export function stateFromLedger(events: LedgerEvent[], config: ConfigSummary | n
     tamper: state.tampered ? { detail: lastTamper?.t === "tamper" ? lastTamper.detail : "the ledger records a tamper", marker: null, changed: [] } : null,
     specChanged: [],
     pending: [],
+    verdict: coreVerdict(state),
   };
 }
 
@@ -558,18 +561,15 @@ export function meters(api: ApiState, events: LedgerEvent[]): Meters {
 
 /* ------------------------------------------------------------------ the gate pill */
 
+/** The run's verdict (R44): the one the CLI exits with, never "Released" unless `holdback run` would exit 0. */
+export function verdictOf(api: ApiState): Verdict {
+  return api.verdict ?? coreVerdict(api.state, { tampered: api.tamper !== null });
+}
+
+/** The headline: the verdict's word, then its parts (the proved count is shown on its own, so a release leaves it out). */
 export function gateLabel(api: ApiState): { word: string; open: boolean; parts: string[] } {
-  const g = api.gate;
-  const n = api.counts.acs;
-  if (g.open) return { word: "Released", open: true, parts: [`${n}/${n} green`] };
-  const parts: string[] = [];
-  if (g.tampered || api.tamper) parts.push("tampered");
-  const owed = g.owed.length + g.regressed.length;
-  if (n === 0) parts.push("no criteria yet");
-  else parts.push(`${owed} owed`);
-  if (g.regressed.length) parts.push(`${g.regressed.length} regressed`);
-  if (g.inconclusive.length) parts.push(`${g.inconclusive.length} inconclusive`);
-  return { word: "Held back", open: false, parts };
+  const v = verdictOf(api);
+  return { word: v.word, open: v.released, parts: v.released ? v.parts.slice(0, 1) : v.parts };
 }
 
 /* ------------------------------------------------------------------ the eval */

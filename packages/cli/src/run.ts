@@ -1,4 +1,4 @@
-import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project } from "@holdback/core";
+import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project, type Verdict } from "@holdback/core";
 import { EXIT, explainFailure, humanView, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
 import { reviewSpecChange, specMovedStop } from "./specchange.js";
@@ -62,12 +62,16 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
   }
 }
 
-/** Prints the summary; true when the gate is open and nothing is owed, vacuous or without a spec. */
-async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyResult | undefined): Promise<boolean> {
+/**
+ * Prints the summary, led by the one verdict (R44) the dashboard and `status` show too, and returns
+ * it: released (exit 0) only when the gate is open and every criterion is proved or passing.
+ */
+async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyResult | undefined): Promise<Verdict> {
   const s = await snapshot(p);
   const count = (...st: string[]) => Object.values(s.state.acs).filter((a) => st.includes(a.status)).length;
   const regressed = count("regressed");
   ctx.out("");
+  ctx.out(`Verdict: ${s.verdict.headline}`);
   ctx.out(`Gate: ${s.gate.allowStop ? "open" : "closed"}`);
   ctx.out(
     `Criteria: ${count("owed", "regressed")} owed${regressed > 0 ? ` (${regressed} regressed)` : ""}, ${count("passing")} passing, ${count("proved")} proved, ${count("vacuous")} vacuous, ${count("needs-spec")} needs-spec${count("rejected") > 0 ? `, ${count("rejected")} rejected` : ""}`,
@@ -79,7 +83,7 @@ async function summary(ctx: Ctx, p: Project, turns: number, falsified: FalsifyRe
   ctx.out(`Breaker spend: $${s.state.breakerUsd.toFixed(4)} of $${p.config.breaker.capUsd}`);
   if (falsified && falsified.skipped.length > 0) ctx.out(`Not attacked (breaker budget): ${falsified.skipped.join(", ")}`);
   if (count("vacuous") > 0) ctx.out("Vacuous means a planted bug in that criterion's code got past its tests: the criterion proves nothing yet.");
-  return s.gate.allowStop && Object.keys(s.state.acs).length > 0 && count("vacuous", "needs-spec", "owed", "regressed") === 0;
+  return s.verdict;
 }
 
 /** What a caller of the pipeline (`watch`) hears about besides the exit code. */
@@ -211,10 +215,11 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       const after = await snapshot(p);
       ctx.err(after.tamper ?? tamperMessage(stop.why || "sealed files changed"));
     } else if (stop) ctx.err(stop.why);
-    const green = await summary(ctx, p, turns, falsified);
+    const v = await summary(ctx, p, turns, falsified);
     if (stop) return stop.code;
-    if (!green) ctx.err("Finished, but the gate is not fully green: see the counts above.");
-    return green ? EXIT.ok : EXIT.unfinished;
+    // the verdict decides the exit code, as it decides the dashboard's headline (R44)
+    if (!v.released) ctx.err(`Finished, but held back (${v.parts.slice(1).join(", ") || v.parts.join(", ")}): see the counts above.`);
+    return v.exit;
   } catch (e) {
     return await explainFailure(ctx, e, p);
   }

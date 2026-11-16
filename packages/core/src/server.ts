@@ -288,6 +288,7 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
       breakerUsd: s.state.breakerUsd,
       tamper: s.tamperDetail === null ? null : { detail: s.tamperDetail, marker: s.marker, changed: s.changed },
       specChanged: s.specChanged,
+      verdict: s.verdict,
       pending: human.pending(),
     });
   }

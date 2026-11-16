@@ -3,7 +3,8 @@ import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
 import { board, driftRows, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, stateFromLedger, timeline } from "../src/model";
 import { artifactUrl } from "../src/source";
-import { fixtureText } from "./helpers";
+import { fixtureText, REHEARSAL } from "./helpers";
+import { readFileSync } from "node:fs";
 
 const at = "2026-11-15T10:00:00.000Z";
 const ev = (e: object) => ({ at, ...e }) as LedgerEvent;
@@ -49,7 +50,7 @@ describe("board", () => {
     expect(c.quote).toEqual({ text: "quote ac-2", source: "prd", anchor: "L3-L3" });
     expect(c.tests).toEqual([{ id: "t-1", title: "title t-1", mark: "fail", turn: 2 }]);
     expect(cols.passing.map((x) => x.ac.id)).toEqual(["ac-1"]);
-    expect(gateLabel(api)).toEqual({ word: "Held back", open: false, parts: ["2 owed", "1 regressed"] });
+    expect(gateLabel(api)).toEqual({ word: "Held back", open: false, parts: ["1/3 green", "2 owed (1 regressed)"] });
   });
 
   it("shows a criterion the human turned down in its own column, never owed (I3)", () => {
@@ -66,7 +67,7 @@ describe("board", () => {
     const cards = board(stateFromLedger(base, null), base).owed;
     expect(cards[0]!.inconclusive).toEqual([{ test: "t-1", turn: 1, reason: "timeout" }]);
     expect(cards[0]!.tests[0]!.mark).toBe("inconclusive");
-    expect(gateLabel(stateFromLedger(base, null)).parts).toEqual(["1 owed", "1 inconclusive"]);
+    expect(gateLabel(stateFromLedger(base, null)).parts).toEqual(["0/1 green", "1 owed", "1 test proved nothing on the last run"]);
     const later = [...base, run(2, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
     const after = board(stateFromLedger(later, null), later);
     expect(after.passing[0]!.inconclusive).toEqual([]);
@@ -133,7 +134,7 @@ describe("timeline", () => {
     expect(driftRows(events)).toEqual([{ at, kind: "ADD", ref: "ac-2", why: "new rule", applied: true }]);
     const tampered = stateFromLedger(events.slice(0, 5), null);
     expect(tampered.tamper?.detail).toBe("sealed files changed: t-1.md");
-    expect(gateLabel(tampered).parts[0]).toBe("tampered");
+    expect(gateLabel(tampered).parts[0]).toBe("tampered: nothing counts until a human re-seals");
     const m = meters(stateFromLedger(events, null), events);
     expect(m).toMatchObject({ metered: 1, unmeasured: 1 });
   });
@@ -201,6 +202,16 @@ describe("meters and labels", () => {
     expect(gateLabel(stateFromLedger([], null))).toEqual({ word: "Held back", open: false, parts: ["no criteria yet"] });
     const green = [design(["ac-1"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
     expect(gateLabel(stateFromLedger(green, null))).toEqual({ word: "Released", open: true, parts: ["1/1 green"] });
+  });
+
+  it("never says Released while a planted bug survived or a criterion has no test, though the gate is open: the CLI's verdict (R44)", () => {
+    const events = parseEvents(readFileSync(REHEARSAL, "utf8"));
+    const api = stateFromLedger(events, null);
+    expect(api.gate.open).toBe(true);
+    expect(api.verdict).toMatchObject({ released: false, exit: 3, headline: "Held back — 8/10 green, 2 criteria unproved: a planted bug survived" });
+    expect(gateLabel(api)).toEqual({ word: "Held back", open: false, parts: ["8/10 green", "2 criteria unproved: a planted bug survived"] });
+    const noTest = [design(["ac-1", "ac-2"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
+    expect(gateLabel(stateFromLedger(noTest, null))).toEqual({ word: "Held back", open: false, parts: ["1/2 green", "1 criterion with no test"] });
   });
 
   it("formats credits, dollars and durations", () => {
