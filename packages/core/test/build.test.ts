@@ -335,6 +335,30 @@ describe("runBuildLoop", { timeout: 60_000 }, () => {
     expect(calls.stops).toBe(3);
   });
 
+  it("a replay whose app does not start keeps the gate shut and briefs the agent with the failure; the next turn replays (m-8)", async () => {
+    await setup();
+    const { deps, calls } = fakes({ kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f))) });
+    const app = deps.app;
+    deps.app = async (o) => {
+      // turn 2: the owed batch's app starts (the 2nd start), the replay's does not (the 3rd)
+      if (calls.starts === 2) {
+        calls.starts++;
+        throw new AppStartError("app exited before becoming ready", "Error: SQLITE_CANTOPEN");
+      }
+      return app(o);
+    };
+    const r = await runBuildLoop(p, deps, log);
+    expect(r.reason).toBe("gate-open");
+    // turn 2 replayed nothing; turn 3, briefed with the failure, replays every green test
+    expect(calls.tests.map((t) => [t.turn, t.files])).toEqual([
+      [1, [T1, T3]],
+      [2, [T3]],
+      [3, [T1, T3]],
+    ]);
+    expect(calls.claude).toHaveLength(3);
+    expect(calls.claude[2]!.prompt).toContain("SQLITE_CANTOPEN");
+  });
+
   it("a re-run whose app does not come back leaves the test inconclusive and runs nothing more against the dead app", async () => {
     await setup({ config: { loop: { maxTurns: 3 } } });
     const envFail = (file: string): TestRunResult => ({ ...fail(file), verdict: { bugTitle: "Browser target closed", family: "environment_issue" } });

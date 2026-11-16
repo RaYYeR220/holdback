@@ -276,13 +276,15 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
       turn = openTurn(s.events)!;
     }
 
-    const appStartError = await s.startApp(await (deps.port ?? freePort)(), `check-turn-${turn.n}`);
+    let appStartError = await s.startApp(await (deps.port ?? freePort)(), `check-turn-${turn.n}`);
     let ran: string[] = [];
     if (appStartError === undefined) {
       const v = await s.verify(turn.n, owedFiles, fileOf, false);
       if (v.tampered) return tamper();
       const idOf = new Map([...fileOf].map(([id, f]) => [f, id]));
       ran = [...v.ran].map((f) => idOf.get(f) ?? f);
+      // the replay's app did not start: no stop on criteria that were not replayed (m-8)
+      appStartError = v.startError;
     }
     // the app is down: Kane's recordings as they are now are what the next check holds them to
     if (s.kaneWindow) await s.closeKaneWindow();

@@ -222,6 +222,20 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     expect(calls.tests).toHaveLength(1);
   });
 
+  it("a replay whose own app does not start shuts the gate and says why: nothing green went unchecked silently (m-8)", async () => {
+    await setup();
+    let fixed = false;
+    let starts = 0;
+    const { deps, calls } = fakes({ kane: (_c, files) => files.map((f) => (idOf(f) === "t-3" && !fixed ? fail(f) : pass(f))), appUp: () => ++starts !== 3 });
+    await checkOnce(p, deps, log, { reason: "stop" }); // turn 1, closed
+    fixed = true;
+    writeFileSync(join(appDir, "limits.js"), "export const LIMIT = 2461;\n");
+    const r = await checkOnce(p, deps, log, { reason: "stop" });
+    // t-3 ran and passed; the replay of t-1 needed an app of its own, which did not start
+    expect(calls.tests).toEqual([[T1, T3], [T3]]);
+    expect(r).toMatchObject({ status: "checked", allowStop: false, appStartError: expect.stringContaining("hono") });
+  });
+
   it("an app that no longer starts shuts the gate even when every criterion passed before", async () => {
     await setup();
     let up = true;

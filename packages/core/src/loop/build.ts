@@ -75,7 +75,8 @@ export type BuildResult = {
  * `tamper` was logged for that batch. `drift`: a spec file (only) changed: the batch's results stand,
  * and nothing more ran.
  */
-export type Verified = { tampered: boolean; drift: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[] };
+/** `startError`: the replay's own app did not start, so the green criteria were not replayed (m-8). */
+export type Verified = { tampered: boolean; drift: boolean; ran: Set<string>; regressed: { ac: string; turn: number }[]; startError?: string };
 
 const TURN_TIMEOUT_MS = 30 * 60_000;
 /** Every Nth turn (and on the turn that empties the owed list) the passing ACs' tests are replayed too. */
@@ -486,8 +487,15 @@ export class VerifySession {
       const unsure = left.inconclusive.flatMap((u) => fileOf.get(u.test) ?? []);
       const again = [...new Set([...filesOf(green, fileOf), ...unsure])].filter((f) => !done.ran.has(f));
       // the replay gets an app of its own on a fresh data dir: rows the owed batch wrote never reach
-      // it, where a collision would read as a regression (N-m1). One that does not start runs nothing
-      if (again.length > 0 && done.ran.size > 0) await this.startAgain("replay");
+      // it, where a collision would read as a regression (N-m1). One that does not start runs nothing,
+      // and says so: the caller keeps the gate shut and the agent hears why (m-8)
+      if (again.length > 0 && done.ran.size > 0) {
+        const why = await this.startAgain("replay");
+        if (why !== undefined) {
+          done.startError = why;
+          return false;
+        }
+      }
       return this.runLogged(turn, again, fileOf, done);
     });
   }
@@ -600,13 +608,15 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
     let lastTurn = 0;
     /** Kane re-checked the tests whose latest run proved nothing, without an agent turn (once per call). */
     let rechecked = false;
+    /** The last replay's app did not start: the green criteria were not replayed, so the gate waits for a turn that does (m-8). */
+    let replayMissed = false;
     for (;;) {
       // before any decision: a change made at any point since the last check is flagged
       const fresh = await s.refresh();
       if (!("state" in fresh)) return stopped(fresh);
       const state = fresh.state;
       const g = gate(state);
-      if (g.allowStop) return done(true, "gate-open");
+      if (g.allowStop && !replayMissed) return done(true, "gate-open");
       if (opts.signal?.aborted) return done(false, "aborted");
       // no turn (whose work Kane would then refuse to check) once the Kane credit cap is reached
       await s.meter.assertBudget();
@@ -700,6 +710,8 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
 
       // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then
       const v = await s.verify(n, owedFiles, fileOf, n % REPLAY_EVERY === 0);
+      replayMissed = v.startError !== undefined;
+      if (v.startError !== undefined) startError = v.startError;
       // a drift stops the run below: no bisect (its credits) for criteria a human is about to re-plan
       if (v.tampered || (!v.drift && (await blame(v.regressed)))) return done(false, "tamper");
       // this turn already ran (and re-ran) every test that still proves nothing: no separate re-check
