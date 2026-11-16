@@ -241,7 +241,7 @@ export function pendingRecheck(events: LedgerEvent[], ac: { id: string; useCase:
 /** Why a survivor whose use case Kane did not get to evolve this run stays vacuous for now: the next pass tries again (m-2). */
 export const EVOLVE_BOUND = "Kane already evolved this use case twice in this run: the next `holdback run` tries again";
 /** Why a re-checked survivor is not sent to Kane again. */
-export const RECHECK_SURVIVED = "the planted bug got past Kane's evolved tests too, so Kane is not asked again in this run";
+export const RECHECK_SURVIVED = "the planted bug got past Kane's evolved tests too, so Kane is not asked again";
 /** Why survivors wait when the pass stopped before their evolve. */
 const STOPPED = "the run was stopped before Kane could evolve its tests";
 /** Why survivors wait when the spec changed during the pass. */
