@@ -581,6 +581,37 @@ describe("runDrift", { timeout: 60_000 }, () => {
       expect(await tamperMarker(p)).toContain("holdback.config.json");
     });
 
+    it("a config edited during a re-plan that ends in a tamper is left as found: the evidence stays (n-2)", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const calls: Calls = [];
+      const kane = fakeKane(calls);
+      const design = kane.designTests;
+      kane.designTests = async (...a) => {
+        writeFileSync(config(), '{"start":{"cmd":"evil"}}');
+        return design(...a);
+      };
+      await expect(runDrift(p, human(calls, all), log, { kane, reviewed })).rejects.toThrow(/holdback\.config\.json/);
+      expect(readFileSync(config(), "utf8")).toBe('{"start":{"cmd":"evil"}}');
+      expect(await tamperMarker(p)).toContain("holdback.config.json");
+    });
+
+    it("a decline never reverts a config someone else edited meanwhile; it says so (n-2)", async () => {
+      editPrd();
+      const reviewed = reviewedNow();
+      const calls: Calls = [];
+      const kane = fakeKane(calls);
+      const reconcile = kane.reconcile;
+      kane.reconcile = async (...a) => {
+        writeFileSync(config(), '{"note":"mine"}');
+        return reconcile(...a);
+      };
+      const r = await runDrift(p, human(calls, () => []), log, { kane, reviewed });
+      expect(r).toMatchObject({ changed: true, applied: false, reason: expect.stringContaining("holdback.config.json") });
+      expect(r).toMatchObject({ reason: expect.stringContaining("left as found") });
+      expect(readFileSync(config(), "utf8")).toBe('{"note":"mine"}');
+    });
+
     it("drift handed a review that lacks a changed file treats it as moved (m-6)", async () => {
       editPrd();
       const calls: Calls = [];
