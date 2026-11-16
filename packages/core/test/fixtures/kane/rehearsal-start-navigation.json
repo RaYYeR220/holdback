@@ -1,0 +1,1043 @@
+{
+  "about": "Kane CLI 0.10.4 session files of the live rehearsal (2026-11-16, kane.parallel 3), read from ~/.testmuai/kaneai/sessions/<id>/ (session.json, events.ndjson run_start, scratch/<n>/replay-test/step_001.json, test_md_summary). One row per Kane session that started between the first build check and the end of the run; `run` names the ledger run it was (packages/core/test/fixtures/rehearsal/ledger.jsonl, by line number), when the ledger kept it (a re-run's first attempt is folded into the re-run's result). Sanitized with scripts/sanitize.mjs.",
+  "summary": {
+    "sessions": 47,
+    "step1NavigateFailed": 13,
+    "step1NavigateFailedWhileAnotherSessionRan": 13,
+    "sessionsWithNoOtherSessionRunning": 11,
+    "step1NavigateFailedWithNoOtherSessionRunning": 0,
+    "overrideAppliedInEveryReplayWithAnOverride": true
+  },
+  "sessions": [
+    {
+      "session": "05b2d2ac-dd0f-4e3e-b226-9e10287535ee",
+      "started": "2026-11-16T01:38:47.506Z",
+      "ended": "2026-11-16T01:41:28.367Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 14,
+        "kind": "build",
+        "test": "t-1",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": null,
+      "recorded_start_url": null,
+      "override_applied": null,
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "ebbad468-bcb8-445b-9cf3-fa5998bfc4d6",
+      "started": "2026-11-16T01:43:03.159Z",
+      "ended": "2026-11-16T01:43:18.257Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 19,
+        "kind": "falsify",
+        "mutant": "m-ac-4-1",
+        "test": "t-1",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:50761/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:50761/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "8d304ec3-6f0b-45e0-95a4-9a55845d0cf1",
+      "started": "2026-11-16T01:44:24.750Z",
+      "ended": "2026-11-16T01:45:17.851Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 24,
+        "kind": "falsify",
+        "mutant": "m-ac-7-1",
+        "test": "t-1",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:59753/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59753/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "7022bb27-5560-4553-9295-cf38732ec374",
+      "started": "2026-11-16T01:46:52.024Z",
+      "ended": "2026-11-16T01:47:28.458Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:59753/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59753/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "259647fd-96df-4da3-82f3-09f1cad48a1b",
+      "started": "2026-11-16T01:47:34.443Z",
+      "ended": "2026-11-16T01:48:10.640Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 29,
+        "kind": "falsify",
+        "mutant": "m-ac-9-1",
+        "test": "t-1",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Eligibility form field-label assertion no longer resolves"
+      },
+      "override_start_url": "http://127.0.0.1:59753/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59753/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "a0e76907-f814-4781-bf17-501d5dcc1a6c",
+      "started": "2026-11-16T01:50:47.257Z",
+      "ended": "2026-11-16T01:52:31.122Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 41,
+        "kind": "build",
+        "test": "t-5",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": null,
+      "recorded_start_url": null,
+      "override_applied": null,
+      "healTriggered": false,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "f9f5918e-cf4d-47c9-8a01-a0c5eb6f6a4c",
+      "started": "2026-11-16T01:50:47.527Z",
+      "ended": "2026-11-16T01:52:35.171Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 40,
+        "kind": "build",
+        "test": "t-3",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": null,
+      "recorded_start_url": null,
+      "override_applied": null,
+      "healTriggered": false,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "047b99e9-5c45-4f8b-8a29-69e4962e203f",
+      "started": "2026-11-16T01:50:50.149Z",
+      "ended": "2026-11-16T01:52:25.661Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 42,
+        "kind": "build",
+        "test": "t-4",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": null,
+      "recorded_start_url": null,
+      "override_applied": null,
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "140c233b-cb54-4046-8770-889a1ae2f3cd",
+      "started": "2026-11-16T01:52:29.794Z",
+      "ended": "2026-11-16T01:54:45.939Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 43,
+        "kind": "build",
+        "test": "t-2",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": null,
+      "recorded_start_url": null,
+      "override_applied": null,
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "5561655e-fdd3-4fc5-b93e-a4e8f668b630",
+      "started": "2026-11-16T01:56:10.609Z",
+      "ended": "2026-11-16T01:57:05.474Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:57360/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:57360/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 1
+    },
+    {
+      "session": "a2586b3d-ffb7-456c-ae1a-47d1cc866e1d",
+      "started": "2026-11-16T01:56:11.089Z",
+      "ended": "2026-11-16T01:56:50.164Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:57360/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "http://127.0.0.1:57360/",
+        "navigateTo": "http://127.0.0.1:57360/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 1
+    },
+    {
+      "session": "43f3c69f-9e9c-47dd-9485-18189f726b98",
+      "started": "2026-11-16T01:57:22.948Z",
+      "ended": "2026-11-16T01:57:41.292Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 47,
+        "kind": "falsify",
+        "mutant": "m-ac-1-1",
+        "test": "t-3",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Eligibility assertion ran against the wrong household state"
+      },
+      "override_start_url": "http://127.0.0.1:57360/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:57360/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:57360/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 1
+    },
+    {
+      "session": "e1bd4925-9f24-4da0-a154-559b2d4b96bb",
+      "started": "2026-11-16T01:57:23.186Z",
+      "ended": "2026-11-16T01:58:02.370Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 48,
+        "kind": "falsify",
+        "mutant": "m-ac-1-1",
+        "test": "t-5",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: SNAP eligibility checkbox not selected during replay"
+      },
+      "override_start_url": "http://127.0.0.1:57360/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:57360/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 1
+    },
+    {
+      "session": "cd3404bd-a691-4d40-b1fe-89cd354f88f7",
+      "started": "2026-11-16T01:58:25.078Z",
+      "ended": "2026-11-16T01:59:04.651Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 52,
+        "kind": "falsify",
+        "mutant": "m-ac-2-2",
+        "test": "t-4",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:57976/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:57976/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "6275d70a-f856-45bb-b42f-3743d9a24c14",
+      "started": "2026-11-16T01:59:44.752Z",
+      "ended": "2026-11-16T01:59:57.841Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 56,
+        "kind": "falsify",
+        "mutant": "m-ac-3-1",
+        "test": "t-2",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:60093/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:60093/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "e75f5992-50d6-4938-a0c2-dddf4d2c22c2",
+      "started": "2026-11-16T02:00:08.341Z",
+      "ended": "2026-11-16T02:00:32.029Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:50274/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:50274/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:50274/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "969a0a8d-e2e9-47f0-a681-fc8cb696eeb3",
+      "started": "2026-11-16T02:00:08.365Z",
+      "ended": "2026-11-16T02:00:52.798Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 61,
+        "kind": "falsify",
+        "mutant": "m-ac-4-2",
+        "test": "t-3",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:50274/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "http://127.0.0.1:50274/",
+        "navigateTo": "http://127.0.0.1:50274/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "7e3a410e-7417-4518-8798-0c481a7f29ff",
+      "started": "2026-11-16T02:00:08.368Z",
+      "ended": "2026-11-16T02:00:50.904Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 62,
+        "kind": "falsify",
+        "mutant": "m-ac-4-2",
+        "test": "t-4",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:50274/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:50274/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "201c6eab-f541-48ca-af4a-b87cdc544ba4",
+      "started": "2026-11-16T02:01:00.627Z",
+      "ended": "2026-11-16T02:01:51.647Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 60,
+        "kind": "falsify",
+        "mutant": "m-ac-4-2",
+        "test": "t-2",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Recorded start URL opens unrelated KaneAI onboarding page"
+      },
+      "override_start_url": "http://127.0.0.1:50274/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:50274/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "d19c7198-6c8e-467d-8c14-52f9537bf9af",
+      "started": "2026-11-16T02:02:44.921Z",
+      "ended": "2026-11-16T02:03:06.078Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:59403/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59403/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:59403/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "e748fa77-bda1-4816-bfd6-c980c5045f9a",
+      "started": "2026-11-16T02:02:44.924Z",
+      "ended": "2026-11-16T02:03:04.357Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 68,
+        "kind": "falsify",
+        "mutant": "m-ac-6-2",
+        "test": "t-3",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:59403/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "http://127.0.0.1:59403/",
+        "navigateTo": "http://127.0.0.1:59403/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "ba94f7e6-8eb0-4595-8c3f-dccbb83de43e",
+      "started": "2026-11-16T02:02:44.943Z",
+      "ended": "2026-11-16T02:03:02.959Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 69,
+        "kind": "falsify",
+        "mutant": "m-ac-6-2",
+        "test": "t-4",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:59403/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59403/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "67f3e5d8-1d96-4764-ad41-6aec0de7f0c3",
+      "started": "2026-11-16T02:03:08.662Z",
+      "ended": "2026-11-16T02:03:23.761Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 70,
+        "kind": "falsify",
+        "mutant": "m-ac-6-2",
+        "test": "t-5",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:59403/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59403/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "04e4de98-7832-4812-9866-5abc13a5e280",
+      "started": "2026-11-16T02:03:32.927Z",
+      "ended": "2026-11-16T02:03:47.013Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 67,
+        "kind": "falsify",
+        "mutant": "m-ac-6-2",
+        "test": "t-2",
+        "recordedStatus": "passed",
+        "retriedAfter": "automation_bug: Replay opens unrelated KaneAI playground instead of food pantry check"
+      },
+      "override_start_url": "http://127.0.0.1:59403/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59403/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "82c6b269-3fba-44ce-9aaf-6c785fc53059",
+      "started": "2026-11-16T02:04:14.908Z",
+      "ended": "2026-11-16T02:05:08.884Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 75,
+        "kind": "falsify",
+        "mutant": "m-ac-7-2",
+        "test": "t-3",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:53953/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "http://127.0.0.1:53953/",
+        "navigateTo": "http://127.0.0.1:53953/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "84d7ec4f-4a03-4bfe-8ed8-f1009bd5b8cd",
+      "started": "2026-11-16T02:04:15.024Z",
+      "ended": "2026-11-16T02:04:53.937Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:53953/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:53953/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:53953/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "6335d8ef-dfac-49fa-b002-6527e87efdca",
+      "started": "2026-11-16T02:04:15.393Z",
+      "ended": "2026-11-16T02:05:10.238Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 76,
+        "kind": "falsify",
+        "mutant": "m-ac-7-2",
+        "test": "t-4",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:53953/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:53953/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "23430aea-30b5-4f70-b559-6d3b3f7a0a9d",
+      "started": "2026-11-16T02:05:00.629Z",
+      "ended": "2026-11-16T02:05:33.910Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 77,
+        "kind": "falsify",
+        "mutant": "m-ac-7-2",
+        "test": "t-5",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:53953/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:53953/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "7580d201-1625-4b1c-84bd-466e18e5b7f3",
+      "started": "2026-11-16T02:05:40.300Z",
+      "ended": "2026-11-16T02:06:10.469Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 74,
+        "kind": "falsify",
+        "mutant": "m-ac-7-2",
+        "test": "t-2",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Recorded start URL opens an unrelated application"
+      },
+      "override_start_url": "http://127.0.0.1:53953/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:53953/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 0
+    },
+    {
+      "session": "69a61259-e5c9-4033-bbc1-538cc07672c7",
+      "started": "2026-11-16T02:06:33.577Z",
+      "ended": "2026-11-16T02:06:58.584Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: Navigation to \"http://127.0.0.1:61764/\" is interrupted by another navigation to \"http://127.0.0.1:61764/\""
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "d9ef0974-a353-4fdf-8851-802d70023d10",
+      "started": "2026-11-16T02:06:33.776Z",
+      "ended": "2026-11-16T02:07:13.519Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "fed2ca07-203a-4cab-8b30-489ca17e8bfb",
+      "started": "2026-11-16T02:06:33.905Z",
+      "ended": "2026-11-16T02:06:58.880Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:61764/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "382cca55-6973-46b3-8a9b-ebe8c73f6f81",
+      "started": "2026-11-16T02:07:06.012Z",
+      "ended": "2026-11-16T02:07:40.074Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 84,
+        "kind": "falsify",
+        "mutant": "m-ac-8-2",
+        "test": "t-5",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 1
+    },
+    {
+      "session": "76e2ca86-23a7-4596-a067-3ebfdc0a97b5",
+      "started": "2026-11-16T02:07:48.697Z",
+      "ended": "2026-11-16T02:08:27.213Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 81,
+        "kind": "falsify",
+        "mutant": "m-ac-8-2",
+        "test": "t-2",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Recorded start URL opens unrelated KaneAI onboarding page"
+      },
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: Navigation to \"http://127.0.0.1:61764/\" is interrupted by another navigation to \"http://127.0.0.1:61764/\""
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "eee113c4-6af3-4306-8467-a9ca5b75c527",
+      "started": "2026-11-16T02:07:48.697Z",
+      "ended": "2026-11-16T02:08:43.479Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 82,
+        "kind": "falsify",
+        "mutant": "m-ac-8-2",
+        "test": "t-3",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Replay diverges before eligibility check"
+      },
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "8a45a85b-e408-4a2f-a39b-4c4740cd8964",
+      "started": "2026-11-16T02:07:48.753Z",
+      "ended": "2026-11-16T02:08:35.857Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 83,
+        "kind": "falsify",
+        "mutant": "m-ac-8-2",
+        "test": "t-4",
+        "recordedStatus": "passed",
+        "retriedAfter": "automation_bug: Recorded start URL opens unrelated KaneAI page"
+      },
+      "override_start_url": "http://127.0.0.1:61764/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "http://127.0.0.1:61764/",
+        "navigateTo": "http://127.0.0.1:61764/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "d9039460-0c6c-4998-b735-dcddb2cf988b",
+      "started": "2026-11-16T02:09:23.718Z",
+      "ended": "2026-11-16T02:09:48.884Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:59517/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "b5febf68-7b98-4a0b-885f-7ce3fb8cb7f5",
+      "started": "2026-11-16T02:09:23.719Z",
+      "ended": "2026-11-16T02:09:48.884Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: Navigation to \"http://127.0.0.1:59517/\" is interrupted by another navigation to \"http://127.0.0.1:59517/\""
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "751c35c3-3fab-4012-84a2-4a587bac6e33",
+      "started": "2026-11-16T02:09:24.301Z",
+      "ended": "2026-11-16T02:10:13.277Z",
+      "outcome": "failed",
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "d3b68499-03a6-4069-94ec-f2bbefe22181",
+      "started": "2026-11-16T02:09:53.727Z",
+      "ended": "2026-11-16T02:10:30.632Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 91,
+        "kind": "falsify",
+        "mutant": "m-ac-9-2",
+        "test": "t-5",
+        "recordedStatus": "failed"
+      },
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 1
+    },
+    {
+      "session": "2b624574-2733-4809-8625-3544eb9529fd",
+      "started": "2026-11-16T02:10:37.723Z",
+      "ended": "2026-11-16T02:11:22.075Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 90,
+        "kind": "falsify",
+        "mutant": "m-ac-9-2",
+        "test": "t-4",
+        "recordedStatus": "failed",
+        "retriedAfter": "environment_issue: Replay browser closed while capturing final assertion"
+      },
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "165c61b7-c2a2-4d07-bff6-5de63ec1d75d",
+      "started": "2026-11-16T02:10:37.753Z",
+      "ended": "2026-11-16T02:11:15.712Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 88,
+        "kind": "falsify",
+        "mutant": "m-ac-9-2",
+        "test": "t-2",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Replay opens KaneAI onboarding instead of food-pantry check"
+      },
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: Navigation to \"http://127.0.0.1:59517/\" is interrupted by another navigation to \"http://127.0.0.1:59517/\""
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "8e85e5d5-ddc6-4260-8044-fc928df3aabc",
+      "started": "2026-11-16T02:10:37.935Z",
+      "ended": "2026-11-16T02:11:15.511Z",
+      "outcome": "failed",
+      "run": {
+        "ledgerLine": 89,
+        "kind": "falsify",
+        "mutant": "m-ac-9-2",
+        "test": "t-3",
+        "recordedStatus": "failed",
+        "retriedAfter": "automation_bug: Replay opens KaneAI playground instead of eligibility page"
+      },
+      "override_start_url": "http://127.0.0.1:59517/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:59517/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:59517/"
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "948163e6-00de-48a7-a8c4-48a27d580bd7",
+      "started": "2026-11-16T02:11:59.814Z",
+      "ended": "2026-11-16T02:14:15.410Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 97,
+        "kind": "build",
+        "test": "t-5",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:3190/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:3190/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:3190/"
+      },
+      "healTriggered": true,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "a32e1868-be44-40ef-9f6a-9aa185a5ef8e",
+      "started": "2026-11-16T02:12:00.041Z",
+      "ended": "2026-11-16T02:14:06.310Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 96,
+        "kind": "build",
+        "test": "t-3",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:3190/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:3190/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": false,
+        "error": "goto: net::ERR_ABORTED at http://127.0.0.1:3190/"
+      },
+      "healTriggered": true,
+      "concurrentSessions": 3
+    },
+    {
+      "session": "baeb4302-a478-40c2-b766-7b23cc476959",
+      "started": "2026-11-16T02:12:00.070Z",
+      "ended": "2026-11-16T02:12:23.131Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 98,
+        "kind": "build",
+        "test": "t-4",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:3190/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:3190/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    },
+    {
+      "session": "ae4bec95-0901-4aaf-8d2e-ada63322ac01",
+      "started": "2026-11-16T02:12:31.399Z",
+      "ended": "2026-11-16T02:12:47.503Z",
+      "outcome": "passed",
+      "run": {
+        "ledgerLine": 99,
+        "kind": "build",
+        "test": "t-2",
+        "recordedStatus": "passed"
+      },
+      "override_start_url": "http://127.0.0.1:3190/",
+      "recorded_start_url": "http://127.0.0.1:3190/",
+      "override_applied": true,
+      "step1": {
+        "pageBefore": "https://kaneai-playground.lambdatest.io/",
+        "navigateTo": "http://127.0.0.1:3190/",
+        "label": "Navigate to http://127.0.0.1:3190/",
+        "success": true
+      },
+      "healTriggered": false,
+      "concurrentSessions": 2
+    }
+  ]
+}
