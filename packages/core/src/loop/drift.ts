@@ -23,7 +23,7 @@ import type { Project } from "../project.js";
 import { appSealKey, checkSeal, isAppKeyOf } from "../seal.js";
 import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js";
 import { lastSeal } from "./build.js";
-import { changedTests, copySealed, restoreSealed } from "./falsify.js";
+import { changedTests, copySealed, restoreSealed, stateDiffersFrom, verifierDiffersFrom } from "./falsify.js";
 import type { HumanIO } from "./human.js";
 import {
   checkSpecPaths,
@@ -194,8 +194,8 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     }
   }
   /**
-   * Undoes the run: the verifier byte for byte, and Holdback's own writes to the app (its
-   * Clarifications). A spec file that moved away from what Holdback expects is someone else's newer
+   * Undoes the run: the verifier byte for byte (its tests and Kane's own store, I-3), and Holdback's
+   * own writes to the app (its Clarifications). A spec file that moved away from what Holdback expects is someone else's newer
    * edit: never overwritten (N-I2). Returns those files.
    */
   const restore = async (): Promise<string[]> => {
@@ -214,6 +214,8 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
       if (bytes === null) await rm(f, { force: true });
       else await writeFile(f, bytes);
     }
+    const left = [...(await verifierDiffersFrom(p, copy)), ...(await stateDiffersFrom(p, copy))];
+    if (left.length > 0) throw new Error(`the verifier still differs (${left.join(", ")})`);
     return moved;
   };
   const decline = async (reason: string, needsInteractive?: boolean): Promise<DriftResult> => {

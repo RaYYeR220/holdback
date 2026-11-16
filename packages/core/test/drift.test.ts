@@ -331,6 +331,32 @@ describe("runDrift", { timeout: 60_000 }, () => {
     await verifierClean();
   });
 
+  it("a declined plan puts Kane's own graph store back byte for byte, not only the tests (I-3)", async () => {
+    const store = join(p.verifierDir, ".context");
+    mkdirSync(join(store, "commits"), { recursive: true });
+    writeFileSync(join(store, "commits", "000007.json"), '{"generation":7}');
+    writeFileSync(join(store, "store.json"), '{"generation":7}');
+    const before = { a: readFileSync(join(store, "commits", "000007.json")), b: readFileSync(join(store, "store.json")) };
+    editPrd();
+    const calls: Calls = [];
+    const kane = fakeKane(calls);
+    const plan = kane.reconcile;
+    kane.reconcile = async (...a) => {
+      // Kane's reconcile moves its store on (a new commit, a new generation)
+      writeFileSync(join(store, "store.json"), '{"generation":8}');
+      mkdirSync(join(store, "proposals"), { recursive: true });
+      writeFileSync(join(store, "proposals", "p-1.json"), "{}");
+      writeFileSync(join(store, "commits", "000008.json"), '{"generation":8}');
+      return plan(...a);
+    };
+    const r = await runDrift(p, human(calls, () => []), log, { kane });
+    expect(r).toMatchObject({ changed: true, applied: false });
+    expect(readFileSync(join(store, "store.json")).equals(before.b)).toBe(true);
+    expect(readFileSync(join(store, "commits", "000007.json")).equals(before.a)).toBe(true);
+    expect(existsSync(join(store, "commits", "000008.json"))).toBe(false);
+    expect(existsSync(join(store, "proposals"))).toBe(false);
+  });
+
   it("empty plan: declined, no reseal", async () => {
     editPrd();
     const calls: Calls = [];

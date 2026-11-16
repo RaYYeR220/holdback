@@ -204,12 +204,54 @@ async function readSources(dir: string, rels: string[]): Promise<SourceFile[]> {
 }
 
 /**
- * The tier-1 entries as the seal lists them (file bytes, or a link's target) and the sealed app
- * files (null when absent), taken before Kane changes the verifier (a drift, an evolve) so it can be rolled back.
+ * The tier-1 entries as the seal lists them (file bytes, or a link's target), Kane's own state in the
+ * verifier (`state`, `dirs`: its graph store in `.context/` and every other file Kane may write
+ * there, I-3) and the sealed app files (null when absent), taken before Kane changes the verifier (a
+ * drift, an evolve) so it can be rolled back whole.
  */
-export type SealedCopy = { verifier: Map<string, Buffer | string>; app: Map<string, Buffer | null> };
+export type SealedCopy = { verifier: Map<string, Buffer | string>; state: Map<string, Buffer | string>; dirs: Set<string>; app: Map<string, Buffer | null> };
 
 const inVerifier = (p: Project, rel: string) => path.join(p.verifierDir, ...rel.split("/"));
+
+/**
+ * Left out of Kane's state: tier 1 (`.testmuai/tests`, `.testmuai/variables`, copied on its own, with
+ * the run recordings next to the tests, which the recordings anchor holds) and the evidence of
+ * Kane's runs (`.testmuai/evidence`), which neither an evolve nor a drift writes.
+ */
+const NOT_STATE = new Set([".testmuai/tests", ".testmuai/variables", ".testmuai/evidence"]);
+
+/** Every entry of Kane's state in the verifier (links and special files by kind, never followed), and its folders. */
+async function stateEntries(p: Project): Promise<{ files: Map<string, SealEntry["kind"]>; dirs: Set<string> }> {
+  const files = new Map<string, SealEntry["kind"]>();
+  const dirs = new Set<string>();
+  const walk = async (dir: string, rel: string) => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? [] : Promise.reject(e)));
+    for (const ent of entries) {
+      const r = rel === "" ? ent.name : `${rel}/${ent.name}`;
+      if (NOT_STATE.has(r)) continue;
+      if (ent.isDirectory()) {
+        dirs.add(r);
+        await walk(path.join(dir, ent.name), r);
+      } else files.set(r, ent.isSymbolicLink() ? "symlink" : ent.isFile() ? "file" : "special");
+    }
+  };
+  await walk(p.verifierDir, "");
+  return { files, dirs };
+}
+
+/** Kane's state entries that are not as `copy` holds them: added, changed or gone (folders too). */
+export async function stateDiffersFrom(p: Project, copy: SealedCopy): Promise<string[]> {
+  const out: string[] = [];
+  const now = await stateEntries(p);
+  for (const [rel, kind] of now.files) {
+    const was = copy.state.get(rel);
+    if (was === undefined || !same(was, await entryValue(inVerifier(p, rel), kind))) out.push(rel);
+  }
+  for (const rel of copy.state.keys()) if (!now.files.has(rel)) out.push(rel);
+  for (const d of now.dirs) if (!copy.dirs.has(d)) out.push(`${d}/`);
+  for (const d of copy.dirs) if (!now.dirs.has(d)) out.push(`${d}/`);
+  return out;
+}
 
 async function entryValue(file: string, kind: SealEntry["kind"]): Promise<Buffer | string> {
   if (kind === "file") return readFile(file);
@@ -220,6 +262,9 @@ async function entryValue(file: string, kind: SealEntry["kind"]): Promise<Buffer
 export async function copySealed(p: Project): Promise<SealedCopy> {
   const verifier = new Map<string, Buffer | string>();
   for (const e of await tier1Entries(p.verifierDir)) verifier.set(e.rel, await entryValue(inVerifier(p, e.rel), e.kind));
+  const state = new Map<string, Buffer | string>();
+  const kane = await stateEntries(p);
+  for (const [rel, kind] of kane.files) state.set(rel, await entryValue(inVerifier(p, rel), kind));
   const app = new Map<string, Buffer | null>();
   for (const rel of appSealFiles(p)) {
     try {
@@ -229,7 +274,7 @@ export async function copySealed(p: Project): Promise<SealedCopy> {
       app.set(rel, null);
     }
   }
-  return { verifier, app };
+  return { verifier, state, dirs: kane.dirs, app };
 }
 
 const same = (a: Buffer | string, b: Buffer | string) => (Buffer.isBuffer(a) && Buffer.isBuffer(b) ? a.equals(b) : a === b);
@@ -268,11 +313,31 @@ async function removeEntry(file: string): Promise<void> {
 }
 
 /**
- * Put the sealed files back as `copy` holds them (links are only removed, never written through).
- * `appFiles: false` leaves the app side (config and spec) alone: a caller that must not overwrite a
- * newer spec edit puts back only what it wrote itself (N-I2).
+ * Put the sealed files and Kane's state back as `copy` holds them (links are only removed, never
+ * written through; folders Kane added are removed). `appFiles: false` leaves the app side (config
+ * and spec) alone: a caller that must not overwrite a newer spec edit puts back only what it wrote
+ * itself (N-I2).
  */
 export async function restoreSealed(p: Project, copy: SealedCopy, opts: { appFiles?: boolean } = {}): Promise<void> {
+  const kane = await stateEntries(p);
+  for (const [rel, kind] of kane.files) {
+    const was = copy.state.get(rel);
+    if (was === undefined || kind !== "file" || !Buffer.isBuffer(was)) {
+      if (was === undefined || !same(was, await entryValue(inVerifier(p, rel), kind))) await removeEntry(inVerifier(p, rel));
+    }
+  }
+  for (const d of [...kane.dirs].filter((x) => !copy.dirs.has(x)).sort((a, b) => b.length - a.length)) {
+    await rm(inVerifier(p, d), { recursive: true, force: true });
+  }
+  for (const [rel, bytes] of copy.state) {
+    if (!Buffer.isBuffer(bytes)) continue;
+    const file = inVerifier(p, rel);
+    const now = await readFile(file).catch(() => null);
+    if (now !== null && now.equals(bytes)) continue;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, bytes);
+  }
+  for (const d of copy.dirs) await mkdir(inVerifier(p, d), { recursive: true });
   for (const e of await tier1Entries(p.verifierDir)) {
     const was = copy.verifier.get(e.rel);
     if (was === undefined || e.kind !== "file" || !Buffer.isBuffer(was)) {
@@ -871,7 +936,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     } catch (re) {
       restoreError = re;
     }
-    const left = restoreError === undefined ? await verifierDiffersFrom(p, copy) : [];
+    const left = restoreError === undefined ? [...(await verifierDiffersFrom(p, copy)), ...(await stateDiffersFrom(p, copy))] : [];
     if (restoreError !== undefined || left.length > 0) {
       const why = restoreError !== undefined ? errText(restoreError) : `sealed files still differ (${left.join(", ")})`;
       throw new Error(`Kane's evolve rolled back incompletely: ${why}: re-seal before building`);

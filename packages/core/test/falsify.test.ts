@@ -653,6 +653,49 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect((await checkRecordingsAnchor(p, all)).moved).toEqual([]);
   });
 
+  /** Kane's own graph store in the verifier, file by file (hex), and its folders. */
+  const kaneStore = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const walk = (dir: string, rel: string) => {
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const r = `${rel}/${ent.name}`;
+        if (ent.isDirectory()) {
+          out[`${r}/`] = "dir";
+          walk(join(dir, ent.name), r);
+        } else out[r] = readFileSync(join(dir, ent.name)).toString("hex");
+      }
+    };
+    walk(join(p.verifierDir, ".context"), ".context");
+    return out;
+  };
+  /** A store like Kane's (generation 7), and an evolve that moves it on (generation 8) before Holdback rolls it back. */
+  const seedStore = async () => {
+    mkdirSync(join(p.verifierDir, ".context", "commits"), { recursive: true });
+    writeFileSync(join(p.verifierDir, ".context", "commits", "000007-81ca27a3f5b2.json"), '{"generation":7}');
+    writeFileSync(join(p.verifierDir, ".context", "store.json"), '{"generation":7,"live":["t-1","t-3"]}');
+  };
+  const moveStore = () => {
+    writeFileSync(join(p.verifierDir, ".context", "store.json"), '{"generation":8,"live":["t-4"]}');
+    mkdirSync(join(p.verifierDir, ".context", "derived", "nodes"), { recursive: true });
+    writeFileSync(join(p.verifierDir, ".context", "commits", "000008-4a3f438914a8.json"), '{"generation":8}');
+    writeFileSync(join(p.verifierDir, ".context", "derived", "nodes", "t-4.json"), "{}");
+    rmSync(join(p.verifierDir, ".context", "commits", "000007-81ca27a3f5b2.json"));
+  };
+
+  it.each([
+    ["adds no test", { evolve: (_n: number, kit: EvolveKit) => (moveStore(), kit.mint("t-4", ["ac-3"]), { status: "nothing" as const, note: "nothing", credits: 5 }) }, "done"],
+    ["strays", { onEvolve: () => (moveStore(), writeFileSync(join(p.verifierDir, ".testmuai", "tests", "extra_test.md"), "x")) }, "tamper"],
+    ["races a spec edit", { onEvolve: () => (moveStore(), writeFileSync(join(appDir, "PRD.md"), "# Food pantry\n\nEdited meanwhile.\n")) }, "drift"],
+  ])("an evolve that %s is rolled back with Kane's own graph store: its bytes are the snapshot's again (I-3)", async (_name, plan, reason) => {
+    await setup({ before: seedStore });
+    const store = kaneStore();
+    const { deps, io } = fakes({ mutantRun: survives3, ...(plan as Partial<Plan>) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.reason).toBe(reason);
+    expect(existsSync(testFile("t-4"))).toBe(false);
+    expect(kaneStore()).toEqual(store);
+  });
+
   /** Runs a pass where ac-1 is killed and ac-3 survives, and expects Kane's evolve to be rolled back. */
   async function rolledBack(plan: Partial<Plan>, why: RegExp) {
     await setup();
