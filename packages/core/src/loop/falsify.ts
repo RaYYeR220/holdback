@@ -178,19 +178,52 @@ export function becauseText(list: Pick<Survivor, "ac" | "patch" | "rationale" | 
 }
 
 /**
- * The surviving mutant of `acId` that a later `falsify.evolved` answered, when no mutant of the AC
- * came after that evolve: the bug the AC's new tests must now catch (R40).
+ * The bug a criterion's tests must now catch (R40, m-3): when its use case was evolved and no mutant of
+ * the criterion came since, the criterion's own survivor that an evolve of that use case answered
+ * (this one or an earlier one: a later evolve replaces the tests that caught it, so it is re-checked
+ * again). None once a drift the human applied came since: the old bug may not break the new spec.
  */
-export function pendingRecheck(events: LedgerEvent[], acId: string): MutantEvent | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
+export function pendingRecheck(events: LedgerEvent[], ac: { id: string; useCase: string }): MutantEvent | undefined {
+  let i = events.length - 1;
+  for (; i >= 0; i--) {
     const e = events[i]!;
-    if (e.t === "mutant" && e.ac === acId) return undefined;
-    if (e.t === "falsify.evolved") {
-      const m = events.find((x): x is MutantEvent => x.t === "mutant" && x.ac === acId && e.mutants.includes(x.id));
-      if (m) return m;
-    }
+    if ((e.t === "mutant" && e.ac === ac.id) || (e.t === "drift" && e.applied)) return undefined;
+    if (e.t === "falsify.evolved" && e.uc === ac.useCase) break;
+  }
+  for (; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.t === "drift" && e.applied) return undefined;
+    if (e.t !== "falsify.evolved" || e.uc !== ac.useCase) continue;
+    const m = events.find((x): x is MutantEvent => x.t === "mutant" && x.ac === ac.id && e.mutants.includes(x.id));
+    if (m) return m;
   }
   return undefined;
+}
+
+/** Why a survivor whose use case Kane did not get to evolve this run stays vacuous for now: the next pass tries again (m-2). */
+export const EVOLVE_BOUND = "Kane already evolved this use case twice in this run: the next `holdback run` tries again";
+export const EVOLVE_CAP = "the Kane credit cap was reached before Kane could evolve its tests";
+
+/**
+ * Survivors whose use case Kane never evolved (m-2): the latest mutant of a vacuous criterion survived
+ * (not a re-check), no evolve answered it, and Kane was not found unable to add a test for it (a pass
+ * stopped, the run's bound or the cap came first, or the spec moved meanwhile). The next pass sends
+ * them to Kane without attacking them again.
+ */
+export function unevolvedSurvivors(events: LedgerEvent[]): MutantEvent[] {
+  const state = reduce(events);
+  const out: MutantEvent[] = [];
+  for (const ac of Object.values(state.acs)) {
+    if (ac.status !== "vacuous") continue;
+    const at = events.findLastIndex((e) => e.t === "mutant" && e.ac === ac.id);
+    const m = events[at] as MutantEvent | undefined;
+    if (!m || m.recheck !== undefined || (m.verdict !== "survived" && m.verdict !== "survived-by-heal")) continue;
+    const after = events.slice(at + 1);
+    if (after.some((e) => e.t === "falsify.evolved" && e.mutants.includes(m.id))) continue;
+    if (after.some((e) => e.t === "redesign.dropped" && e.acs?.includes(ac.id) && e.reason === NO_TEST)) continue;
+    out.push(m);
+  }
+  return out;
 }
 
 /** The files `rel` (app-relative) as the breaker is shown them, from `dir`; missing ones left out. */
@@ -722,13 +755,13 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     const ids = list.map((s) => s.ac.id);
     const mutants = list.map((s) => s.id);
     const spent = evolves.get(uc) ?? 0;
-    const giveUp = async (detail: string, credits: number) => {
+    const giveUp = async (detail: string, credits: number, reason = NO_TEST) => {
       out.redesignError = detail;
       out.vacuous.push(...ids);
-      await emit({ t: "redesign.dropped", useCases: [uc], detail, credits, acs: ids, reason: NO_TEST });
+      await emit({ t: "redesign.dropped", useCases: [uc], detail, credits, acs: ids, reason });
       return undefined;
     };
-    if (spent >= MAX_EVOLVES) return giveUp(`Kane already evolved ${uc} ${MAX_EVOLVES} times in this run`, 0);
+    if (spent >= MAX_EVOLVES) return giveUp(`Kane already evolved ${uc} ${MAX_EVOLVES} times in this run`, 0, EVOLVE_BOUND);
     const because = becauseText(list);
     const first = await evolveOnce(uc, because, list);
     if ("stray" in first) return strayTamper(uc, first.stray, first.credits);
@@ -746,11 +779,16 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
         // the follow-up may retire what the first evolve minted, as it may the sealed tests
         const minted1 = g.tests.filter((t) => first.minted.includes(t.id));
-        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list, minted1, first.retired);
-        if ("stray" in again) return strayTamper(uc, again.stray, again.credits);
-        if ("failed" in again) {
-          // the first evolve stands; the follow-up's spend is still on record
-          await emit({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${again.failed}`, credits: again.credits });
+        // at the cap the follow-up never starts (m-1): the first evolve stands
+        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list, minted1, first.retired).catch((e: unknown) => {
+          if (e instanceof KaneCapReached) return { capped: e.message } as const;
+          throw e;
+        });
+        if ("capped" in again) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
+        else if ("stray" in again) return strayTamper(uc, again.stray, again.credits);
+        else if ("failed" in again) {
+          // the first evolve stands; the follow-up's spend is still on record, after it on the timeline (m-7)
+          out_.push({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${again.failed}`, credits: again.credits });
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         } else {
           out_.push({ t: "falsify.evolved", uc, because: oneLine(cover).slice(0, MAX_BECAUSE), minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
@@ -1073,6 +1111,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     // checked against the disk just above: the seal after an evolve holds these, never a fresh read (I-1)
     appPin = appPinOf(p, manifest);
 
+    // m-2: survivors an earlier pass never got to Kane go to it in this one, without a new attack
+    for (const m of unevolvedSurvivors(events)) {
+      const ac = state.acs[m.ac]!;
+      survivors.push({ ac, id: m.id, patch: m.patch, rationale: "", ...(m.slip ? { slip: m.slip } : {}) });
+    }
     const budget = new Budget(p.config.breaker.capUsd, state.breakerUsd);
     const fileOf = testFileMap(events, p.verifierDir);
     const lastChanged = recentChanges(events);
@@ -1102,7 +1145,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       assertTestsSealed(p.verifierDir, manifest, files);
       const before = out.killed.length + out.survived.length + out.invalid.length;
       // R40: a survivor whose use case Kane evolved since is re-checked first, with its own planted bug
-      const r = await falsifyOne(ac, files, lastChanged, budget, pendingRecheck(events, ac.id));
+      const r = await falsifyOne(ac, files, lastChanged, budget, pendingRecheck(events, ac));
       if (r === "tamper") return result("tamper");
       if (r === "budget") {
         budgetOut = true;
@@ -1121,6 +1164,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       if (drifted) driftFiles = specDrift;
     }
     if (drifted) out.vacuous.push(...survivors.map((s) => s.ac.id));
+    /** The Kane credit cap met at a use case's evolve (m-1): the rest wait, what passed is still sealed. */
+    let capStop: string | undefined;
     // R40: each use case with a survivor goes back to Kane, which evolves its tests
     if (survivors.length > 0 && !aborted && !drifted) {
       const byUc = new Map<string, Survivor[]>();
@@ -1131,11 +1176,23 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       let sealed = false;
       try {
         for (const uc of [...byUc.keys()].sort()) {
-          const evs = await evolveUseCase(uc, byUc.get(uc)!);
-          if (evs) {
-            logged.push(...evs);
-            evolved.push(uc);
+          const list = byUc.get(uc)!;
+          if (capStop === undefined) {
+            try {
+              const evs = await evolveUseCase(uc, list);
+              if (evs) {
+                logged.push(...evs);
+                evolved.push(uc);
+              }
+              continue;
+            } catch (e) {
+              if (!(e instanceof KaneCapReached)) throw e;
+              capStop = e.message;
+            }
           }
+          const ids = list.map((s) => s.ac.id);
+          out.vacuous.push(...ids);
+          await emit({ t: "redesign.dropped", useCases: [uc], detail: `no evolve of ${uc}: ${capStop}`, credits: 0, acs: ids, reason: EVOLVE_CAP });
         }
         if (evolved.length > 0) {
           const ids = survivors.filter((s) => evolved.includes(s.ac.useCase)).map((s) => s.ac.id);
@@ -1200,6 +1257,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       }
     }
 
+    // at the cap no Kane batch runs, the closing replay included
+    if (capStop !== undefined) return result("kane-budget", capStop);
     // falsify runs left failing coverage in Kane's project store: replay the real build once
     if (attacked && (await replayRealBuild()) === "tamper") return result("tamper");
     if (drifted || specDrift.length > 0) {

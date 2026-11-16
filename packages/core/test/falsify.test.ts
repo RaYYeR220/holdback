@@ -14,7 +14,7 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
-import { falsifyVerdict, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
+import { falsifyVerdict, pendingRecheck, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -1116,6 +1116,101 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const s = reduce(all);
     expect(s.acs["ac-1"]).toMatchObject({ status: "needs-spec", tests: [], reason: expect.stringMatching(/no longer cover it/) });
     expect(s.acs["ac-3"]).toMatchObject({ status: "passing", tests: ["t-4"] });
+    // m-7: the timeline reads evolved, then the follow-up rolled back
+    const tl = all.map((e) => e.t);
+    expect(tl.indexOf("falsify.evolved")).toBeLessThan(tl.indexOf("redesign.dropped"));
+  });
+
+  it("a credit cap reached at a later use case's evolve keeps the earlier use case's evolve; the later survivors stay vacuous with that reason (m-1)", async () => {
+    await setup({
+      before: async () => {
+        await otherUseCase()();
+        await log({ at, t: "run", kind: "build", turn: 1, result: pass(T9()) });
+      },
+    });
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(ac === "ac-1" ? failOn("ac-1") : pass), patch: (ac) => PATCH[ac] ?? PATCH["ac-3"]! });
+    // three attacks, then uc-1's evolve shows a drop of 100 credits on the balance: uc-2's evolve meets the cap
+    let reads = 0;
+    deps.balance = async () => (++reads <= 7 ? 1000 : 900);
+    const r = await runFalsify(p, deps, io, log, { kaneCap: 60 });
+    expect(r).toMatchObject({ reason: "kane-budget", redesigned: ["uc-1"] });
+    expect(r.vacuous).toContain("ac-9");
+    expect(calls.evolve.map((c) => c.uc)).toEqual(["uc-1"]);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.filter((e) => e.t === "falsify.evolved").map((e) => e.t === "falsify.evolved" && e.uc)).toEqual(["uc-1"]);
+    expect(all.findLast((e) => e.t === "seal")).toMatchObject({ by: "kane" });
+    expect(existsSync(testFile("t-4"))).toBe(true);
+    expect(reduce(all).acs["ac-9"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/credit cap/) });
+  });
+
+  describe("a survivor not evolved in its own pass (m-2)", () => {
+    const survivedEarlier = async () => {
+      await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"] });
+    };
+
+    it("goes to Kane in the next pass, without being attacked again", async () => {
+      await setup({ before: survivedEarlier }); // that pass stopped (aborted) before the evolve
+      const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], redesigned: ["uc-1"], reason: "done" });
+      expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
+      expect(calls.evolve).toHaveLength(1);
+      expect(calls.evolve[0]!.because).toContain(SLIP["ac-3"]!.observed);
+      const ev = (await readEvents(p.ledgerFile)).find((e) => e.t === "falsify.evolved");
+      expect(ev).toMatchObject({ uc: "uc-1", mutants: ["m-ac-3-1"] });
+    });
+
+    it("waits out the run's bound, and the cap, but never goes back once Kane could not add a test for it", async () => {
+      for (const [reason, again] of [
+        ["Kane already evolved this use case twice in this run: the next `holdback run` tries again", 1],
+        ["the Kane credit cap was reached before Kane could evolve its tests", 1],
+        ["Kane could not add a test that catches this planted bug", 0],
+      ] as const) {
+        await setup({
+          before: async () => {
+            await survivedEarlier();
+            await log({ at, t: "redesign.dropped", useCases: ["uc-1"], detail: "d", credits: 0, acs: ["ac-3"], reason });
+          },
+        });
+        const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+        await runFalsify(p, deps, io, log);
+        expect(calls.evolve, reason).toHaveLength(again);
+        rmSync(root, { recursive: true, force: true });
+        root = mkdtempSync(join(tmpdir(), "hb-falsify-"));
+        process.env.HOLDBACK_HOME = join(root, "home");
+      }
+    });
+  });
+
+  describe("which survivor a criterion is re-checked with (m-3)", () => {
+    const m = (id: string, ac: string, extra: Partial<Extract<LedgerEvent, { t: "mutant" }>> = {}): LedgerEvent => ({ at, t: "mutant", id, ac, patch: "p", model: MODEL, usd: 0, verdict: "survived", ...extra });
+    const evolved = (mutants: string[]): LedgerEvent => ({ at, t: "falsify.evolved", uc: "uc-1", because: "b", minted: ["t-9"], retired: [], credits: 1, mutants });
+    const ac3 = { id: "ac-3", useCase: "uc-1" };
+
+    it("is its own survivor after the evolve that answered it", () => {
+      expect(pendingRecheck([m("m-ac-3-1", "ac-3"), evolved(["m-ac-3-1"])], ac3)?.id).toBe("m-ac-3-1");
+      // attacked since: nothing pending
+      expect(pendingRecheck([m("m-ac-3-1", "ac-3"), evolved(["m-ac-3-1"]), m("m-ac-3-2", "ac-3", { verdict: "killed", recheck: "m-ac-3-1" })], ac3)).toBeUndefined();
+    });
+
+    it("stops at a drift the human applied: the old bug may not break the new spec", () => {
+      const drift: LedgerEvent = { at, t: "drift", rows: [{ kind: "MODIFY", ref: "uc-1", why: "w" }], applied: true, credits: 1 };
+      expect(pendingRecheck([m("m-ac-3-1", "ac-3"), evolved(["m-ac-3-1"]), drift], ac3)).toBeUndefined();
+    });
+
+    it("is re-checked again after a later evolve of its use case replaced the tests that caught it", () => {
+      const events = [
+        m("m-ac-3-1", "ac-3"),
+        evolved(["m-ac-3-1"]),
+        m("m-ac-3-2", "ac-3", { verdict: "killed", recheck: "m-ac-3-1" }),
+        m("m-ac-1-1", "ac-1"),
+        evolved(["m-ac-1-1"]),
+      ];
+      expect(pendingRecheck(events, ac3)?.id).toBe("m-ac-3-1");
+      expect(pendingRecheck(events, { id: "ac-1", useCase: "uc-1" })?.id).toBe("m-ac-1-1");
+      // another use case's evolve does not touch it
+      expect(pendingRecheck([...events.slice(0, 3), { ...(evolved(["m-x"]) as object), uc: "uc-2" } as LedgerEvent], ac3)).toBeUndefined();
+    });
   });
 
   it("a follow-up evolve that covers the criterion again is on record as one, and its set is what gets sealed (R40)", async () => {
@@ -1341,7 +1436,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(all.at(-1)!.t).toBe("recordings");
     const m = all.filter((e) => e.t === "mutant").pop();
     expect(m).toMatchObject({ id: "m-ac-3-1", ac: "ac-3", verdict: "survived-by-heal", note: expect.stringContaining("heal") });
-    expect(reduce(all).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: "Kane could not add a test that catches this planted bug" });
+    // the next `holdback run` sends it to Kane again (m-2)
+    expect(reduce(all).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: "Kane already evolved this use case twice in this run: the next `holdback run` tries again" });
   });
 
   it("retries a patch that does not apply once with git's error, then counts it invalid without any Kane run", async () => {
