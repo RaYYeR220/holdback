@@ -1,4 +1,4 @@
-import { eventCredits, gate as coreGate, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
+import { decidesStatus, eventCredits, gate as coreGate, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
 import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, TestRunResult, Verdict } from "@holdback/core/browser";
 
 /* ------------------------------------------------------------------ the wire: GET /api/state */
@@ -109,7 +109,8 @@ export function patchOneLiner(patch: string): { file?: string; removed?: string;
 /* ------------------------------------------------------------------ the board */
 
 export type Observation = {
-  kind: "build" | "falsify";
+  /** `replay`: falsify's closing replay of the real build. */
+  kind: "build" | "falsify" | "replay";
   at?: string;
   turn?: number;
   mutantId?: string;
@@ -173,7 +174,7 @@ function observe(e: RunEvent, at?: string): Observation {
   const why = notAnAppFailure(r);
   const v = r.verdict;
   return {
-    kind: e.kind === "falsify" ? "falsify" : "build",
+    kind: e.kind === "falsify" ? "falsify" : e.kind === "replay" ? "replay" : "build",
     ...(at ? { at } : {}),
     ...(e.turn !== undefined ? { turn: e.turn } : {}),
     ...(e.mutantId ? { mutantId: e.mutantId } : {}),
@@ -221,7 +222,7 @@ function testMarks(events: LedgerEvent[]): Marks {
         verifies.set(t.id, new Set(t.verifies));
         unsure.delete(t.id);
       }
-    } else if (e.t === "run" && e.kind === "build" && e.result.testId != null) {
+    } else if (e.t === "run" && decidesStatus(e.kind) && e.result.testId != null) {
       const r = e.result;
       const test = r.testId!;
       const acs = verifies.get(test) ?? new Set<string>();
@@ -280,7 +281,7 @@ export function board(api: ApiState, events: LedgerEvent[]): Record<ColumnKey, C
     let observation: Observation | undefined;
     const lf = ac.lastFailure;
     if ((ac.status === "owed" || ac.status === "regressed") && lf) {
-      const run = runs.findLast((r) => r.kind === "build" && r.result.testId === lf.test && (lf.turn === undefined || r.turn === lf.turn));
+      const run = runs.findLast((r) => decidesStatus(r.kind) && r.result.testId === lf.test && (lf.turn === undefined || r.turn === lf.turn));
       observation = run
         ? observe(run, run.at)
         : {
@@ -301,7 +302,7 @@ export function board(api: ApiState, events: LedgerEvent[]): Record<ColumnKey, C
     } else {
       // the latest build run of a test that has not (yet) passed this criterion, else the latest of any of its tests
       const open = new Set(tests.filter((t) => t.mark !== "pass").map((t) => t.id));
-      const mine = runs.filter((r) => r.kind === "build" && r.result.testId != null && ac.tests.includes(r.result.testId));
+      const mine = runs.filter((r) => decidesStatus(r.kind) && r.result.testId != null && ac.tests.includes(r.result.testId));
       const run = mine.findLast((r) => open.has(r.result.testId!)) ?? mine.at(-1);
       if (run) observation = observe(run, run.at);
     }
@@ -524,7 +525,7 @@ export type Meters = {
 };
 
 export function meters(api: ApiState, events: LedgerEvent[]): Meters {
-  const split = { spec: 0, design: 0, build: 0, falsify: 0, other: 0 };
+  const split = { spec: 0, design: 0, build: 0, falsify: 0, replay: 0, other: 0 };
   let kaneS = 0;
   let metered = 0;
   for (const e of events) {
@@ -535,6 +536,7 @@ export function meters(api: ApiState, events: LedgerEvent[]): Meters {
       kaneS += e.result.durationS;
       if (e.kind === "build") split.build += c;
       else if (e.kind === "falsify") split.falsify += c;
+      else if (e.kind === "replay") split.replay += c;
       else split.other += c;
     } else split.other += c;
     if (e.t === "credits") metered += 1;
@@ -549,6 +551,7 @@ export function meters(api: ApiState, events: LedgerEvent[]): Meters {
       { key: "design", label: "Test design", credits: r(split.design) },
       { key: "build", label: "Build checks", credits: r(split.build) },
       { key: "falsify", label: "Breaker replays", credits: r(split.falsify) },
+      { key: "replay", label: "Closing replays", credits: r(split.replay) },
       { key: "other", label: "Other", credits: r(split.other) },
     ].filter((s) => s.credits > 0),
     breakerUsd: api.breakerUsd,

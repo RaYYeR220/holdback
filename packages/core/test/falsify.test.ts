@@ -403,14 +403,15 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "run:falsify:t-3:failed",
       "run:falsify:t-3:failed",
       "recordings",
-      "run:build:t-1:passed",
-      "run:build:t-3:passed",
+      "run:replay:t-1:passed", // the closing replay of the real build, apart from the build checks
+      "run:replay:t-3:passed",
       "recordings",
     ]);
     expect(ev[5]).toEqual({ at: expect.any(String), t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"], model: MODEL, usd: expect.closeTo(USD_PER_CALL, 12), verdict: "killed", slip: SLIP["ac-3"] });
     expect(ev[6]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1" });
     expect(ev[7]).toMatchObject({ t: "run", kind: "falsify", mutantId: "m-ac-3-1", confirm: true });
-    expect(ev[9]).toMatchObject({ t: "run", kind: "build", turn: 1 });
+    // a replay of turn 1's build: the turn whose code it ran
+    expect(ev[9]).toMatchObject({ t: "run", kind: "replay", turn: 1 });
 
     const state = reduce(await readEvents(p.ledgerFile));
     expect(state.acs["ac-1"]!.status).toBe("proved");
@@ -554,7 +555,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "design",
       "seal",
       "recordings",
-      "run:build:t-4:passed",
+      "run:replay:t-4:passed",
       "recordings",
     ]);
     expect(ev[5]).toMatchObject({ t: "mutant", id: "m-ac-3-1", slip: SLIP["ac-3"] });
@@ -733,8 +734,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       "recordings",
       "recordings", // anchored right after the rollback
       "redesign.dropped",
-      "run:build:t-1:passed",
-      "run:build:t-3:passed",
+      "run:replay:t-1:passed",
+      "run:replay:t-3:passed",
       "recordings",
     ]);
     expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 5.69, acs: ["ac-3"], reason: "Kane could not add a test that catches this planted bug" });

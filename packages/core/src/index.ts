@@ -49,7 +49,7 @@ export type {
   LedgerState,
 } from "./ledger/types.js";
 export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
-export { reduce } from "./ledger/reduce.js";
+export { decidesStatus, reduce } from "./ledger/reduce.js";
 export { KaneMeter, KaneCapReached, eventCredits, type BalanceReader, type KaneCap } from "./ledger/credits.js";
 export { gate } from "./ledger/gate.js";
 export { verdict, type Verdict, type VerdictState } from "./ledger/verdict.js";

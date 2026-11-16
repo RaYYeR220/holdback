@@ -53,5 +53,6 @@ describe("@holdback/core/browser", () => {
     expect(browser.notAnAppFailure).toBe(core.notAnAppFailure);
     expect(browser.verdict).toBe(core.verdict);
     expect(browser.retiredTests).toBe(core.retiredTests);
+    expect(browser.decidesStatus).toBe(core.decidesStatus);
   });
 });

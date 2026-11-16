@@ -2,7 +2,12 @@ import type { AcNode, GapNode, PendingQuestion, TestNode } from "../kane/assuran
 import type { BugVerdict, TestRunResult } from "../kane/testmd.js";
 import type { Slip } from "../breaker/mutate.js";
 
-export type RunKind = "build" | "falsify" | "exam" | "bisect";
+/**
+ * `build`: a check of an agent turn's build (`turn`: that turn). `replay`: falsify's closing replay of
+ * the real build, after its planted bugs (`turn`: the turn whose code it replayed). Both decide a
+ * criterion's status (`decidesStatus`); `falsify` (a planted bug), `exam` and `bisect` runs do not.
+ */
+export type RunKind = "build" | "falsify" | "exam" | "bisect" | "replay";
 
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }

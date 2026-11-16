@@ -226,6 +226,22 @@ describe("meters and labels", () => {
     expect(COLUMNS.find((c) => c.key === "needs-spec")!.note).toBe("No test verifies it: Kane's design cap left it out, or the spec gives Kane nothing to test");
   });
 
+  it("shows falsify's closing replay as a replay, on the board, the timeline and the spend split (rehearsal issue 10b)", () => {
+    const events = [
+      design(["ac-1"], [["t-1", ["ac-1"]]]),
+      run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] })),
+      run(1, result("t-1", "failed", { criteriaFailed: ["ac-1"], verdict: { bugTitle: "Off by one" }, credits: 22.33 }), "replay"),
+    ];
+    const api = stateFromLedger(events, null);
+    expect(api.state.acs["ac-1"]!.status).toBe("regressed"); // it passed in turn 1, then failed the replay
+    const card = board(api, events).owed[0]!;
+    expect(card.observation).toMatchObject({ kind: "replay", test: "t-1", status: "failed" });
+    expect(card.tests[0]).toMatchObject({ mark: "fail" });
+    const runs = timeline(events).flatMap((sg) => sg.items).filter((i) => i.kind === "run");
+    expect(runs.map((i) => (i.kind === "run" ? i.run.kind : null))).toEqual(["build", "replay"]);
+    expect(meters(api, events).split).toContainEqual({ key: "replay", label: "Closing replays", credits: 22.33 });
+  });
+
   it("lists the tests Kane's evolve retired: still sealed, never run (the rehearsal's t-1)", () => {
     const events = parseEvents(readFileSync(REHEARSAL, "utf8"));
     expect(retiredLine(events)).toBe("Retired by Kane's evolve, still sealed, never run again: t-1 Reject non-SNAP income above the two-person limit (uc-1).");

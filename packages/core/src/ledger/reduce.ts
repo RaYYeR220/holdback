@@ -1,8 +1,11 @@
 import { notAnAppFailure } from "../kane/outcome.js";
 import { eventCredits } from "./credits.js";
-import type { AcState, LedgerEvent, LedgerState } from "./types.js";
+import type { AcState, LedgerEvent, LedgerState, RunKind } from "./types.js";
 
 const round = (n: number) => Math.round(n * 1e4) / 1e4;
+
+/** A run of this kind decides its criteria's status: a build check, or falsify's closing replay of the real build. */
+export const decidesStatus = (kind: RunKind): boolean => kind === "build" || kind === "replay";
 
 /** Pure reducer: ledger events -> state of every AC. Single source of truth for AC status. */
 export function reduce(events: LedgerEvent[]): LedgerState {
@@ -94,7 +97,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
       case "run": {
         state.runs += 1;
         const r = e.result;
-        if (e.kind !== "build" || r.testId == null) break;
+        if (!decidesStatus(e.kind) || r.testId == null) break;
         const testId = r.testId;
         // R34: a run that failed for a reason other than the app proves nothing either way, passes
         // included: every criterion keeps its status (and its last real failure, for the brief)

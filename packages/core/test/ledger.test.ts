@@ -176,6 +176,16 @@ describe("build runs", () => {
     });
   });
 
+  it("falsify's closing replay of the real build (kind replay) decides a criterion like a build check (rehearsal issue 10b)", () => {
+    const passed = [d, run(result("t-1", ["ac-1"], []), "replay", 2)];
+    expect(status(passed, "ac-1")).toBe("passing");
+    const s = reduce([...passed, run(result("t-1", [], ["ac-1"], { verdict: { bugTitle: "b" } }), "replay", 2)]);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "regressed", lastFailure: { test: "t-1", turn: 2 } });
+    // a replay that proved nothing is on record as inconclusive, like a build run's
+    const unsure = reduce([d, run(result("t-1", [], [], { status: "error", reason: "timeout" }), "replay", 2)]);
+    expect(unsure.inconclusive).toEqual([{ test: "t-1", turn: 2, reason: "timeout" }]);
+  });
+
   it("passing AC failing a build run -> regressed", () => {
     expect(status([d, run(result("t-1", ["ac-1"], [])), run(result("t-1", [], ["ac-1"]))], "ac-1")).toBe(
       "regressed",

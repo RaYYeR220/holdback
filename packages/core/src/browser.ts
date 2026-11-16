@@ -4,7 +4,7 @@
  * and the server use (test/browser.test.ts keeps this graph free of node modules).
  */
 export { parseEvents } from "./ledger/parse.js";
-export { reduce } from "./ledger/reduce.js";
+export { decidesStatus, reduce } from "./ledger/reduce.js";
 export { gate } from "./ledger/gate.js";
 export { verdict, type Verdict, type VerdictState } from "./ledger/verdict.js";
 export { retiredTests, type RetiredTest } from "./ledger/retired.js";

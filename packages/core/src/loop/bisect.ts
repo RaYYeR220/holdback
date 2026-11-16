@@ -5,7 +5,7 @@ import { appEnv, freshDataDir } from "../datadir.js";
 import { holdbackGitOptions, worktreeAdd } from "../git.js";
 import { notAnAppFailure, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneMeter, type BalanceReader, type KaneCap } from "../ledger/credits.js";
-import { reduce } from "../ledger/reduce.js";
+import { decidesStatus, reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
 import type { LedgerEvent } from "../ledger/types.js";
 import { readLedger } from "../ledger/vouched.js";
@@ -60,10 +60,10 @@ export function lastGoodTurn(events: LedgerEvent[], ac: string, beforeTurn: numb
   const seen: LedgerEvent[] = [];
   let good = 0;
   for (const e of events) {
-    if (e.t === "run" && e.kind === "build" && (e.turn ?? 0) >= beforeTurn) continue;
+    if (e.t === "run" && decidesStatus(e.kind) && (e.turn ?? 0) >= beforeTurn) continue;
     seen.push(e);
     // only a run of one of the AC's own tests says anything about it at that turn
-    if (e.t !== "run" || e.kind !== "build" || e.turn === undefined) continue;
+    if (e.t !== "run" || !decidesStatus(e.kind) || e.turn === undefined) continue;
     const a = reduce(seen).acs[ac];
     if (a && e.result.testId != null && a.tests.includes(e.result.testId) && (a.status === "passing" || a.status === "proved")) good = e.turn;
   }

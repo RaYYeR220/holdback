@@ -268,6 +268,9 @@ describe("blame helpers", { timeout: 60_000 }, () => {
     const events = [...(await readEvents(p.ledgerFile)), runEv(1, true), runEv(2, true), runEv(5, false)];
     expect(lastGoodTurn(events, "ac-1", 5)).toBe(2);
     expect(lastGoodTurn(events, "ac-1", 1)).toBe(0);
+    // falsify's closing replay of turn 3's build counts as that turn's evidence too (rehearsal issue 10b)
+    const replayed = [...events.slice(0, -1), { ...runEv(3, true), kind: "replay" } as LedgerEvent, runEv(5, false)];
+    expect(lastGoodTurn(replayed, "ac-1", 5)).toBe(3);
   });
 
   it("blameOf keeps the newest blame and drops it after an unblamed regression", async () => {

@@ -1127,7 +1127,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     await closeKaneWindow();
   };
 
-  /** Every test once against the real build, logged as build runs (Kane's own coverage then reflects the real build). */
+  /** Every test once against the real build, logged as `replay` runs (Kane's own coverage then reflects the real build). */
   const replayRealBuild = async (): Promise<"tamper" | "done"> => {
     const state = reduce(events);
     const acs = Object.values(state.acs)
@@ -1167,7 +1167,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       const was = reduce(events);
       for (const [i, r] of results.entries()) {
         const res = r.testId == null ? { ...r, testId: fileId.get(files[i]!) ?? null } : r;
-        await emit({ t: "run", kind: "build", turn: state.turn, result: res });
+        // rehearsal issue 10b: a replay of the last turn's build, logged apart from that turn's own checks
+        await emit({ t: "run", kind: "replay", turn: state.turn, result: res });
       }
       const now = reduce(events);
       for (const ac of Object.values(now.acs).sort(byAcId)) {

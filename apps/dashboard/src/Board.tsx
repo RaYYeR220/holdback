@@ -10,7 +10,7 @@ function Observed({ card }: { card: Card }) {
   // a plain pass on a passing criterion says nothing the test marks below do not
   if (card.ac.status === "passing" && o.status === "passed" && !o.note && !o.screenshot) return null;
   const v = runVerdict(o);
-  const where = [o.test, o.kind === "falsify" ? (o.mutantId ? `${o.again ? "second replay" : "replay"} vs ${o.mutantId}` : "replay") : o.turn !== undefined ? `turn ${o.turn}` : null].filter(Boolean).join(" · ");
+  const where = [o.test, o.kind === "falsify" ? (o.mutantId ? `${o.again ? "second replay" : "replay"} vs ${o.mutantId}` : "replay") : o.kind === "replay" ? "closing replay" : o.turn !== undefined ? `turn ${o.turn}` : null].filter(Boolean).join(" · ");
   const caption = `${o.test}${o.step ? `, step ${o.step}` : ""}${o.observed ? `: Kane saw “${o.observed}”` : o.note ? `: ${o.note}` : ""}`;
   return (
     <div className="c-block">
