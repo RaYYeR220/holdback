@@ -75,4 +75,11 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 - **Holdback now:** takes Kane's new set as the use case's only tests, checks which criteria it left without a test (from the test files' `@verifies`), asks Kane once more to cover them, and marks any still uncovered as needing the spec.
 - **Suggestion:** honour an explicit keep in the reason, or offer an additive mode (`--keep-existing`), and say in the `evolve_paused` rationale that every pair is superseded.
 
+## 12. On Windows a free-text flag goes through cmd.exe twice
+
+- **Seen:** `npm i -g @testmuai/kane-cli` installs `kane-cli.cmd`, which ends in `"%dp0%\node_modules\@testmuai\kane-cli\bin\kane-cli.cjs" %*`. A caller that runs `kane-cli` through a shell has its arguments parsed by cmd.exe once more at that `%*`: a `--because` holding `&`, `|`, `<`, `>`, `%VAR%` or an odd number of quotes is cut short, and the rest runs as commands in the caller's folder. A reason that quotes a criterion (`ac-2 ("…")`) is enough. Holdback's first evolve code did this through cross-spawn, which escapes once.
+- **What it means:** text Kane is meant to take as data (a `--because`, an `--answer` with free text, a `--message`) is unsafe on a Windows command line unless the caller avoids the shim.
+- **Holdback now:** never runs the shim. It reads the shim (or the package's `bin`) for `bin/kane-cli.cjs` and runs that with Node, with no shell; an argument with a NUL or a line break is refused (`packages/core/src/programs.ts`, `packages/core/test/programs.test.ts`, which drives a real shim of the same shape).
+- **Suggestion:** take free text from a file or stdin (`--because-file`, `--because -`), and say in the Windows install notes that the shim re-parses its arguments.
+
 Not filed upstream yet.
