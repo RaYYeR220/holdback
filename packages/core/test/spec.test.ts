@@ -436,4 +436,45 @@ describe("runSpecStage", () => {
     expect(err?.name).toBe("SpecChangedDuringStage");
     expect((await readEvents(p.ledgerFile)).some((e) => e.t === "seal")).toBe(false);
   }, 60_000);
+
+  it("a spec edited while the human approves the use cases stops the stage before Kane is called again: the edit is never absorbed (n-3)", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const io: HumanIO = {
+      async answer(qs) {
+        return Object.fromEntries(qs.map((q) => [q.id, "Show errors"]));
+      },
+      async approve(items) {
+        if (items.some((i) => i.kind === "usecase")) appendFileSync(join(appDir, "PRD.md"), "\nA rule added during the approval.\n");
+        return items.map((i) => i.ref);
+      },
+    };
+    const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
+    expect(err?.name).toBe("SpecChangedDuringStage");
+    // ingest, resume, list(uc): nothing after the approval reached Kane (no review, no design)
+    const argv = readFileSync(join(root, "argv.log"), "utf8").trim().split("\n");
+    expect(argv).toHaveLength(3);
+    const events = await readEvents(p.ledgerFile);
+    expect(events.some((e) => e.t === "design" || e.t === "seal")).toBe(false);
+  }, 60_000);
+
+  it("a spec edited while the human answers Kane's question stops the stage before the answer goes to Kane (n-3)", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const io: HumanIO = {
+      async answer(qs) {
+        appendFileSync(join(appDir, "PRD.md"), "\nAn edit made while answering.\n");
+        return Object.fromEntries(qs.map((q) => [q.id, "Show errors"]));
+      },
+      async approve(items) {
+        return items.map((i) => i.ref);
+      },
+    };
+    const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
+    expect(err?.name).toBe("SpecChangedDuringStage");
+    // only the ingest ran: the answer never reached Kane, nor went into PRD.md under the edit
+    expect(readFileSync(join(root, "argv.log"), "utf8").trim().split("\n")).toHaveLength(1);
+    expect(readFileSync(join(appDir, "PRD.md"), "utf8")).not.toContain("Clarifications");
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "spec.extracted")).toBe(false);
+  }, 60_000);
 });

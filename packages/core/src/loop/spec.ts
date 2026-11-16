@@ -480,6 +480,12 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
   stage: "spec" | "later" = "later",
   /** The spec bytes the stage will seal: each Clarification appended to a pinned file moves its pin by exactly that (N-I2). */
   pin?: SpecPin,
+  /**
+   * n-3, the spec stage: `unchanged` throws when the spec is no longer what the stage last knew (run
+   * after the human answers, before Holdback appends the answers or Kane is called); `appended`
+   * refreshes what the stage knows right after Holdback's own write.
+   */
+  watch?: { unchanged: () => Promise<void>; appended: () => Promise<void> },
 ): Promise<Exclude<R, Paused>> {
   const cwd = p.verifierDir;
   let r: R = first;
@@ -488,6 +494,7 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
     // the call that paused is billed: its credits count once, here (a resumed call's in `spec.answered`)
     await emit({ t: "spec.paused", sid: paused.sid, questions: paused.questions, credits: paused.credits });
     const answers = await io.answer(paused.questions);
+    await watch?.unchanged();
     // an answer is always on the ledger (`spec.answered`); whether it also goes into PRD.md is the config's call
     if (stage === "spec" || p.config.loop.appendClarifications !== "spec-only") {
       await appendClarifications(
@@ -495,7 +502,9 @@ export async function drivePaused<R extends IngestResult | DesignResult | Reconc
         paused.questions.filter((q) => answers[q.id] !== undefined).map((q) => `- Q: ${oneLine(q.text)} — A: ${oneLine(String(answers[q.id]))}`),
         pin,
       );
+      await watch?.appended();
     }
+    await watch?.unchanged();
     r = (paused.verb === "extract" ? await kane.extractResume(cwd, paused.sid, answers) : await kane.resumeSession(cwd, paused, answers)) as R;
     const credits = "credits" in r ? r.credits : 0;
     await emit({ t: "spec.answered", sid: paused.sid, answers, credits });
@@ -607,13 +616,20 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   const cwd = p.verifierDir;
 
   // n-3: the spec as the stage last knew it: the bytes it extracted from, plus the Clarifications it
-  // appended itself (read right after each Kane call, never across a human's approval)
+  // appended itself (read right after that write, and only then). Before every Kane call, and before
+  // the seal, the disk must still be that: an edit made meanwhile (while the human answers or
+  // approves) stops the stage rather than reach Kane, or the seal, unread.
   let known = "";
-  const drive = async <R extends IngestResult | DesignResult>(first: R) => {
-    const r = await drivePaused(p, io, emit, first, undefined, "spec");
-    known = await specSourceHash(p);
-    return r;
+  const unchanged = async () => {
+    if ((await specSourceHash(p)) !== known) throw new SpecChangedDuringStage();
   };
+  const watch = {
+    unchanged,
+    appended: async () => {
+      known = await specSourceHash(p);
+    },
+  };
+  const drive = <R extends IngestResult | DesignResult>(first: R) => drivePaused(p, io, emit, first, undefined, "spec", undefined, watch);
 
   checkSpecPaths(p);
   const earlier = await readEvents(p.ledgerFile);
@@ -636,6 +652,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
     }
     const sources = [...p.config.spec, ...p.config.specUrls];
     await meter.batch("spec", async () => {
+      await unchanged(); // the copy Kane reads is the spec the stage hashed
       const first = await ingest(cwd, sources);
       if (first.status === "error") throw new Error(`spec ingest failed: ${first.message}`);
       const files = mapIngestedFiles(first.sources, p.config.spec);
@@ -646,13 +663,14 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
       });
       const extracted = await drive<IngestResult>(first);
       if (extracted.status === "error") throw new Error(`spec extraction failed: ${extracted.message}`);
-      // hashed after the answers went into PRD.md: a resumed stage compares the spec as it is now
-      known = await specSourceHash(p);
+      // the spec with the answers Holdback appended: a resumed stage compares the spec as it is now
+      await unchanged();
       await emit({ t: "spec.extracted", hash: known });
     });
   }
 
   // 3. human approves the extracted use cases (ones approved by an earlier attempt are not asked again)
+  await unchanged();
   const nodes = (await listNodes(cwd)).filter((n) => n.label === "usecase");
   const asked = nodes.filter((n) => n.trust === "derived");
   const approvedBefore = nodes.filter((n) => n.trust !== "derived").map((n) => n.id);
@@ -664,13 +682,17 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   }
   const designable = [...approvedBefore, ...approvedNow];
   if (designable.length === 0) throw new Error("spec stage: no use case approved, nothing to design");
+  // the approval takes the human a while: an edit made meanwhile never reaches Kane
+  await unchanged();
   if (approvedNow.length > 0) await review(cwd, approvedNow);
 
   // 4. design acceptance criteria + tests per use case not designed yet (a metered Kane batch each)
   for (const uc of designable.filter((u) => !designed.has(u))) {
     await meter.batch("design", async () => {
+      await unchanged();
       const d = await drive(await designTests(cwd, uc, { max: p.config.kane.designMax }));
       if (d.status !== "complete") throw new Error(`design for ${uc} ${d.status}: ${d.message ?? ""}`);
+      await unchanged();
       const g = await readGraph(cwd);
       const acs = g.acs.filter((a) => a.useCase === uc);
       const acIds = new Set(acs.map((a) => a.id));
@@ -695,6 +717,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   const rejectedBefore = new Set(decided.flatMap((e) => e.rejected ?? []));
   const designIds = new Set([...designed.values()].flatMap((d) => [...d.acs.map((a) => a.id), ...d.tests.map((t) => t.id)]));
   const approvedDesignBefore = decided.some((e) => e.refs.some((r) => designIds.has(r)));
+  await unchanged();
   const derived = (await listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label) && !rejectedBefore.has(n.id));
   if (derived.length > 0) {
     const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
@@ -702,6 +725,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
     const turnedDown = derived.map((n) => n.id).filter((id) => !approvedSet.includes(id));
     await emit({ t: "spec.approved", refs: approvedSet, rejected: turnedDown });
     if (approvedSet.length === 0 && !approvedDesignBefore) throw new Error("spec stage: no designed test was approved, refusing to seal");
+    await unchanged();
     if (approvedSet.length > 0) await review(cwd, approvedSet);
     for (const d of designed.values()) {
       const mine = new Set([...d.acs.map((a) => a.id), ...d.tests.map((t) => t.id)]);
@@ -717,7 +741,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
 
   // 6. point the tests at the app, commit Holdback's own spec edit, then seal (a fresh seal is the only thing that lifts a tamper)
   // n-3: the seal hashes the disk, so a spec edited since Kane last read it would be sealed as approved
-  if ((await specSourceHash(p)) !== known) throw new SpecChangedDuringStage();
+  await unchanged();
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
   await commitClarifications(p, clarifiedBefore, deps.warn);
   await reseal(p, log);
