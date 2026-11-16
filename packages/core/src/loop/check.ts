@@ -50,6 +50,8 @@ export type CheckResult = {
   detail?: string;
   /** The app did not start for this work tree: no criterion could be checked. */
   appStartError?: string;
+  /** `appStartError` is the replay app failing to start: the turn's own app did start (n-6). */
+  replayStartFailed?: true;
   /**
    * The tests whose latest run proved nothing (`<test>: <why>`), which keep the gate shut until Kane
    * runs them conclusively: their criteria kept their status. For the human (check.json, check.log,
@@ -207,7 +209,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     if (r.reason === "unsealed") return closed("unsealed", UNSEALED_BRIEF, r.error);
     return closed("error", ERROR_BRIEF(forAgent(p, r.error ?? "unknown error")), r.error);
   };
-  const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined): CheckResult => {
+  const verdict = (status: "checked" | "unchanged", ran: string[], appStartError: string | undefined, replayStartFailed = false): CheckResult => {
     const state = reduce(s.events);
     const g = gate(state);
     const inconclusive = g.inconclusive.map((u) => `${u.test}: ${u.reason}`);
@@ -220,6 +222,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
       tampered: false,
       owed: owedIds(state),
       ...(appStartError !== undefined ? { appStartError } : {}),
+      ...(appStartError !== undefined && replayStartFailed ? { replayStartFailed: true as const } : {}),
       ...(inconclusive.length > 0 ? { inconclusive } : {}),
     };
   };
@@ -264,8 +267,8 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
       sameMark(last.ledger, s.mark) &&
       last.startedAt > editAt;
     if (stands) {
-      if (opts.reason === "stop" && turn) await endTurn(turn, last.appStartError === undefined);
-      return verdict("unchanged", [], last.appStartError);
+      if (opts.reason === "stop" && turn) await endTurn(turn, last.appStartError === undefined || last.replayStartFailed === true);
+      return verdict("unchanged", [], last.appStartError, last.replayStartFailed === true);
     }
     if (opts.signal?.aborted) return closed("aborted", ABORTED_BRIEF);
 
@@ -277,6 +280,7 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     }
 
     let appStartError = await s.startApp(await (deps.port ?? freePort)(), `check-turn-${turn.n}`);
+    const ownAppUp = appStartError === undefined;
     let ran: string[] = [];
     if (appStartError === undefined) {
       const v = await s.verify(turn.n, owedFiles, fileOf, false);
@@ -288,10 +292,10 @@ export async function checkOnce(p: Project, deps: CheckDeps, log: Log, opts: Che
     }
     // the app is down: Kane's recordings as they are now are what the next check holds them to
     if (s.kaneWindow) await s.closeKaneWindow();
-    if (opts.reason === "stop") await endTurn(turn, appStartError === undefined);
+    if (opts.reason === "stop") await endTurn(turn, ownAppUp);
     // the spec changed while Kane ran: what it checked stands, and the agent hands over to a human
     if (s.specDrift.length > 0) return drift(s.specDrift);
-    return verdict("checked", ran, appStartError);
+    return verdict("checked", ran, appStartError, ownAppUp && appStartError !== undefined);
   };
 
   let result: CheckResult;

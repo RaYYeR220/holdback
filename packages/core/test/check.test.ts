@@ -234,6 +234,8 @@ describe("checkOnce", { timeout: 60_000 }, () => {
     // t-3 ran and passed; the replay of t-1 needed an app of its own, which did not start
     expect(calls.tests).toEqual([[T1, T3], [T3]]);
     expect(r).toMatchObject({ status: "checked", allowStop: false, appStartError: expect.stringContaining("hono") });
+    // the turn's own app did start: only the replay's did not, so the turn is not recorded as down (n-6)
+    expect((await readEvents(p.ledgerFile)).findLast((e) => e.t === "turn.end")).toMatchObject({ n: 2, appUp: true });
   });
 
   it("an app that no longer starts shuts the gate even when every criterion passed before", async () => {
