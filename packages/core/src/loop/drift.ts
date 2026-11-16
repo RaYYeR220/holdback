@@ -33,7 +33,7 @@ import {
   classifySpecChange,
   commitSpec,
   drivePaused,
-  designCapNotes,
+  designNotes,
   latestSpecChange,
   ledgerCap,
   pinnedSeal,
@@ -319,7 +319,10 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
         const acs = g.acs.filter((a) => a.useCase === uc && !rejected.has(a.id));
         const ids = new Set(acs.map((a) => a.id));
         const tests = g.tests.filter((t) => !rejected.has(t.id) && t.verifies.some((v) => ids.has(v)));
-        const notes = designCapNotes(acs, tests, p.config.kane.designMax);
+        // read on Kane's own set of the use case, before the human's rejections (m-5)
+        const kaneAcs = g.acs.filter((a) => a.useCase === uc);
+        const kaneIds = new Set(kaneAcs.map((a) => a.id));
+        const notes = designNotes(kaneAcs, g.tests.filter((t) => t.verifies.some((v) => kaneIds.has(v))), p.config.kane.designMax, rejected);
         designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.design.get(uc) ?? 0, ...(notes ? { notes } : {}) });
       }
       // the seal hashes whatever is on disk: every test byte Kane wrote must be one the human approved

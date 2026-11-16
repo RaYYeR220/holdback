@@ -584,16 +584,33 @@ export function ledgerCap(p: Project, override?: number): KaneCap | undefined {
 /** Why a criterion has no test when Kane's design used every scenario `kane.designMax` allows (rehearsal issue 7). */
 export const designCapNote = (max: number): string => `no test designed (design cap ${max})`;
 
+/** Why a criterion has no test when Kane designed one but the human turned every test of it down (wave-4 m-5). */
+export const TESTS_TURNED_DOWN = "every test of it was turned down in the design approval";
+
 /**
- * The notes a design carries for its criteria no test verifies, when Kane designed as many tests as
- * `max` allows: it stopped at the cap, so the spec is not what left them out. Still `needs-spec` for
- * the gate (never proved). Under the cap, none: Kane found nothing in the spec to test them by.
+ * The notes a design carries for its criteria that end up with no test (still `needs-spec` for the
+ * gate: never proved), read on Kane's own set of `tests`, before the human's `rejected` ids:
+ * - none of Kane's tests verifies it and Kane designed as many as `max` allows: it stopped at the
+ *   cap, so the spec is not what left it out (`designCapNote`);
+ * - Kane's tests verify it but the human turned every one of them down (`TESTS_TURNED_DOWN`).
+ * A criterion with no test under the cap gets no note: Kane found nothing in the spec to test it by.
+ * A rejected criterion gets none either.
  */
-export function designCapNotes(acs: Pick<AcNode, "id">[], tests: Pick<TestNode, "verifies">[], max: number): Record<string, string> | undefined {
-  if (!(Number.isFinite(max) && max > 0 && tests.length >= max)) return undefined;
-  const covered = new Set(tests.flatMap((t) => t.verifies));
-  const bare = acs.filter((a) => !covered.has(a.id));
-  return bare.length > 0 ? Object.fromEntries(bare.map((a) => [a.id, designCapNote(max)])) : undefined;
+export function designNotes(
+  acs: Pick<AcNode, "id">[],
+  tests: Pick<TestNode, "id" | "verifies">[],
+  max: number,
+  rejected: ReadonlySet<string> = new Set(),
+): Record<string, string> | undefined {
+  const capped = Number.isFinite(max) && max > 0 && tests.length >= max;
+  const notes: Record<string, string> = {};
+  for (const a of acs) {
+    if (rejected.has(a.id)) continue;
+    const mine = tests.filter((t) => t.verifies.includes(a.id));
+    if (mine.length === 0 && capped) notes[a.id] = designCapNote(max);
+    else if (mine.length > 0 && mine.every((t) => rejected.has(t.id))) notes[a.id] = TESTS_TURNED_DOWN;
+  }
+  return Object.keys(notes).length > 0 ? notes : undefined;
 }
 
 /** The spec's hash from each spec file's bytes (null: absent) and the spec links. */
@@ -748,7 +765,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
       const acs = g.acs.filter((a) => a.useCase === uc);
       const acIds = new Set(acs.map((a) => a.id));
       const tests = g.tests.filter((t) => t.verifies.some((v) => acIds.has(v)));
-      const notes = designCapNotes(acs, tests, p.config.kane.designMax);
+      const notes = designNotes(acs, tests, p.config.kane.designMax);
       const e: Extract<EventBody, { t: "design" }> = { t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: d.credits, ...(notes ? { notes } : {}) };
       await emit(e);
       designed.set(uc, e);
@@ -779,8 +796,10 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
       const rejected = [...before.filter((id) => !approvedSet.includes(id)), ...turnedDown.filter((id) => mine.has(id) && !before.includes(id))];
       if (JSON.stringify(rejected) !== JSON.stringify(before)) {
         // an earlier attempt's event carries its own time: the re-emitted one is logged now (N-m4)
-        const { at: _at, ...body } = d as Extract<EventBody, { t: "design" }> & { at?: string };
-        await emit({ ...body, credits: 0, rejected });
+        const { at: _at, notes: _notes, ...body } = d as Extract<EventBody, { t: "design" }> & { at?: string };
+        // the notes follow the approval: Kane's set and cap as designed, the tests the human turned down (m-5)
+        const notes = designNotes(d.acs, d.tests, p.config.kane.designMax, new Set(rejected));
+        await emit({ ...body, credits: 0, rejected, ...(notes ? { notes } : {}) });
       }
     }
   }

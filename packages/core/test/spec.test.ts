@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
-import { checkSpecPaths, mapIngestedFiles, runSpecStage, specHashAfterAppend, specSource } from "../src/loop/spec.js";
+import { checkSpecPaths, designNotes, mapIngestedFiles, runSpecStage, specHashAfterAppend, specSource, TESTS_TURNED_DOWN } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { gate } from "../src/ledger/gate.js";
@@ -71,6 +71,23 @@ describe("the spec as the stage knows it (n-3, wave-4 m-3)", () => {
     // a human edit between the check and the append: the disk no longer matches what the stage expects
     writeFileSync(join(appDir, "PRD.md"), "# PRD\n\nSnap rules, edited.\n" + added);
     expect(specHashAfterAppend(p, checked.bytes, added)).not.toBe((await specSource(p)).hash);
+  });
+});
+
+describe("designNotes (rehearsal issue 7, wave-4 m-5)", () => {
+  const acs = ["ac-1", "ac-2", "ac-3"].map((id) => ({ id }));
+  it("reads the cap on Kane's own set, rejections apart, and names a criterion whose every test the human turned down", () => {
+    const tests = [
+      { id: "t-1", verifies: ["ac-1"] },
+      { id: "t-2", verifies: ["ac-2"] },
+    ];
+    // at the cap (2 tests): ac-3 has no test because of it
+    expect(designNotes(acs, tests, 2)).toEqual({ "ac-3": "no test designed (design cap 2)" });
+    // a rejected test still counts toward the cap; the criterion it alone verified says why it has none
+    expect(designNotes(acs, tests, 2, new Set(["t-2"]))).toEqual({ "ac-2": TESTS_TURNED_DOWN, "ac-3": "no test designed (design cap 2)" });
+    // under the cap: only the turned-down one has a reason; a rejected criterion has none
+    expect(designNotes(acs, tests, 5, new Set(["t-2", "ac-3"]))).toEqual({ "ac-2": TESTS_TURNED_DOWN });
+    expect(designNotes(acs, tests, 5)).toBeUndefined();
   });
 });
 

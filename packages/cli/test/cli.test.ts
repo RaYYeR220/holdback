@@ -427,19 +427,20 @@ describe("spec", () => {
           at,
           t: "design",
           useCase: "uc-1",
-          acs: [ac("ac-1"), ac("ac-2"), ac("ac-3"), ac("ac-4")],
+          acs: [ac("ac-1"), ac("ac-2"), ac("ac-3"), ac("ac-4"), ac("ac-5")],
           tests: [{ id: "t-1", title: "one", file: ".testmuai/tests/t1_test.md", verifies: ["ac-1"] }],
           gaps: [],
           credits: 1,
-          notes: { "ac-2": "no test designed (design cap 1)", "ac-3": "no test designed (design cap 1)" },
+          notes: { "ac-2": "no test designed (design cap 1)", "ac-3": "no test designed (design cap 1)", "ac-5": "every test of it was turned down in the design approval" },
         });
         await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
       },
     });
     expect(r.code).toBe(0);
-    expect(r.out).toContain("Sealed 4 acceptance criteria");
+    expect(r.out).toContain("Sealed 5 acceptance criteria");
     expect(r.out).toContain("2 sealed without a test (ac-2, ac-3): no test designed (design cap 1). kane.designMax caps the tests Kane designs per use case.");
     expect(r.out).toContain("1 sealed without a test (ac-4): Kane designed no test for it.");
+    expect(r.out).toContain("1 sealed without a test (ac-5): every test of it was turned down in the design approval.");
     expect(r.out).toContain("They stay unproved: `holdback run` ends held back while a criterion has no test.");
     // status names the reason too
     expect((await cli(["status"])).out).toMatch(/ac-2\s+needs-spec\s+no test designed \(design cap 1\)/);
