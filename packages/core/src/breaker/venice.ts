@@ -1,11 +1,30 @@
 export const VENICE_URL = "https://api.venice.ai/api/v1/chat/completions";
 /** Every breaker call is capped at this many completion tokens; the budget estimate assumes all of them. */
 export const MAX_TOKENS = 2048;
+/**
+ * The cap of the one retry of a reply the token limit cut off (or that came back empty): never the
+ * same call again, a larger budget (still estimated in full against the USD cap).
+ */
+export const RETRY_MAX_TOKENS = 4096;
+/**
+ * The reasoning setting sent per model. `deepseek-v4-flash` reasons by default on Venice (effort
+ * "low"), and in the live rehearsal its reasoning spent the whole token budget before any reply
+ * (finish_reason "length", empty content): the breaker writes a small patch and needs none. A model
+ * not listed here gets no setting (`qwen-3-8-flash` takes no reasoning effort on Venice).
+ */
+export const REASONING_EFFORT: Record<string, string> = { "deepseek-v4-flash": "none" };
 const TIMEOUT_MS = 120_000;
 
 export type ChatMessage = { role: string; content: string };
 export type Usage = { prompt_tokens: number; completion_tokens: number };
-export type VeniceChatOptions = { model: string; messages: ChatMessage[]; schema: object; apiKey: string };
+export type VeniceChatOptions = {
+  model: string;
+  messages: ChatMessage[];
+  schema: object;
+  apiKey: string;
+  /** Completion-token cap of this call. Default `MAX_TOKENS`. */
+  maxTokens?: number;
+};
 export type VeniceChatResult = { json: unknown; usage: Usage };
 
 /** USD per 1M tokens. */
@@ -27,9 +46,9 @@ export function usdOf(model: string, usage: Usage): number {
 }
 
 /** Worst case for one call: ~4 chars per prompt token, and every completion token used. */
-export function estimateUsd(model: string, messages: ChatMessage[]): number {
+export function estimateUsd(model: string, messages: ChatMessage[], maxTokens: number = MAX_TOKENS): number {
   const chars = messages.reduce((n, m) => n + m.content.length, 0);
-  return usdOf(model, { prompt_tokens: chars / 4, completion_tokens: MAX_TOKENS });
+  return usdOf(model, { prompt_tokens: chars / 4, completion_tokens: maxTokens });
 }
 
 /** The project's breaker spend against its hard cap. */
@@ -61,12 +80,14 @@ export class Budget {
 
 /**
  * The response came back (and was billed) but its content is unusable. Carries the usage, so
- * the caller can still charge it.
+ * the caller can still charge it. `cutOff`: the token limit ended the reply (finish_reason
+ * "length") or it came back empty: the same call again would end the same way.
  */
 export class VeniceOutputError extends Error {
   constructor(
     message: string,
     readonly usage: Usage,
+    readonly cutOff = false,
   ) {
     super(message);
     this.name = "VeniceOutputError";
@@ -124,8 +145,10 @@ export function parseReply(content: string): unknown {
  */
 export async function veniceChat(opts: VeniceChatOptions): Promise<VeniceChatResult> {
   if (!opts.apiKey) throw new Error("VENICE_API_KEY is not set");
+  const maxTokens = opts.maxTokens ?? MAX_TOKENS;
   const chars = opts.messages.reduce((n, m) => n + m.content.length, 0);
-  const worstCase: Usage = { prompt_tokens: Math.ceil(chars / 4), completion_tokens: MAX_TOKENS };
+  const worstCase: Usage = { prompt_tokens: Math.ceil(chars / 4), completion_tokens: maxTokens };
+  const effort = Object.hasOwn(REASONING_EFFORT, opts.model) ? REASONING_EFFORT[opts.model] : undefined;
   let res: Response;
   let text: string;
   try {
@@ -135,7 +158,8 @@ export async function veniceChat(opts: VeniceChatOptions): Promise<VeniceChatRes
       body: JSON.stringify({
         model: opts.model,
         messages: opts.messages,
-        max_tokens: MAX_TOKENS,
+        max_tokens: maxTokens,
+        ...(effort === undefined ? {} : { reasoning_effort: effort }),
         response_format: { type: "json_schema", json_schema: { name: "patch", schema: opts.schema, strict: true } },
         venice_parameters: { include_venice_system_prompt: false },
       }),
@@ -159,10 +183,12 @@ export async function veniceChat(opts: VeniceChatOptions): Promise<VeniceChatRes
   };
   const choice = isObj(body) && Array.isArray(body.choices) && isObj(body.choices[0]) ? body.choices[0] : undefined;
   const content = isObj(choice?.message) ? choice.message.content : undefined;
-  if (typeof content !== "string" || content.trim() === "") throw new VeniceOutputError("Venice reply has no message content", usage);
+  const cutOff = choice?.finish_reason === "length";
+  const limit = cutOff ? ` (cut off at the ${maxTokens}-token limit)` : "";
+  if (typeof content !== "string" || content.trim() === "") throw new VeniceOutputError(`Venice reply has no message content${limit}`, usage, true);
   try {
     return { json: parseReply(content), usage };
   } catch {
-    throw new VeniceOutputError(`Venice reply is not JSON: ${content.slice(0, 200)}`, usage);
+    throw new VeniceOutputError(`Venice reply is not JSON${limit}: ${content.slice(0, 200)}`, usage, cutOff);
   }
 }

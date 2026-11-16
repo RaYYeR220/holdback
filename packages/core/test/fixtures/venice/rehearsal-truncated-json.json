@@ -1,0 +1,18 @@
+{
+  "_recorded": "2026-11-16 live rehearsal, mutant m-ac-10-2: the reply ended inside its patch string (content: the first 200 characters the ledger kept). finish_reason is the one Venice sets when the cap ends a reply; usage is not kept per call, so the cap is shown",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"patch\": \"--- a/server.js\\n+++ b/server.js\\n@@ -11,7 +11,7 @@ function page(v, result) {\\n <p><label for=\\\"size\\\">Household size</label> <input id=\\\"size\\\" name=\\\"size\\\" type=\\\"number\\\" value=\\\"${"
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1200,
+    "completion_tokens": 2048,
+    "total_tokens": 3248
+  }
+}

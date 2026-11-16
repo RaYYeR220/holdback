@@ -49,11 +49,15 @@ export class BudgetRefused extends Error {
   }
 }
 
-/** The breaker was paid (`usd`) but sent nothing usable. */
+/**
+ * The breaker was paid (`usd`) but sent nothing usable. `cutOff`: the token limit ended its reply
+ * (or it came back empty), so asking again the same way would fail the same way.
+ */
 export class BreakerError extends Error {
   constructor(
     message: string,
     readonly usd: number,
+    readonly cutOff = false,
   ) {
     super(message);
     this.name = "BreakerError";
@@ -255,6 +259,8 @@ export type ProposeOptions = {
   chat?: typeof veniceChat;
   /** A second attempt: the patch that failed and why. */
   retry?: { patch: string; error: string };
+  /** Completion-token cap of the call (estimated in full against the budget). Default `MAX_TOKENS`. */
+  maxTokens?: number;
 };
 
 /**
@@ -265,17 +271,18 @@ export type ProposeOptions = {
  */
 export async function proposeMutant(ac: AcState, files: SourceFile[], opts: ProposeOptions): Promise<Mutant> {
   const messages = messagesFor(ac, files, opts.retry);
-  const est = estimateUsd(opts.model, messages);
+  const maxTokens = opts.maxTokens ?? MAX_TOKENS;
+  const est = estimateUsd(opts.model, messages, maxTokens);
   if (!opts.budget.canSpend(est)) throw new BudgetRefused(est, opts.budget.spent, opts.budget.capUsd);
   const chat = opts.chat ?? veniceChat;
   let reply;
   try {
-    reply = await chat({ model: opts.model, messages, schema: PATCH_SCHEMA, apiKey: opts.apiKey });
+    reply = await chat({ model: opts.model, messages, schema: PATCH_SCHEMA, apiKey: opts.apiKey, ...(opts.maxTokens === undefined ? {} : { maxTokens }) });
   } catch (e) {
-    if (e instanceof VeniceOutputError) throw new BreakerError(e.message, opts.budget.charge(opts.model, e.usage));
+    if (e instanceof VeniceOutputError) throw new BreakerError(e.message, opts.budget.charge(opts.model, e.usage), e.cutOff);
     if (e instanceof VeniceUnreachable) {
       const chars = messages.reduce((n, m) => n + m.content.length, 0);
-      throw new BreakerUnavailable(e.message, opts.budget.charge(opts.model, { prompt_tokens: chars / 4, completion_tokens: MAX_TOKENS }));
+      throw new BreakerUnavailable(e.message, opts.budget.charge(opts.model, { prompt_tokens: chars / 4, completion_tokens: maxTokens }));
     }
     if (e instanceof VeniceHttpError) throw new BreakerUnavailable(e.message, 0);
     throw e;

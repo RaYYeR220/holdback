@@ -1,0 +1,14 @@
+{
+  "_recorded": "2026-11-16, one live call: deepseek-v4-flash with reasoning_effort \"none\", max_tokens 300, a strict json_schema; the fields Holdback reads, as Venice returned them (reasoning_content absent)",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"answer\": \"395\", \"why\": \"17 boxes of 23 apples is 17 * 23 = 391 apples, plus 4 loose apples gives 395 apples.\"}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": { "prompt_tokens": 128, "completion_tokens": 39, "total_tokens": 167, "prompt_tokens_details": { "cached_tokens": 0 } }
+}

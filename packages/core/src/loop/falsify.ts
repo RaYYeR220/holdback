@@ -4,7 +4,7 @@ import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
-import { Budget, veniceChat } from "../breaker/venice.js";
+import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, evolve, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
 import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
@@ -630,20 +630,24 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       await linkNodeModules(dir);
       let shown: SourceFile[];
       let failure: string | undefined;
-      let attempt = 0;
+      /** The patch is in place (a re-checked survivor's own, planted as it was): no breaker call. */
+      let planted = false;
+      /** The patch and error the next call is told about (one retry, with the error fed back). */
+      let feedback: { patch: string; error: string } | undefined;
       if (recheck) {
         // 1. the survivor's own patch, against the code as it is now
         const touched = patchedFiles(recheck.patch);
         shown = await readSources(dir, touched);
         patch = recheck.patch;
         failure = shown.length === touched.length && shown.length > 0 ? await applyPatch(dir, patchFile, patch, touched) : "a file it changes is gone";
-        if (failure === undefined) attempt = 2;
+        if (failure === undefined) planted = true;
         else {
           // the code moved under it: the breaker plants the same bug in the code as it is now, once
           if (shown.length === 0) shown = await pickFiles(dir, ac, lastChanged, { exclude: appSealFiles(p) });
-          failure = `the code changed since this bug was planted (${failure}): plant the same bug in the code as it is now`;
+          const moved = `the code changed since this bug was planted (${failure}): plant the same bug in the code as it is now`;
+          failure = `patch did not apply: ${moved}`;
+          feedback = { patch, error: moved };
           model = p.config.breaker.model;
-          attempt = 1;
         }
       } else shown = await pickFiles(dir, ac, lastChanged, { exclude: appSealFiles(p) });
       if (shown.length === 0) {
@@ -651,26 +655,44 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         return "done";
       }
 
-      // 1. the breaker's patch, applied; one retry with git's (or the check's) complaint
-      for (; attempt < 2; attempt++) {
+      // 1. the breaker's patch, applied. Never the same call twice: a reply the token limit cut off
+      //    (or an empty one) is asked again once with a larger cap; a patch that did not apply (or a
+      //    reply with no usable patch) once with the error fed back. Each call is held to the USD cap.
+      let calls = 0;
+      let maxTokens = MAX_TOKENS;
+      let raised = false;
+      let fixed = feedback !== undefined; // a re-check's breaker call is already its one retry
+      while (!planted) {
         let m: Mutant;
         try {
+          calls++;
           m = await proposeMutant(ac, shown, {
             model,
             apiKey,
             budget,
             chat: deps.chat,
-            ...(attempt === 0 ? {} : { retry: { patch, error: failure ?? "" } }),
+            ...(maxTokens === MAX_TOKENS ? {} : { maxTokens }),
+            ...(feedback ? { retry: feedback } : {}),
           });
         } catch (e) {
           if (e instanceof BreakerError) {
             usd += e.usd;
-            failure = e.message;
-            continue;
+            failure = `no usable patch: ${e.message}`;
+            if (e.cutOff && !raised) {
+              raised = true;
+              maxTokens = RETRY_MAX_TOKENS;
+              continue;
+            }
+            if (!e.cutOff && !fixed) {
+              fixed = true;
+              feedback = { patch: "", error: e.message };
+              continue;
+            }
+            break;
           }
           if (e instanceof BudgetRefused) {
-            if (attempt === 0) return "budget"; // nothing spent, nothing to log
-            await finish("invalid", `patch did not apply: ${failure}; retry refused: ${e.message}`);
+            if (calls === 1 && !recheck) return "budget"; // nothing spent, nothing to log
+            await finish("invalid", `${failure ?? "no patch"}; retry refused: ${e.message}`);
             return "budget";
           }
           if (e instanceof BreakerUnavailable) {
@@ -685,11 +707,18 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         patch = m.patch;
         rationale = m.rationale;
         if (!recheck?.slip && m.slip) slip = m.slip;
-        failure = await applyPatch(dir, patchFile, m.patch, shown.map((f) => f.path));
-        if (failure === undefined) break;
+        const applied = await applyPatch(dir, patchFile, m.patch, shown.map((f) => f.path));
+        if (applied === undefined) {
+          failure = undefined;
+          break;
+        }
+        failure = `patch did not apply: ${applied}`;
+        if (fixed) break;
+        fixed = true;
+        feedback = { patch, error: applied };
       }
       if (failure !== undefined) {
-        await finish("invalid", `patch did not apply: ${failure}`);
+        await finish("invalid", failure);
         return "done";
       }
 

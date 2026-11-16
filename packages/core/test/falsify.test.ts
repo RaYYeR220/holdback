@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppStartError, type StartAppOptions } from "../src/app.js";
-import { estimateUsd, VeniceHttpError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
+import { estimateUsd, usdOf, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
 import { evolve as kaneEvolve, type AcNode, type EvolveResult, type Graph, type TestNode } from "../src/kane/assurance.js";
 import type { Slip } from "../src/breaker/mutate.js";
 import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
@@ -219,8 +219,8 @@ type Plan = {
   evolve?: (n: number, kit: EvolveKit) => EvolveResult | Promise<EvolveResult>;
   /** Extra effect of Kane's evolve, after it wrote its tests. */
   onEvolve?: (n: number) => void;
-  /** The breaker call fails instead of answering. */
-  chatError?: (ac: string) => Error | undefined;
+  /** The breaker call fails instead of answering (`call`: the AC's Nth breaker call, 0-based). */
+  chatError?: (ac: string, call: number) => Error | undefined;
   /** The breaker leaves its account of the bug out. */
   noSlip?: boolean;
 };
@@ -275,7 +275,7 @@ function fakes(plan: Plan) {
       const n = perAc.get(ac) ?? 0;
       perAc.set(ac, n + 1);
       calls.chat.push({ ac, o });
-      const err = plan.chatError?.(ac);
+      const err = plan.chatError?.(ac, n);
       if (err) throw err;
       const patch = plan.patch ? plan.patch(ac, n) : PATCH[ac]!;
       return { json: { patch, rationale: `breaks ${ac}`, ...(plan.noSlip ? {} : SLIP[ac]) }, usage: { prompt_tokens: 1500, completion_tokens: 300 } };
@@ -1461,6 +1461,41 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     ]);
     expect(Object.values(reduce(all).acs).map((a) => a.status)).toEqual(["passing", "passing"]);
     expect(existsSync(join(p.home, "mut")) ? readdirSync(join(p.home, "mut")) : []).toEqual([]);
+  });
+
+  /** The rehearsal's empty reply: the reasoning used the whole token cap. */
+  const cutOff = () => new VeniceOutputError("Venice reply has no message content (cut off at the 2048-token limit)", { prompt_tokens: 1198, completion_tokens: 2048 }, true);
+  const CUT_USD = usdOf(MODEL, { prompt_tokens: 1198, completion_tokens: 2048 });
+
+  it("asks a breaker cut off by the token limit again once, with a larger cap, never the same call; cut off again, the mutant is invalid", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), chatError: (ac) => (ac === "ac-1" ? cutOff() : undefined) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-3"], invalid: ["ac-1"], reason: "done" });
+    const mine = calls.chat.filter((c) => c.ac === "ac-1");
+    expect(mine.map((c) => c.o.maxTokens ?? 2048)).toEqual([2048, 4096]);
+    // the larger cap is the only change: the prompt is the same, and no third call follows
+    expect(mine[1]!.o.messages).toEqual(mine[0]!.o.messages);
+    const m = (await readEvents(p.ledgerFile)).find((e) => e.t === "mutant" && e.ac === "ac-1");
+    expect(m).toMatchObject({ verdict: "invalid", usd: expect.closeTo(2 * CUT_USD, 12), note: expect.stringMatching(/^no usable patch: .*cut off at the 2048-token limit/) });
+    expect(calls.tests.filter((t) => t.opts.noHeal && t.ac === "ac-1")).toEqual([]);
+  });
+
+  it("a cut-off reply and then a patch that does not apply get one retry each: the larger cap, then the error fed back", async () => {
+    await setup();
+    const { deps, io, calls } = fakes({
+      mutantRun: (ac, files) => files.map(failOn(ac)),
+      chatError: (ac, n) => (ac === "ac-1" && n === 0 ? cutOff() : undefined),
+      patch: (ac, n) => (ac === "ac-1" && n === 1 ? BAD_PATCH : PATCH[ac]!),
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], invalid: [], reason: "done" });
+    const mine = calls.chat.filter((c) => c.ac === "ac-1");
+    expect(mine.map((c) => c.o.maxTokens ?? 2048)).toEqual([2048, 4096, 4096]);
+    expect(mine[2]!.o.messages[1]!.content).toContain("Your previous patch failed:");
+    expect(mine[2]!.o.messages[1]!.content).toContain("-const nothing = here;");
+    const m = (await readEvents(p.ledgerFile)).find((e) => e.t === "mutant" && e.ac === "ac-1");
+    expect(m).toMatchObject({ verdict: "killed", usd: expect.closeTo(CUT_USD + 2 * USD_PER_CALL, 12) });
   });
 
   it("counts a mutant that does not start as invalid, with no Kane run", async () => {

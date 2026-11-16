@@ -1,10 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acKeywords, BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, PATCH_SCHEMA } from "../src/breaker/mutate.js";
-import { Budget, estimateUsd, PRICES, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
+import { Budget, estimateUsd, PRICES, REASONING_EFFORT, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
 import type { AcState } from "../src/ledger/types.js";
+
+/** Venice replies recorded live (the pilot) or from the rehearsal ledger. */
+const VENICE_FX = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "venice");
 
 const AC3: AcState = {
   id: "ac-3",
@@ -73,6 +77,42 @@ describe("veniceChat", () => {
       max_tokens: 2048,
       response_format: { type: "json_schema", json_schema: { name: "patch", schema: PATCH_SCHEMA, strict: true } },
     });
+  });
+
+  it("turns deepseek-v4-flash's reasoning off and sends the call's own token cap; a model with no reasoning setting gets none", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", async (_u: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init!.body)) as Record<string, unknown>);
+      return new Response(readFileSync(join(VENICE_FX, "pilot-reasoning-none.json"), "utf8"));
+    });
+    // the recorded pilot: reasoning off, a plain JSON reply, 39 completion tokens
+    expect(await veniceChat(opts)).toEqual({ json: { answer: "395", why: expect.stringContaining("391") }, usage: { prompt_tokens: 128, completion_tokens: 39 } });
+    await veniceChat({ ...opts, maxTokens: 4096 });
+    await veniceChat({ ...opts, model: "qwen-3-8-flash" });
+    expect(bodies.map((b) => [b.reasoning_effort, b.max_tokens])).toEqual([
+      ["none", 2048],
+      ["none", 4096],
+      [undefined, 2048],
+    ]);
+    expect(REASONING_EFFORT).toEqual({ "deepseek-v4-flash": "none" });
+  });
+
+  it("marks a reply the token limit cut off, empty or truncated, as cut off, with its usage (recorded rehearsal replies)", async () => {
+    for (const [fx, msg] of [
+      ["rehearsal-cut-off.json", /no message content \(cut off at the 2048-token limit\)/],
+      ["rehearsal-truncated-json.json", /not JSON \(cut off at the 2048-token limit\): \{/],
+    ] as const) {
+      vi.stubGlobal("fetch", async () => new Response(readFileSync(join(VENICE_FX, fx), "utf8")));
+      const e = await veniceChat(opts).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(VeniceOutputError);
+      expect((e as VeniceOutputError).message).toMatch(msg);
+      expect((e as VeniceOutputError).cutOff).toBe(true);
+      expect((e as VeniceOutputError).usage.completion_tokens).toBe(2048);
+    }
+    // a reply that ended on its own but is not JSON: asking again with feedback may help, so it is not cut off
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ choices: [{ message: { content: "Sure! Here is a patch." }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 6 } })));
+    const e = await veniceChat(opts).catch((x: unknown) => x);
+    expect((e as VeniceOutputError).cutOff).toBe(false);
   });
 
   it("reads JSON wrapped in a think block or a code fence", async () => {
@@ -337,6 +377,42 @@ describe("proposeMutant", () => {
       },
     }).catch((x: unknown) => x);
     expect(notJson).toBeInstanceOf(BreakerError);
+    expect((notJson as BreakerError).cutOff).toBe(false);
     expect(budget.spent).toBeCloseTo((2 * (100 * 0.138 + 10 * 0.275)) / 1e6, 15);
+    const cut = await proposeMutant(AC3, files, {
+      model: "deepseek-v4-flash",
+      apiKey: "k",
+      budget,
+      chat: async () => {
+        throw new VeniceOutputError("Venice reply has no message content (cut off at the 2048-token limit)", { prompt_tokens: 1198, completion_tokens: 2048 }, true);
+      },
+    }).catch((x: unknown) => x);
+    expect((cut as BreakerError).cutOff).toBe(true);
+    expect((cut as BreakerError).usd).toBeCloseTo((1198 * 0.138 + 2048 * 0.275) / 1e6, 15);
+  });
+
+  it("sends a larger token cap when asked, and holds the budget to it", async () => {
+    let seen: number | undefined;
+    const ok = async (o: VeniceChatOptions) => {
+      seen = o.maxTokens;
+      return { json: { patch, rationale: "r" }, usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    };
+    await proposeMutant(AC3, files, { model: "deepseek-v4-flash", apiKey: "k", budget: new Budget(2, 0), chat: ok, maxTokens: 4096 });
+    expect(seen).toBe(4096);
+    // affordable at 2048 completion tokens, not at 4096: refused before any call
+    let prompt: { role: string; content: string }[] = [];
+    await proposeMutant(AC3, files, {
+      model: "deepseek-v4-flash",
+      apiKey: "k",
+      budget: new Budget(2, 0),
+      chat: async (o) => {
+        prompt = o.messages;
+        return ok(o);
+      },
+    });
+    const tight = new Budget(estimateUsd("deepseek-v4-flash", prompt, 2048) * 1.01, 0);
+    const chat = vi.fn(ok);
+    await expect(proposeMutant(AC3, files, { model: "deepseek-v4-flash", apiKey: "k", budget: tight, chat, maxTokens: 4096 })).rejects.toBeInstanceOf(BudgetRefused);
+    expect(chat).not.toHaveBeenCalled();
   });
 });

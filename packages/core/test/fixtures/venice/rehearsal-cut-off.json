@@ -1,0 +1,18 @@
+{
+  "_recorded": "2026-11-16 live rehearsal, mutant m-ac-8-1 (no reasoning setting sent): both calls came back with no message content, each billed exactly the 2048-token cap; the ledger books $0.00145691 for the two (2 x 2048 completion and 2395 prompt tokens in all). finish_reason is the one Venice sets when the cap ends a reply",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": ""
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1198,
+    "completion_tokens": 2048,
+    "total_tokens": 3246
+  }
+}
