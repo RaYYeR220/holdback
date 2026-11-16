@@ -96,7 +96,7 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | `spec` | `["PRD.md"]` | Spec files in the app folder that Kane reads. |
 | `specUrls` | `[]` | Links Kane reads as spec sources. |
 | `agentNotes` | unset | A stack and style notes file the agent's brief points to, e.g. `STACK.md`. |
-| `start.cmd` | `"npm start"` | The command that starts your app. |
+| `start.cmd` | `"npm start"` | The command that starts your app. The one command Holdback runs through a shell: your string, from the sealed config. Kane, claude, git and taskkill run with no shell, found on PATH only, never in the folder they run in. |
 | `start.port` | `3100` | The port passed to the app in `PORT`. Holdback refuses a port another program already uses. |
 | `start.readyPath` | `"/"` | The path polled until the app answers. |
 | `start.env` | unset | Extra environment for the app, e.g. a pinned `HOLDBACK_TODAY` and `HOLDBACK_NOW`. `DATA_DIR` here is overridden: each start gets its own (see [Your app's data](#quick-start)). |
@@ -117,8 +117,8 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | --- | --- |
 | `VENICE_API_KEY` | The breaker's key. The agent and the app never see it: Holdback blanks it in their environment. |
 | `HOLDBACK_HOME` | Where the per-project verifier folders and ledgers live. Default `~/.holdback`; a relative path is resolved against the folder you run Holdback in. The coding agent never gets it, nor any other `HOLDBACK_*` variable. |
-| `HOLDBACK_KANE_BIN` | The Kane CLI binary. Default `kane-cli`. |
-| `HOLDBACK_CLAUDE_BIN` | The Claude Code binary. Default `claude`. |
+| `HOLDBACK_KANE_BIN` | The Kane CLI: a `.js`/`.cjs`/`.mjs` script (run with Node), an `.exe`, or, on Windows, an npm `.cmd` shim. Default `kane-cli` on PATH. Holdback never runs it through a shell: on Windows it reads npm's `kane-cli.cmd` for its JS entry and runs that with Node, and refuses a shim it cannot read (set this variable then). |
+| `HOLDBACK_CLAUDE_BIN` | The Claude Code binary, the same way. Default `claude` on PATH. |
 | `HOLDBACK_GUARD_LOG` | A file the guard hook appends each decision to, for debugging. Holdback hands it to the guard on its command line, not through the agent's environment. |
 
 ## Commands
@@ -131,7 +131,7 @@ Kane bills credits for designing and authoring tests. In the first live run, aut
 | `holdback run [--max-turns <n>] [--no-falsify] [--answers <file> \| --dashboard] [--kane-cap <n>]` | Builds until Kane proves every criterion, then falsifies the passing ones, and builds again while falsify leaves criteria owed. Runs drift first when the spec changed. Checks `VENICE_API_KEY` before it builds, unless `--no-falsify`. | 0, 1, 2, 3, 130 |
 | `holdback drift [--answers <file> \| --dashboard] [--kane-cap <n>]` | Applies a spec edit made after the last seal: shows the diff from the sealed spec, then Kane re-plans with you. | 0, 1, 2, 3 |
 | `holdback watch [--max-turns <n>] [--no-falsify] [--answers <file>] [--kane-cap <n>]` | Watches the spec; on every edit runs drift, then the run loop, until Ctrl-C. An edit made while it builds stops the build and goes through drift on the next pass. | 1, 2, 3, 130 |
-| `holdback status [--json]` | Every criterion and whether the gate is open, why a criterion is vacuous or needs the spec, and each time Kane evolved a use case (minted and retired tests, and what it was told slipped through; the coding agent never sees that part). | 0, 1, 2 |
+| `holdback status [--json]` | Every criterion and whether the gate is open, why a criterion is vacuous or needs the spec, and each time Kane evolved a use case (how many tests it minted and retired; what Kane was told is never shown here, since the agent may run `status`). | 0, 1, 2 |
 | `holdback owed` | What the coding agent is told is still owed. | 0, 1, 2 |
 | `holdback reseal [--yes]` | Accepts the files on disk as the new sealed state, which lifts a tamper. It refuses when only the spec changed (that is drift), and after a tamper it keeps a changed spec's old seal, so drift still re-plans it and the change stays of unverified origin. | 0, 1, 2 |
 | `holdback clean` | Removes leftover mutant and bisect worktrees, waiting for a check in flight. Never delete them by hand: they link into your app's `node_modules`. | 0, 1, 2 |
@@ -158,7 +158,7 @@ Only a drift you approve in the terminal settles an unverified change. `holdback
 
 ### Planted bugs that get through
 
-When a planted bug survives every test of a criterion, Holdback runs `kane-cli maintain evolve <use case> --because "<what slipped through>"` in the verifier and answers Kane's own re-design question. The reason is the breaker's account of its bug in a user's terms: the inputs, what the page should show and what it showed. Kane sees it; the coding agent never does. Kane's new tests replace the use case's old ones (it retires them all, even when asked to keep them), Holdback seals them with Kane as their author (if the evolve added, changed or removed any other sealed file of the verifier, such as a variable or another use case's test, that is a tamper and nothing is sealed), and every criterion of the use case is owed again: the build loop runs the new tests and, when they pass, falsify plants the same bug again. It must now be caught, or the criterion stays vacuous. If the new set leaves a criterion of the use case without a test, one follow-up evolve asks Kane to cover it again; still uncovered, it needs the spec. An evolve that adds no test leaves the criterion vacuous with that reason, and is not retried. Kane evolves a use case at most twice per `holdback run`, under the Kane credit cap, at about 11 credits each (live, on the pantry spec).
+When a planted bug survives every test of a criterion, Holdback runs `kane-cli maintain evolve <use case> --because "<what slipped through>"` in the verifier and answers Kane's own re-design question. The reason is the breaker's account of its bug in a user's terms: the inputs, what the page should show and what it showed. Kane sees it, and so do you, in `holdback run`'s output and on the dashboard. `holdback status` never prints it, because the coding agent may run that. Kane's new tests replace the use case's old ones (it retires them all, even when asked to keep them), Holdback seals them with Kane as their author (if the evolve added, changed or removed any other sealed file of the verifier, such as a variable or another use case's test, that is a tamper and nothing is sealed), and every criterion of the use case is owed again: the build loop runs the new tests and, when they pass, falsify plants the same bug again. It must now be caught, or the criterion stays vacuous. If the new set leaves a criterion of the use case without a test, one follow-up evolve asks Kane to cover it again; still uncovered, it needs the spec. An evolve that adds no test leaves the criterion vacuous with that reason, and is not retried. Kane evolves a use case at most twice per `holdback run`, under the Kane credit cap, at about 11 credits each (live, on the pantry spec).
 
 ## Honest limits
 
