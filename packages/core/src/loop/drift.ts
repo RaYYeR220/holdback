@@ -208,14 +208,14 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
   }
   /**
    * Undoes the run: the verifier byte for byte (its tests and Kane's own store, I-3), and Holdback's
-   * own writes to the app (its Clarifications); the config is never written back (n-2). A spec file that moved away from what Holdback expects is someone else's newer
-   * edit: never overwritten (N-I2). Returns those files.
+   * own writes to the app (its Clarifications); the config is never written back (n-2). A spec file
+   * that moved away from what Holdback expects is someone else's newer edit: never overwritten
+   * (N-I2). Returns those spec files (`moved`) and a config that differs, left as found (`configLeft`).
    */
-  let configLeft: string[] = [];
-  const restore = async (): Promise<string[]> => {
+  const restore = async (): Promise<{ moved: string[]; configLeft: string[] }> => {
     const moved = await specMovedFrom(p, pin, manifest);
     await restoreSealed(p, copy, { appFiles: false });
-    configLeft = [];
+    const configLeft: string[] = [];
     for (const [rel, bytes] of copy.app) {
       // n-2: drift never writes the config, so one that differs is someone else's edit (or a tamper,
       // whose evidence stays): left as found, and reported
@@ -238,13 +238,13 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     }
     const left = [...(await verifierDiffersFrom(p, copy)), ...(await stateDiffersFrom(p, copy))];
     if (left.length > 0) throw new Error(`the verifier still differs (${left.join(", ")})`);
-    return moved;
+    return { moved, configLeft };
   };
   const decline = async (reason: string, needsInteractive?: boolean): Promise<DriftResult> => {
-    const moved = await restore();
-    const left = configLeft.length > 0 ? `; ${configLeft.join(", ")} changed while drift ran and was left as found` : "";
-    if (moved.length > 0) return specMoved(moved, `${reason}${left}; and the spec changed while Kane re-planned it (${moved.join(", ")})`);
-    return { changed: true, applied: false, reason: `${reason}${left}`,...(needsInteractive ? { needsInteractive } : {}) };
+    const { moved, configLeft } = await restore();
+    const why = configLeft.length > 0 ? `${reason}; ${configLeft.join(", ")} changed while drift ran and was left as found` : reason;
+    if (moved.length > 0) return specMoved(moved, `${why}; and the spec changed while Kane re-planned it (${moved.join(", ")})`);
+    return { changed: true, applied: false, reason: why, ...(needsInteractive ? { needsInteractive } : {}) };
   };
   /** Kane's reconcile/design calls write no run recordings: anything moved since the anchor is a tamper. */
   const recordingsMoved = async (): Promise<string[]> => {
@@ -343,7 +343,7 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
     } catch (e) {
       let specGone: string[];
       try {
-        specGone = await restore();
+        specGone = (await restore()).moved;
       } catch (re) {
         throw new Error(`drift rolled back incompletely (${errText(re)}): re-seal before building`);
       }
