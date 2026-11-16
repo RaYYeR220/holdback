@@ -26,6 +26,15 @@ export function notAnAppFailure(r: TestRunResult): string | undefined {
   return undefined;
 }
 
+/**
+ * True when `r` kills a planted bug in `acId` (R44): it failed the criterion and Kane blamed the app,
+ * its verdict family `application_issue`. A failure with no family, or one Holdback does not know,
+ * fails closed here: it is never a kill. Pure: the dashboard words a replay with it.
+ */
+export function killsAc(r: TestRunResult, acId: string): boolean {
+  return r.status !== "passed" && r.inconclusive === undefined && r.criteriaFailed.includes(acId) && r.verdict?.family?.trim().toLowerCase() === "application_issue";
+}
+
 /** `<test>: <why>` for a human-facing line. */
 export function inconclusiveNote(r: TestRunResult): string {
   return `${r.testId ?? r.testFile}: ${notAnAppFailure(r) ?? "inconclusive"}`;

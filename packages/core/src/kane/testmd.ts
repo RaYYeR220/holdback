@@ -5,7 +5,7 @@ import type { KaneEvent } from "./ndjson.js";
 import { parseTestMd } from "./testmd-parse.js";
 
 export { parseTestMd } from "./testmd-parse.js";
-export { inconclusiveNote, notAnAppFailure, runSettled, type Restart } from "./outcome.js";
+export { inconclusiveNote, killsAc, notAnAppFailure, runSettled, type Restart } from "./outcome.js";
 
 export type BugVerdict = {
   bugTitle: string;

@@ -1,4 +1,4 @@
-import { decidesStatus, eventCredits, gate as coreGate, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
+import { decidesStatus, eventCredits, gate as coreGate, killsAc, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
 import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, TestRunResult, Verdict } from "@holdback/core/browser";
 
 /* ------------------------------------------------------------------ the wire: GET /api/state */
@@ -130,6 +130,8 @@ export type Observation = {
   healed: boolean;
   /** The second replay of a test that killed the mutant (R44): the kill counts only when it fails again. */
   again?: true;
+  /** A planted bug's replay that caught it: it failed the attacked criterion for the app's fault (`killsAc`), or the ledger recorded the kill. */
+  caught?: true;
 };
 
 export type MutantView = {
@@ -170,7 +172,17 @@ export const COLUMNS: { key: ColumnKey; label: string; note: string }[] = [
 
 export const columnOf = (s: AcStatus): ColumnKey => (s === "regressed" ? "owed" : s);
 
-function observe(e: RunEvent, at?: string): Observation {
+/** The planted bug a falsify run attacked: its criterion and the verdict the ledger gave it. */
+type Attacked = { ac: string; verdict: MutantEvent["verdict"] };
+
+/** Whether a falsify run caught its planted bug: by Kane's verdict (R44), or, on an older ledger whose kills carry no family, as the kill the ledger recorded. */
+function caughtBy(r: TestRunResult, m: Attacked | undefined): boolean {
+  if (!m) return false;
+  if (killsAc(r, m.ac)) return true;
+  return m.verdict === "killed" && !r.verdict?.family && notAnAppFailure(r) === undefined && r.status !== "passed" && r.criteriaFailed.includes(m.ac);
+}
+
+function observe(e: RunEvent, at?: string, attacked?: Attacked): Observation {
   const r = e.result;
   const why = notAnAppFailure(r);
   const v = r.verdict;
@@ -190,7 +202,23 @@ function observe(e: RunEvent, at?: string): Observation {
     ...(r.screenshot ? { screenshot: r.screenshot } : {}),
     healed: r.healTriggered,
     ...(e.confirm ? { again: true as const } : {}),
+    ...(e.kind === "falsify" && caughtBy(r, attacked) ? { caught: true as const } : {}),
   };
+}
+
+/** How a run reads in one line: passed, failed at step n, inconclusive, or, for a planted bug, whether Kane caught it. */
+export function runVerdict(o: Observation): { word: string; tone: "pass" | "fail" | "unsure" | "caught" | "missed" } {
+  if (o.kind === "falsify") {
+    if (o.caught) return { word: o.again ? "Caught again" : o.step ? `Caught at step ${o.step}` : "Caught", tone: "caught" };
+    // the second replay of a catch that did not fail it again: the kill is inconclusive, never a miss (R44)
+    if (o.again) return { word: "Not confirmed — Kane disagreed with itself", tone: "unsure" };
+    if (o.inconclusive) return { word: "Inconclusive", tone: "unsure" };
+    if (o.status === "passed") return { word: "Missed the bug", tone: "missed" };
+    return { word: "Failed, not a catch", tone: "unsure" };
+  }
+  if (o.inconclusive) return { word: "Inconclusive", tone: "unsure" };
+  if (o.status === "passed") return { word: o.healed ? "Passed after a heal" : "Passed", tone: "pass" };
+  return { word: o.step ? `Failed at step ${o.step}` : "Failed", tone: "fail" };
 }
 
 type Marks = { byAc: Map<string, Map<string, { mark: TestMark; turn?: number }>>; unsure: Map<string, { turn?: number }> };
@@ -275,7 +303,7 @@ export function board(api: ApiState, events: LedgerEvent[]): Record<ColumnKey, C
         usd: mut.usd,
         ...(mut.note ? { note: mut.note } : {}),
         ...patchOneLiner(mut.patch),
-        ...(run ? { run: observe(run, run.at) } : {}),
+        ...(run ? { run: observe(run, run.at, { ac: mut.ac, verdict: mut.verdict }) } : {}),
       };
     }
 
@@ -370,6 +398,8 @@ const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? o
 /** The ledger as the loop ran it: the spec stage, then one segment per agent turn and the checks after it. */
 export function timeline(events: LedgerEvent[]): Segment[] {
   const titles = new Map<string, string>();
+  /** Each planted bug's criterion and verdict, logged before its runs. */
+  const attacked = new Map<string, Attacked>();
   const segs: Segment[] = [];
   let cur: Segment | undefined;
   let tampered = false;
@@ -446,7 +476,7 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         seg.items.push({
           kind: "run",
           at: e.at,
-          run: observe(e, e.at),
+          run: observe(e, e.at, e.mutantId ? attacked.get(e.mutantId) : undefined),
           ...(titles.has(id) ? { title: titles.get(id)! } : {}),
           credits: r.credits,
           durationS: r.durationS,
@@ -455,6 +485,7 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         break;
       }
       case "mutant": {
+        attacked.set(e.id, { ac: e.ac, verdict: e.verdict });
         seg.items.push({
           kind: "mutant",
           at: e.at,

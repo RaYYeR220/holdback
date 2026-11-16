@@ -7,7 +7,9 @@ import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFil
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, evolve, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
-import { inconclusiveNote, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
+import { inconclusiveNote, killsAc, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
+
+export { killsAc };
 import { KaneCapReached, KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
@@ -106,15 +108,6 @@ export const BISECT_DIR = "bisect";
 const RESEAL_HINT = "a tamper is on record: a human re-seals (`holdback reseal`) before falsifying";
 const NO_SEAL = "no seal in the ledger: run the spec stage first";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-/**
- * True when `r` kills a mutant of `acId` (R44): it failed the criterion and Kane blamed the app, its
- * verdict family `application_issue`. A failure with no family, or one Holdback does not know, fails
- * closed here: it is never a kill.
- */
-export function killsAc(r: TestRunResult, acId: string): boolean {
-  return r.status !== "passed" && r.inconclusive === undefined && r.criteriaFailed.includes(acId) && r.verdict?.family?.trim().toLowerCase() === "application_issue";
-}
 
 /** Why a second replay of a killing test did not fail the criterion again, in one phrase. */
 function secondReplayNote(r: TestRunResult, acId: string): string {

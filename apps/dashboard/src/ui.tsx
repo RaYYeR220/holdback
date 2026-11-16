@@ -204,10 +204,4 @@ export function Section({ id, title, note, aside, children, className }: { id: s
   );
 }
 
-/** How a run reads in one line: passed, failed at step n, or inconclusive (and why). */
-export function runVerdict(o: Observation): { word: string; tone: "pass" | "fail" | "unsure" | "caught" | "missed" } {
-  if (o.inconclusive) return { word: "Inconclusive", tone: "unsure" };
-  if (o.kind === "falsify") return o.status === "passed" ? { word: "Missed the bug", tone: "missed" } : { word: o.step ? `Caught at step ${o.step}` : "Caught", tone: "caught" };
-  if (o.status === "passed") return { word: o.healed ? "Passed after a heal" : "Passed", tone: "pass" };
-  return { word: o.step ? `Failed at step ${o.step}` : "Failed", tone: "fail" };
-}
+export { runVerdict } from "./model";

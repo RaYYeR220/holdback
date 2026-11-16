@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, COLUMNS, driftRows, lede, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
+import { board, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -240,6 +240,45 @@ describe("meters and labels", () => {
     const runs = timeline(events).flatMap((sg) => sg.items).filter((i) => i.kind === "run");
     expect(runs.map((i) => (i.kind === "run" ? i.run.kind : null))).toEqual(["build", "replay"]);
     expect(meters(api, events).split).toContainEqual({ key: "replay", label: "Closing replays", credits: 22.33 });
+  });
+
+  it("words a planted bug's replays by whether they caught it: a kill the second replay did not confirm never reads as missed (m-1)", () => {
+    const appFail = (extra: Partial<TestRunResult> = {}) => result("t-1", "failed", { failedStep: 2, criteriaFailed: ["ac-1"], verdict: { bugTitle: "b", family: "application_issue" }, ...extra });
+    const base = [design(["ac-1"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
+    const words = (events: LedgerEvent[]) => timeline(events).flatMap((s) => s.items).flatMap((i) => (i.kind === "run" && i.run.kind === "falsify" ? [runVerdict(i.run).word] : []));
+    // confirmed
+    const confirmed = [
+      ...base,
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "killed" }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: appFail() }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: appFail(), confirm: true }),
+    ];
+    expect(words(confirmed)).toEqual(["Caught at step 2", "Caught again"]);
+    // not confirmed: the second replay passed
+    const unconfirmed = [
+      ...base,
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "invalid", note: "inconclusive: the kill did not reproduce: t-1 passed on a second replay of the same mutant" }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: appFail() }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: result("t-1", "passed", { criteriaPassed: ["ac-1"] }), confirm: true }),
+    ];
+    expect(words(unconfirmed)).toEqual(["Caught at step 2", "Not confirmed — Kane disagreed with itself"]);
+    const card = board(stateFromLedger(unconfirmed, null), unconfirmed).passing[0]!;
+    expect(runVerdict(card.mutant!.run!).word).toBe("Not confirmed — Kane disagreed with itself");
+    // a failure Kane did not blame on the app, or on another criterion, is no catch
+    const unblamed = [
+      ...base,
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "invalid" }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: appFail({ verdict: { bugTitle: "b" } }) }),
+    ];
+    expect(words(unblamed)).toEqual(["Failed, not a catch"]);
+    const other = [
+      ...base,
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "invalid" }),
+      ev({ t: "run", kind: "falsify", mutantId: "m-ac-1-1", result: appFail({ criteriaFailed: ["ac-9"] }) }),
+    ];
+    expect(words(other)).toEqual(["Failed, not a catch"]);
+    // an older ledger's kill, with no verdict family, still reads as the catch it was recorded as
+    expect(words(parseEvents(fixtureText()))).toEqual(["Caught at step 2", "Caught at step 2"]);
   });
 
   it("lists the tests Kane's evolve retired: still sealed, never run (the rehearsal's t-1)", () => {
