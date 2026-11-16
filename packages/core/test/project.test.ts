@@ -79,7 +79,7 @@ describe("loadProject", () => {
       start: { cmd: "npm start", port: 3100, readyPath: "/" },
       agent: { kind: "claude", maxTurnsPerCall: 60 },
       kane: { parallel: 3, timeoutS: 120, designMax: 5, capCredits: null },
-      breaker: { model: "deepseek-v4-flash", capUsd: 2 },
+      breaker: { model: "deepseek-v4-flash", capUsd: 2, parallel: 1 },
       loop: { maxTurns: 15, appendClarifications: "always" },
     });
   });

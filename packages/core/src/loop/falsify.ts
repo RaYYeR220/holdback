@@ -508,6 +508,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   let appPin: AppPin = {};
   /** Every verifier path an evolve of this pass was allowed to change (its minted and retired tests): nothing else may differ at the seal (I-1). */
   const allowedPaths = new Set<string>();
+  /** How many of this pass's Kane replays run at once (`breaker.parallel`, R44), checked before anything runs. */
+  let replays = 1;
 
   const at = () => new Date().toISOString();
   /** A survivor named for the human's output: the slip in plain words, else the breaker's rationale. */
@@ -768,7 +770,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         attacked = true;
         let results: TestRunResult[];
         try {
-          const opts = { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
+          const opts = { startUrl: `${app.url}/`, noHeal: true, timeoutS: p.config.kane.timeoutS, parallel: replays };
           results = await runSettled(deps.tests, cwd, files, opts, relaunch(dir, port, id));
         } finally {
           await stopApp();
@@ -1096,7 +1098,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       kaneWindow = true;
       let results: TestRunResult[];
       try {
-        const opts = { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: p.config.kane.parallel };
+        const opts = { startUrl: `${app.url}/`, timeoutS: p.config.kane.timeoutS, parallel: replays };
         results = await runSettled(deps.tests, cwd, files, opts, relaunch(p.appDir, port, "replay"));
       } finally {
         await stopApp();
@@ -1130,6 +1132,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       return result("tamper", RESEAL_HINT);
     }
     if (!(await isRepoRoot(p.appDir, gitOpts))) return result("error", `the app dir must be the root of a git repository: ${p.appDir}`);
+    const par: unknown = p.config.breaker.parallel;
+    if (typeof par !== "number" || !Number.isInteger(par) || par < 1) return result("error", `breaker.parallel must be a whole number of 1 or more, got ${JSON.stringify(par)}`);
+    replays = par;
     const found = await readLedger(p.ledgerFile);
     mark = markOf(found);
     events = parseEvents(found.toString("utf8"));

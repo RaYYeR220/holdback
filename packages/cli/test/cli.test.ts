@@ -136,7 +136,7 @@ describe("init", () => {
     const cfg = JSON.parse(readFileSync(join(appDir, "holdback.config.json"), "utf8"));
     expect(cfg.spec).toEqual(["PRD.md"]);
     expect(cfg.start).toEqual({ cmd: "npm start", port: 3100, readyPath: "/" });
-    expect(cfg.breaker).toEqual({ model: "deepseek-v4-flash", capUsd: 2 });
+    expect(cfg.breaker).toEqual({ model: "deepseek-v4-flash", capUsd: 2, parallel: 1 });
     p = await loadProject(appDir);
     expect(existsSync(p.verifierDir)).toBe(true);
     expect(r.out).toContain(p.verifierDir);

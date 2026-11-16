@@ -22,7 +22,7 @@ export type ConfigSummary = {
   start: { port: number; readyPath: string };
   agent: { model: string | null };
   kane: { parallel: number; timeoutS: number; designMax: number };
-  breaker: { model: string; capUsd: number };
+  breaker: { model: string; capUsd: number; parallel?: number };
   loop: { maxTurns: number };
 };
 

@@ -133,14 +133,14 @@ const testNodes = (): TestNode[] => [
 ];
 
 /** App repo (one commit, a node_modules dir outside git) + verifier with t-1/t-3 + a ledger where ac-1 and ac-3 pass. */
-async function setup(opts: { before?: () => Promise<void> } = {}) {
+async function setup(opts: { before?: () => Promise<void>; config?: object } = {}) {
   appDir = join(root, "app");
   mkdirSync(join(appDir, "src"), { recursive: true });
   mkdirSync(join(appDir, "node_modules", "dep"), { recursive: true });
   writeFileSync(join(appDir, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
   writeFileSync(join(appDir, ".gitignore"), "node_modules/\n");
   writeFileSync(join(appDir, "PRD.md"), "# Food pantry\n\nNot eligible above 2461.\n");
-  writeFileSync(join(appDir, "holdback.config.json"), "{}");
+  writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify(opts.config ?? {}));
   writeFileSync(join(appDir, "src", "eligibility.js"), SRC);
   git(appDir, "init", "-q");
   git(appDir, "config", "user.name", "Test");
@@ -379,12 +379,13 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       ["ac-3", [T3]],
     ]);
     expect(falsify[0]!.cwd).toBe(p.verifierDir);
-    expect(falsify[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:5178/", noHeal: true, timeoutS: 120, parallel: 3 });
+    // one replay at a time (breaker.parallel 1): parallel replays raced Kane's own start navigation live (R44)
+    expect(falsify[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:5178/", noHeal: true, timeoutS: 120, parallel: 1 });
 
     // then every test once against the real build (heal on), to restore Kane's own coverage
     const replay = calls.tests.filter((t) => !t.opts.noHeal);
     expect(replay.map((t) => t.files)).toEqual([[T1, T3]]);
-    expect(replay[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 120, parallel: 3 });
+    expect(replay[0]!.opts).toEqual({ startUrl: "http://127.0.0.1:3100/", timeoutS: 120, parallel: 1 });
     expect(calls.apps.filter((a) => a.cwd === appDir)).toEqual([expect.objectContaining({ port: 3100, cmd: "npm start" })]);
     expect(calls.stops).toBe(calls.apps.length);
 
@@ -419,6 +420,22 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(readFileSync(join(appDir, "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
     expect(readFileSync(join(appDir, "src", "eligibility.js"), "utf8")).toBe(SRC);
     expect(git(appDir, "status", "--porcelain")).toBe("");
+  });
+
+  it("breaker.parallel sets how many of falsify's replays run at once, whatever kane.parallel (the build checks) says (R44)", async () => {
+    await setup({ config: { kane: { parallel: 4 }, breaker: { parallel: 2 } } });
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    await runFalsify(p, deps, io, log);
+    expect(calls.tests.length).toBeGreaterThan(1);
+    for (const t of calls.tests) expect(t.opts.parallel).toBe(2);
+  });
+
+  it("refuses a breaker.parallel that is not a whole number of at least 1, before any breaker call", async () => {
+    await setup({ config: { breaker: { parallel: 0 } } });
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ reason: "error", error: "breaker.parallel must be a whole number of 1 or more, got 0" });
+    expect(calls.chat).toEqual([]);
   });
 
   it("stops with reason aborted after the current AC, still replays the real build, and skips the rest", async () => {
