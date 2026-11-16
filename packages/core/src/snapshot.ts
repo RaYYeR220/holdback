@@ -6,7 +6,7 @@ import { verdict, type Verdict } from "./ledger/verdict.js";
 import { lastSeal } from "./loop/build.js";
 import { tamperMarker } from "./tamper.js";
 import type { LedgerEvent, LedgerState } from "./ledger/types.js";
-import type { Project } from "./project.js";
+import { kaneCapCredits, type Project } from "./project.js";
 
 export type Snapshot = {
   events: LedgerEvent[];
@@ -24,6 +24,17 @@ export type Snapshot = {
   /** The one verdict (R44): what `holdback run` would exit with, `status` and the dashboard say, with the disk's tamper counted. */
   verdict: Verdict;
 };
+
+/** The project's Kane credit cap (`kane.capCredits`) is spent, as the ledger measures it; false with no cap or an invalid one. */
+function capReached(p: Project, state: LedgerState): boolean {
+  let cap: number | undefined;
+  try {
+    cap = kaneCapCredits(p.config);
+  } catch {
+    return false;
+  }
+  return cap !== undefined && state.kaneCredits >= cap;
+}
 
 /**
  * The ledger as the CLI and the dashboard see it. A ledger that cannot be read throws: a read
@@ -52,6 +63,6 @@ export async function snapshot(p: Project): Promise<Snapshot> {
     changed,
     specChanged,
     tamperDetail: tampered ? (detail ?? "the ledger records a tamper") : null,
-    verdict: verdict(state, { tampered }),
+    verdict: verdict(state, { tampered, specChanged: specChanged.length > 0, capReached: capReached(p, state) }),
   };
 }

@@ -10,7 +10,7 @@ export { verdict, type Verdict, type VerdictState } from "./ledger/verdict.js";
 export { retiredTests, type RetiredTest } from "./ledger/retired.js";
 export { eventCredits } from "./ledger/credits.js";
 export { notAnAppFailure } from "./kane/outcome.js";
-export type { RunKind, LedgerEvent, AcStatus, AcState, LedgerState } from "./ledger/types.js";
+export type { RunKind, RunStop, LedgerEvent, AcStatus, AcState, LedgerState } from "./ledger/types.js";
 export type { AcNode, TestNode, GapNode, PendingQuestion } from "./kane/assurance.js";
 export type { BugVerdict, TestRunResult } from "./kane/testmd.js";
 export type { ApprovalItem } from "./loop/human.js";

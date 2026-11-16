@@ -1,5 +1,5 @@
 import { gate } from "./gate.js";
-import type { LedgerState } from "./types.js";
+import type { LedgerState, RunStop } from "./types.js";
 
 /**
  * `released`: every criterion a human did not turn down is proved or passing, the gate is open and
@@ -23,6 +23,8 @@ export type Verdict = {
   headline: string;
   /** What follows the word: the green count first, then why it is held back. */
   parts: string[];
+  /** The reasons among `parts` that are not about the criteria: the last run's stop, a spec change, the cap. */
+  stops: string[];
   /** Criteria a human did not turn down (the denominator), and how they stand. */
   counts: {
     criteria: number;
@@ -39,17 +41,33 @@ export type Verdict = {
   };
   /** The build loop's gate (what the coding agent works toward): open is not released. */
   gateOpen: boolean;
-  /** The exit code of a `holdback run` that ends here with no other stop: 0 released, 2 tampered, 3 held back. */
-  exit: 0 | 2 | 3;
+  /**
+   * The exit code `holdback run` ends with here: 0 released, 2 tampered, the last run's own code when
+   * it stopped short (3, 1 or 130), else 3 held back.
+   */
+  exit: number;
+};
+
+/** The last run's stop, in plain words. */
+const STOPPED: Record<RunStop, string> = {
+  "kane-budget": "the last run stopped: the Kane credit cap was reached",
+  drift: "the last run stopped: the spec changed",
+  inconclusive: "the last run stopped: Kane could not finish checking a test",
+  "max-turns": "the last run stopped at the turn limit",
+  aborted: "the last run was interrupted",
+  error: "the last run stopped on an error",
 };
 
 const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
 
 /**
- * The verdict on `state`. `tampered`: a tamper the ledger alone does not show (the TAMPERED marker,
- * sealed files changed on disk); the ledger's own tamper always counts.
+ * The verdict on `state`, from the same facts that pick `holdback run`'s exit code (N-1). What the
+ * ledger alone does not show comes in `opts`: `tampered` (the TAMPERED marker, sealed files changed on
+ * disk; the ledger's own tamper always counts), `specChanged` (a spec file differs from its seal: the
+ * next run re-plans it first) and `capReached` (the project's Kane credit cap is spent). The last run's
+ * stop (`state.stopped`) holds it back with that run's exit code.
  */
-export function verdict(state: LedgerState, opts: { tampered?: boolean } = {}): Verdict {
+export function verdict(state: LedgerState, opts: { tampered?: boolean; specChanged?: boolean; capReached?: boolean } = {}): Verdict {
   const g = gate(state);
   const all = Object.values(state.acs);
   const count = (s: string) => all.filter((a) => a.status === s).length;
@@ -69,6 +87,7 @@ export function verdict(state: LedgerState, opts: { tampered?: boolean } = {}): 
   const tampered = g.tampered || opts.tampered === true;
   const gateOpen = g.allowStop && all.length > 0 && !tampered;
   const parts: string[] = [];
+  const stops: string[] = [];
   let state_: VerdictState;
   if (tampered) {
     state_ = "tampered";
@@ -76,6 +95,8 @@ export function verdict(state: LedgerState, opts: { tampered?: boolean } = {}): 
   } else if (counts.criteria === 0) {
     state_ = "empty";
     parts.push("no criteria yet");
+    if (state.stopped) stops.push(STOPPED[state.stopped.reason]);
+    parts.push(...stops);
   } else {
     parts.push(`${counts.green}/${counts.criteria} green`);
     const owed = counts.owed + counts.regressed;
@@ -83,10 +104,16 @@ export function verdict(state: LedgerState, opts: { tampered?: boolean } = {}): 
     if (counts.vacuous > 0) parts.push(`${n(counts.vacuous, "criterion", "criteria")} unproved: a planted bug survived`);
     if (counts.needsSpec > 0) parts.push(`${n(counts.needsSpec, "criterion", "criteria")} with no test`);
     if (counts.inconclusive > 0) parts.push(`${n(counts.inconclusive, "test", "tests")} proved nothing on the last run`);
-    state_ = gateOpen && counts.green === counts.criteria ? "released" : "held-back";
+    const stop = state.stopped?.reason;
+    if (stop) stops.push(STOPPED[stop]);
+    if (opts.specChanged && stop !== "drift") stops.push("the spec changed since the last seal");
+    if (opts.capReached && stop !== "kane-budget") stops.push("the Kane credit cap is reached");
+    parts.push(...stops);
+    state_ = gateOpen && counts.green === counts.criteria && !stop && !opts.specChanged && !opts.capReached ? "released" : "held-back";
     if (state_ === "released") parts.push(`${counts.proved}/${counts.criteria} proved`);
   }
   const released = state_ === "released";
   const word = released ? "Released" : "Held back";
-  return { state: state_, released, word, headline: `${word} — ${parts.join(", ")}`, parts, counts, gateOpen, exit: released ? 0 : tampered ? 2 : 3 };
+  const exit = released ? 0 : tampered ? 2 : (state.stopped?.exit ?? 3);
+  return { state: state_, released, word, headline: `${word} — ${parts.join(", ")}`, parts, stops, counts, gateOpen, exit };
 }

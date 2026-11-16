@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseEvents } from "../src/ledger/parse.js";
 import { reduce } from "../src/ledger/reduce.js";
-import type { AcState, LedgerState } from "../src/ledger/types.js";
+import type { AcState, LedgerEvent, LedgerState } from "../src/ledger/types.js";
 import { verdict } from "../src/ledger/verdict.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +47,29 @@ describe("verdict", () => {
     expect(v).toMatchObject({ released: false, gateOpen: false, exit: 3 });
     // a needs-spec criterion alone holds it back too, with the gate open
     expect(verdict(state([ac("ac-1", "passing"), ac("ac-2", "needs-spec", [])]))).toMatchObject({ released: false, gateOpen: true, headline: "Held back — 1/2 green, 1 criterion with no test", exit: 3 });
+  });
+
+  it("never releases a run that stopped, a spec changed since the seal, or a reached Kane credit cap, and takes the stop's exit code (N-1)", () => {
+    const green = [ac("ac-1", "proved"), ac("ac-2", "passing")];
+    expect(verdict(state(green))).toMatchObject({ released: true, exit: 0 });
+    const stopped = verdict(state(green, { stopped: { reason: "kane-budget", exit: 3, detail: "Kane credit cap reached: 40 of 30" } }));
+    expect(stopped).toMatchObject({ state: "held-back", released: false, exit: 3, headline: "Held back — 2/2 green, the last run stopped: the Kane credit cap was reached" });
+    expect(verdict(state(green, { stopped: { reason: "aborted", exit: 130 } }))).toMatchObject({ released: false, exit: 130, headline: "Held back — 2/2 green, the last run was interrupted" });
+    expect(verdict(state(green, { stopped: { reason: "error", exit: 1 } }))).toMatchObject({ exit: 1, headline: "Held back — 2/2 green, the last run stopped on an error" });
+    expect(verdict(state(green), { specChanged: true })).toMatchObject({ released: false, exit: 3, headline: "Held back — 2/2 green, the spec changed since the last seal" });
+    expect(verdict(state(green), { capReached: true })).toMatchObject({ released: false, exit: 3, headline: "Held back — 2/2 green, the Kane credit cap is reached" });
+    // one reason said once: a drift stop with the spec still changed, a cap stop with the cap still reached
+    expect(verdict(state(green, { stopped: { reason: "drift", exit: 3 } }), { specChanged: true }).parts).toEqual(["2/2 green", "the last run stopped: the spec changed"]);
+    expect(verdict(state(green, { stopped: { reason: "kane-budget", exit: 3 } }), { capReached: true }).parts).toEqual(["2/2 green", "the last run stopped: the Kane credit cap was reached"]);
+    // a tamper still wins, with exit 2
+    expect(verdict(state(green, { stopped: { reason: "error", exit: 1 } }), { tampered: true })).toMatchObject({ state: "tampered", exit: 2 });
+  });
+
+  it("the reducer keeps the last run's stop until a run finishes without one", () => {
+    const d: LedgerEvent = { at: "x", t: "design", useCase: "uc-1", acs: [{ id: "ac-1", text: "t", useCase: "uc-1", cites: [], trust: "derived" }], tests: [{ id: "t-1", title: "t", file: "t.md", verifies: ["ac-1"] }], gaps: [], credits: 0 };
+    const stop: LedgerEvent = { at: "x", t: "run.end", stop: "kane-budget", exit: 3, detail: "Kane credit cap reached" };
+    expect(reduce([d, stop]).stopped).toEqual({ reason: "kane-budget", exit: 3, detail: "Kane credit cap reached" });
+    expect(reduce([d, stop, { at: "x", t: "run.end" }]).stopped).toBeUndefined();
   });
 
   it("a tamper, in the ledger or seen on disk, holds it back with exit 2; no criteria is never released", () => {

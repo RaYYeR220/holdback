@@ -171,6 +171,10 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         }
         break;
       }
+      case "run.end":
+        if (e.stop) state.stopped = { reason: e.stop, exit: e.exit ?? 1, ...(e.detail !== undefined ? { detail: e.detail } : {}) };
+        else delete state.stopped;
+        break;
       case "redesign.dropped":
         // an evolve that added no test: its survivors stay vacuous, and the human is told why
         for (const id of e.acs ?? []) {

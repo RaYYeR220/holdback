@@ -1,4 +1,4 @@
-import { loadProject, type BuildResult, type FalsifyResult, type HumanIO, type Project, type Verdict } from "@holdback/core";
+import { LedgerTampered, loadProject, type BuildResult, type FalsifyResult, type HumanIO, type LedgerEvent, type Project, type RunStop, type Verdict } from "@holdback/core";
 import { EXIT, explainFailure, humanView, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
 import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
 import { reviewSpecChange, specMovedStop } from "./specchange.js";
@@ -20,27 +20,34 @@ export type RunOptions = {
 /** A falsify pass can send use cases back to the build loop; this many rounds is far more than it ever needs. */
 const MAX_ROUNDS = 4;
 
-/** Where a stopped run ended up, as an exit code (and the line that says why). */
-type Stop = { code: number; why: string };
+/**
+ * Where a stopped run ended up, as an exit code, the line that says why and, but for a tamper (on
+ * record on its own), the stop logged on the ledger, which the verdict reads (N-1).
+ */
+type Stop = { code: number; why: string; reason?: RunStop };
 
 function buildStop(b: BuildResult): Stop {
   switch (b.reason) {
     case "tamper":
       return { code: EXIT.tamper, why: b.error ?? "" };
     case "aborted":
-      return { code: EXIT.aborted, why: "stopped" };
+      return { code: EXIT.aborted, why: "stopped", reason: "aborted" };
     case "inconclusive":
       // Kane's to redo, not the agent's: more turns would not help
-      return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []) };
+      return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []), reason: "inconclusive" };
     case "budget":
-      return { code: EXIT.unfinished, why: b.error ?? "Kane credit cap reached" };
+      return { code: EXIT.unfinished, why: b.error ?? "Kane credit cap reached", reason: "kane-budget" };
     case "drift":
       // seen right after the agent's turn: the agent may have written it (R37)
-      return { code: EXIT.unfinished, why: b.specChange?.duringAgentTurn ? unverifiedDrift(b.specChange.files) : driftStop(b.error) };
+      return { code: EXIT.unfinished, why: b.specChange?.duringAgentTurn ? unverifiedDrift(b.specChange.files) : driftStop(b.error), reason: "drift" };
     case "max-turns":
-      return { code: EXIT.error, why: `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}: some criteria are still owed (raise it with --max-turns or loop.maxTurns)` };
+      return {
+        code: EXIT.error,
+        why: `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}: some criteria are still owed (raise it with --max-turns or loop.maxTurns)`,
+        reason: "max-turns",
+      };
     default:
-      return { code: EXIT.error, why: b.error ?? "the build loop failed" };
+      return { code: EXIT.error, why: b.error ?? "the build loop failed", reason: "error" };
   }
 }
 
@@ -49,14 +56,14 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
     case "tamper":
       return { code: EXIT.tamper, why: f.error ?? "" };
     case "aborted":
-      return { code: EXIT.aborted, why: "stopped" };
+      return { code: EXIT.aborted, why: "stopped", reason: "aborted" };
     case "error":
-      return { code: EXIT.error, why: f.error ?? "falsify failed" };
+      return { code: EXIT.error, why: f.error ?? "falsify failed", reason: "error" };
     case "drift":
       // the spec moved while Kane evolved the tests: nothing was sealed, and its origin is unverified (N-I2)
-      return { code: EXIT.unfinished, why: f.specChange?.duringAgentTurn ? unverifiedDrift(f.specChange.files) : driftStop(f.error) };
+      return { code: EXIT.unfinished, why: f.specChange?.duringAgentTurn ? unverifiedDrift(f.specChange.files) : driftStop(f.error), reason: "drift" };
     case "kane-budget":
-      return { code: EXIT.unfinished, why: f.error ?? "Kane credit cap reached" };
+      return { code: EXIT.unfinished, why: f.error ?? "Kane credit cap reached", reason: "kane-budget" };
     default:
       return undefined;
   }
@@ -116,6 +123,29 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
   const log = ledgerLog(p);
   let turns = 0;
   let falsified: FalsifyResult | undefined;
+  /**
+   * N-1: every run ends on the ledger before anything is printed, so the verdict (summary, `status`,
+   * the dashboard) is read from the same facts as the exit code: the stop (but a tamper, on record on
+   * its own), or a clean end that clears the last one. A ledger that cannot take it is a warning.
+   */
+  let ended = false;
+  const end = async (s?: Stop): Promise<void> => {
+    if (ended || s?.code === EXIT.tamper) return;
+    ended = true;
+    const why = s ? s.why.replace(/\s+/g, " ").trim() : "";
+    const e: LedgerEvent = { at: new Date().toISOString(), t: "run.end", ...(s ? { stop: s.reason ?? "error", exit: s.code, ...(why ? { detail: why.slice(0, 300) } : {}) } : {}) };
+    try {
+      await log(e);
+    } catch (err) {
+      if (err instanceof LedgerTampered) throw err;
+      ctx.err(`warning: could not log how this run ended (${err instanceof Error ? err.message : String(err)})`);
+    }
+  };
+  /** A stop before the build loop (the spec change): on the ledger, then its exit code. */
+  const stopped = async (code: number, why: string, reason: RunStop): Promise<number> => {
+    await end({ code, why, reason });
+    return code;
+  };
   try {
     const kaneCap = parseKaneCap(o.kaneCap);
     const capped = kaneCap === undefined ? {} : { kaneCap };
@@ -150,7 +180,7 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       // the diff first; one not known to be the human's stops `run` (exit 3) and, in `watch`, waits
       // for the human's yes in the terminal (R37, R38); a logged write at the spec is a tamper
       const review = await reviewSpecChange(ctx, p, { allowUnverified: on.allowUnverified === true });
-      if ("stop" in review) return review.stop;
+      if ("stop" in review) return await stopped(review.stop, "the spec changed since the last seal", "drift");
       // Kane re-plans, and the seal holds, the spec bytes whose diff was just shown (N-I2)
       const d = await ctx.deps.runDrift(p, io, log, {
         balance: ctx.deps.balance,
@@ -159,11 +189,11 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
         reviewed: review.reviewed ?? {},
         ...(review.confirmed ? { confirmed: true } : {}),
       });
-      if (d.changed && !d.applied && d.specMoved) return specMovedStop(ctx, d.specMoved, d.reason);
+      if (d.changed && !d.applied && d.specMoved) return await stopped(specMovedStop(ctx, d.specMoved, d.reason), `the spec changed while Kane re-planned it: ${d.reason}`, "drift");
       if (d.changed && !d.applied) {
         ctx.err(`Spec change not applied: ${d.reason}`);
         ctx.err("Nothing was built. Fix or revert the spec edit, then run `holdback drift` or `holdback run` again.");
-        return EXIT.error;
+        return await stopped(EXIT.error, `spec change not applied: ${d.reason}`, "drift");
       }
     }
 
@@ -173,7 +203,7 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
     let stop: Stop | undefined;
     for (let round = 1; ; round++) {
       if (round > MAX_ROUNDS) {
-        stop = { code: EXIT.error, why: "falsify kept re-opening criteria; stopped after several rounds" };
+        stop = { code: EXIT.error, why: "falsify kept re-opening criteria; stopped after several rounds", reason: "error" };
         break;
       }
       const b = await ctx.deps.runBuildLoop(p, buildDeps, log, { signal, ...capped, ...(maxTurnsOverride !== undefined ? { maxTurnsOverride } : {}) });
@@ -211,6 +241,8 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       ctx.out(`Falsify's replay of the real build left ${open.join(", ")} owed: building again`);
     }
 
+    // the end goes on the ledger first: the summary's verdict then never reads "Released" for a stopped run
+    await end(stop);
     if (stop?.code === EXIT.tamper) {
       const after = await snapshot(p);
       ctx.err(after.tamper ?? tamperMessage(stop.why || "sealed files changed"));
@@ -221,7 +253,9 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
     if (!v.released) ctx.err(`Finished, but held back (${v.parts.slice(1).join(", ") || v.parts.join(", ")}): see the counts above.`);
     return v.exit;
   } catch (e) {
-    return await explainFailure(ctx, e, p);
+    const code = await explainFailure(ctx, e, p);
+    if (!(e instanceof LedgerTampered)) await end({ code, why: e instanceof Error ? e.message : String(e), reason: "error" }).catch(() => {});
+    return code;
   }
 }
 

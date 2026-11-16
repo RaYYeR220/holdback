@@ -1,35 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Board } from "./Board";
-import { board, byId, driftRows, fmtClock, fmtDay, gateLabel, meters, retiredLine, timeline, verdictOf, type ApiState, type EvalSummary } from "./model";
+import { board, byId, driftRows, fmtClock, fmtDay, gateLabel, lede, meters, retiredLine, timeline, type ApiState, type EvalSummary } from "./model";
 import { Drift, HumanPanel, Inbox, Meters, Scoreboard } from "./Panels";
 import { connectLive, loadEval, loadReplay, readToken, type Live, type Snapshot, type Status } from "./source";
 import { Timeline } from "./Timeline";
 import { AppCtx, Brand, GatePill, Lightbox, Ring, Section, type Shot } from "./ui";
 
 export const REPLAY = import.meta.env.VITE_REPLAY === "1";
-
-function lede(api: ApiState): string {
-  const g = api.gate;
-  const n = api.counts.acs;
-  const v = verdictOf(api);
-  if (n === 0) return "No acceptance criteria yet. Run holdback spec: Kane reads the spec, asks what is ambiguous and designs the tests.";
-  if (api.tamper || v.state === "tampered") return "A tamper is on record. Nothing Kane verified since can be trusted until a human re-seals the tests, so done stays held back whatever the board says.";
-  if (v.released) return `All ${v.counts.criteria} criteria pass in a real browser, ${v.counts.proved} of them proved by a planted bug Kane caught. Done was Kane's call, not the agent's.`;
-  if (g.open) {
-    // the build loop's gate is open, but the run is held back: what is left is Kane's and the human's, not the agent's
-    const why: string[] = [];
-    const vac = v.counts.vacuous;
-    const bare = v.counts.needsSpec;
-    if (vac) why.push(`${vac} ${vac === 1 ? "criterion is" : "criteria are"} unproved: a planted bug got past ${vac === 1 ? "its" : "their"} tests`);
-    if (bare) why.push(`${bare} ${bare === 1 ? "criterion has" : "criteria have"} no test`);
-    return `${v.counts.green} of ${v.counts.criteria} criteria pass in a real browser, but ${why.join(", and ")}. Held back: \`holdback run\` exits 3 until every one is proved or passing.`;
-  }
-  const owed = g.owed.length + g.regressed.length;
-  const parts = [`${owed} of ${n} criteria still owed`];
-  if (g.regressed.length) parts.push(`${g.regressed.length} of them broke again after passing`);
-  if (g.inconclusive.length) parts.push(`${g.inconclusive.length} ${g.inconclusive.length === 1 ? "test" : "tests"} proved nothing on the last run`);
-  return `${parts.join(", ")}. Claude Code can't say done until Kane passes each one in a real browser.`;
-}
 
 function Head({ snap }: { snap: Snapshot }) {
   const { api, events } = snap;

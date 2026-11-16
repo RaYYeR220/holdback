@@ -21,7 +21,7 @@ export type ConfigSummary = {
   spec: string[];
   start: { port: number; readyPath: string };
   agent: { model: string | null };
-  kane: { parallel: number; timeoutS: number; designMax: number };
+  kane: { parallel: number; timeoutS: number; designMax: number; capCredits?: number | null };
   breaker: { model: string; capUsd: number; parallel?: number };
   loop: { maxTurns: number };
 };
@@ -72,7 +72,8 @@ export function stateFromLedger(events: LedgerEvent[], config: ConfigSummary | n
     tamper: state.tampered ? { detail: lastTamper?.t === "tamper" ? lastTamper.detail : "the ledger records a tamper", marker: null, changed: [] } : null,
     specChanged: [],
     pending: [],
-    verdict: coreVerdict(state),
+    // replay has no disk to hold the spec against; the cap is the config's, when it is given
+    verdict: coreVerdict(state, { capReached: typeof config?.kane.capCredits === "number" && state.kaneCredits >= config.kane.capCredits }),
   };
 }
 
@@ -348,6 +349,8 @@ export type Item =
   | { kind: "drift"; at: string; rows: number; applied: boolean; credits?: number }
   | { kind: "meter"; at: string; source: string; delta: number | null; perRunSum: number; error?: string }
   | { kind: "dropped"; at: string; useCases: string[]; detail: string; credits: number }
+  /** N-1: a `holdback run` that stopped short of a clean finish, and its exit code. */
+  | { kind: "stopped"; at: string; reason: string; exit: number; detail?: string }
   /** R40: a planted bug got past every test of `uc`, and Kane evolved it: what it was told, what it minted and retired. */
   | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean };
 
@@ -487,6 +490,9 @@ export function timeline(events: LedgerEvent[]): Segment[] {
       case "redesign.dropped":
         seg.items.push({ kind: "dropped", at: e.at, useCases: e.useCases, detail: e.detail, credits: e.credits });
         break;
+      case "run.end":
+        if (e.stop) seg.items.push({ kind: "stopped", at: e.at, reason: e.stop, exit: e.exit ?? 1, ...(e.detail ? { detail: e.detail } : {}) });
+        break;
       case "falsify.evolved":
         seg.items.push({ kind: "evolved", at: e.at, uc: e.uc, because: e.because, minted: e.minted, retired: e.retired, credits: e.credits, followUp: e.followUp === true });
         break;
@@ -563,6 +569,27 @@ export function meters(api: ApiState, events: LedgerEvent[]): Meters {
     runs: api.state.runs,
     kaneS,
   };
+}
+
+/* ------------------------------------------------------------------ the lede */
+
+/** The headline's sentence: what the verdict means for this run, in words. */
+export function lede(api: ApiState): string {
+  const g = api.gate;
+  const n = api.counts.acs;
+  const v = verdictOf(api);
+  if (n === 0) return "No acceptance criteria yet. Run holdback spec: Kane reads the spec, asks what is ambiguous and designs the tests.";
+  if (api.tamper || v.state === "tampered") return "A tamper is on record. Nothing Kane verified since can be trusted until a human re-seals the tests, so done stays held back whatever the board says.";
+  if (v.state === "empty") return "Every criterion was turned down in the design approval: there is nothing to prove, so done stays held back.";
+  if (v.released) return `All ${v.counts.criteria} criteria pass in a real browser, ${v.counts.proved} of them proved by a planted bug Kane caught. Done was Kane's call, not the agent's.`;
+  // the build loop's gate is open, but the run is held back: what is left is Kane's and the human's, not the agent's
+  if (g.open) return `${v.counts.green} of ${v.counts.criteria} criteria pass in a real browser, but done is held back: ${v.parts.slice(1).join("; ")}.`;
+  const owed = g.owed.length + g.regressed.length;
+  const parts = [`${owed} of ${n} criteria still owed`];
+  if (g.regressed.length) parts.push(`${g.regressed.length} of them broke again after passing`);
+  if (g.inconclusive.length) parts.push(`${g.inconclusive.length} ${g.inconclusive.length === 1 ? "test" : "tests"} proved nothing on the last run`);
+  const also = v.stops.length > 0 ? ` Also held back: ${v.stops.join("; ")}.` : "";
+  return `${parts.join(", ")}. Claude Code can't say done until Kane passes each one in a real browser.${also}`;
 }
 
 /* ------------------------------------------------------------------ retired tests */

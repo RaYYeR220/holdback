@@ -17,6 +17,7 @@ import {
   readEvents,
   ScriptedHumanIO,
   seal,
+  serve,
   type BuildResult,
   type DriftResult,
   type FalsifyResult,
@@ -724,6 +725,60 @@ describe("run", () => {
     expect(vacuous.err).toContain("Finished, but held back");
   });
 
+  it("a run that stopped never reads Released: for every stop, run's summary, its exit code, `status` and the served verdict agree (N-1)", async () => {
+    await greenFixture();
+    const cap = "Kane credit cap reached: 40 of 30";
+    const cases: { name: string; args?: string[]; deps: Fakes; code: number; part: string }[] = [
+      // the I6 fixture: falsify stopped by --kane-cap with every criterion still green
+      { name: "falsify cap", args: ["--kane-cap", "30"], deps: stages({ falsify: [{ ...falsifyOk, reason: "kane-budget", error: cap }] }).deps, code: 3, part: "the last run stopped: the Kane credit cap was reached" },
+      { name: "build cap", deps: stages({ build: [{ allowStop: false, turns: 1, reason: "budget", error: cap }] }).deps, code: 3, part: "the last run stopped: the Kane credit cap was reached" },
+      { name: "falsify drift", deps: stages({ falsify: [{ ...falsifyOk, reason: "drift", error: "the spec changed", specChange: { files: ["PRD.md"], duringAgentTurn: true } }] }).deps, code: 3, part: "the last run stopped: the spec changed" },
+      { name: "build drift", deps: stages({ build: [{ allowStop: false, turns: 1, reason: "drift", error: "PRD.md changed" }] }).deps, code: 3, part: "the last run stopped: the spec changed" },
+      { name: "inconclusive", deps: stages({ build: [{ allowStop: false, turns: 0, reason: "inconclusive", inconclusive: [{ test: "t-1", turn: 2, reason: "timeout" }] }] }).deps, code: 3, part: "the last run stopped: Kane could not finish checking a test" },
+      { name: "falsify error", deps: stages({ falsify: [{ ...falsifyOk, reason: "error", error: "git worktree add failed" }] }).deps, code: 1, part: "the last run stopped on an error" },
+      { name: "max turns", deps: stages({ build: [{ allowStop: false, turns: 15, reason: "max-turns" }] }).deps, code: 1, part: "the last run stopped at the turn limit" },
+      { name: "falsify aborted", deps: stages({ falsify: [{ ...falsifyOk, reason: "aborted" }] }).deps, code: 130, part: "the last run was interrupted" },
+    ];
+    const srv = await serve(p, { port: 0 });
+    const served = async () => ((await (await fetch(`http://127.0.0.1:${srv.port}/api/state`, { headers: { "x-holdback-token": srv.token } })).json()) as { verdict: unknown }).verdict;
+    try {
+      for (const c of cases) {
+        const r = await cli(["run", ...(c.args ?? [])], c.deps);
+        expect({ name: c.name, code: r.code }).toEqual({ name: c.name, code: c.code });
+        expect(r.out).not.toContain("Released");
+        const headline = /Verdict: (.*)/.exec(r.out)?.[1];
+        expect(headline).toContain(c.part);
+        const status = JSON.parse((await cli(["status", "--json"])).out).verdict;
+        expect(status).toMatchObject({ released: false, exit: c.code, headline });
+        expect((await cli(["status"])).out).toContain(`Verdict: ${headline}`);
+        expect(await served()).toEqual(status);
+      }
+      // a run that finishes clean clears the stop: released again, exit 0, everywhere
+      const clean = await cli(["run"], stages().deps);
+      expect(clean.code).toBe(0);
+      expect(clean.out).toContain("Verdict: Released — 2/2 green, 0/2 proved");
+      const status = JSON.parse((await cli(["status", "--json"])).out).verdict;
+      expect(status).toMatchObject({ released: true, exit: 0 });
+      expect(await served()).toEqual(status);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("a spec edited after the gate opened, or a reached Kane credit cap, holds it back in `status` and the served verdict (N-1)", async () => {
+    await greenFixture();
+    expect(JSON.parse((await cli(["status", "--json"])).out).verdict).toMatchObject({ released: true });
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
+    const edited = JSON.parse((await cli(["status", "--json"])).out).verdict;
+    expect(edited).toMatchObject({ released: false, exit: 3, headline: "Held back — 2/2 green, the spec changed since the last seal" });
+    writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nSNAP households are eligible.\n");
+    // the fixture's runs are 16.5 credits by Kane's figures: a cap of 10 is reached
+    writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ kane: { capCredits: 10 } }));
+    await resealNow();
+    const capped = JSON.parse((await cli(["status", "--json"])).out).verdict;
+    expect(capped).toMatchObject({ released: false, exit: 3, headline: "Held back — 2/2 green, the Kane credit cap is reached" });
+  });
+
   it("on the live rehearsal's ledger, `run` ends held back with exit 3 and the dashboard's headline, though the gate is open (R44)", async () => {
     // the rehearsal's ledger (sanitized), then a seal of this throwaway app as it is: nothing on disk differs
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n");
@@ -884,6 +939,12 @@ describe("run", () => {
     await resealNow();
     writeFileSync(join(appDir, "PRD.md"), "# Pantry\n\nA new rule.\n");
     const s = stages();
+    // as the real drift does, an applied plan seals the spec it re-planned
+    s.deps.runDrift = async () => {
+      s.calls.push("drift");
+      await resealNow();
+      return { changed: true, applied: true };
+    };
     const r = await cli(["run"], s.deps);
     expect(r.code).toBe(0);
     expect(r.out).toContain("spec changed since the last seal — running drift");

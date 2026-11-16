@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, COLUMNS, driftRows, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
+import { board, COLUMNS, driftRows, lede, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -246,6 +246,30 @@ describe("meters and labels", () => {
     const events = parseEvents(readFileSync(REHEARSAL, "utf8"));
     expect(retiredLine(events)).toBe("Retired by Kane's evolve, still sealed, never run again: t-1 Reject non-SNAP income above the two-person limit (uc-1).");
     expect(retiredLine(parseEvents(fixtureText()))).toBeUndefined();
+  });
+
+  it("never says Released after a stopped run, or with the Kane credit cap reached, and says why in the headline, the lede and the timeline (N-1)", () => {
+    const green = [design(["ac-1"], [["t-1", ["ac-1"]]]), run(1, result("t-1", "passed", { criteriaPassed: ["ac-1"] }))];
+    expect(gateLabel(stateFromLedger(green, null)).word).toBe("Released");
+    const stopped = [...green, ev({ t: "run.end", stop: "kane-budget", exit: 3, detail: "Kane credit cap reached: 40 of 30" })];
+    const api = stateFromLedger(stopped, null);
+    expect(api.verdict).toMatchObject({ released: false, exit: 3 });
+    expect(gateLabel(api)).toEqual({ word: "Held back", open: false, parts: ["1/1 green", "the last run stopped: the Kane credit cap was reached"] });
+    expect(lede(api)).toBe("1 of 1 criteria pass in a real browser, but done is held back: the last run stopped: the Kane credit cap was reached.");
+    const items = timeline(stopped).flatMap((s) => s.items);
+    expect(items.at(-1)).toMatchObject({ kind: "stopped", reason: "kane-budget", exit: 3, detail: "Kane credit cap reached: 40 of 30" });
+    // a clean end clears it
+    expect(gateLabel(stateFromLedger([...stopped, ev({ t: "run.end" })], null)).word).toBe("Released");
+    // the cap, from the config the dashboard is given: spent is spent
+    const cfg = { spec: ["PRD.md"], start: { port: 1, readyPath: "/" }, agent: { model: null }, kane: { parallel: 1, timeoutS: 1, designMax: 1, capCredits: 1 }, breaker: { model: "b", capUsd: 1 }, loop: { maxTurns: 6 } };
+    expect(gateLabel(stateFromLedger(green, cfg)).parts).toEqual(["1/1 green", "the Kane credit cap is reached"]);
+  });
+
+  it("the lede never garbles: every criterion turned down reads as such (m-4)", () => {
+    const events = [ev({ ...design(["ac-1"], [["t-1", ["ac-1"]]]), rejected: ["ac-1", "t-1"] })];
+    const api = stateFromLedger(events, null);
+    expect(api.verdict).toMatchObject({ state: "empty" });
+    expect(lede(api)).toBe("Every criterion was turned down in the design approval: there is nothing to prove, so done stays held back.");
   });
 
   it("never says Released while a planted bug survived or a criterion has no test, though the gate is open: the CLI's verdict (R44)", () => {

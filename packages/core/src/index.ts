@@ -43,6 +43,7 @@ export {
 } from "./kane/testmd.js";
 export type {
   RunKind,
+  RunStop,
   LedgerEvent,
   AcStatus,
   AcState,

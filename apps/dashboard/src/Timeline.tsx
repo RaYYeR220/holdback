@@ -15,6 +15,7 @@ function Glyph({ item }: { item: Item }) {
       return <i className="g g-seal" aria-hidden="true" />;
     case "tamper":
     case "regression":
+    case "stopped":
       return <i className="g g-alarm" aria-hidden="true" />;
     default:
       return <Ring status="needs-spec" />;
@@ -135,6 +136,10 @@ function Row({ item, live }: { item: Item; live: boolean }) {
     case "meter":
       title = `Kane balance, ${item.source}`;
       detail = item.delta === null ? `unreadable (${item.error ?? "no reason"}); per-run figures stand in` : `balance dropped ${fmtCredits(item.delta)} cr; runs reported ${fmtCredits(item.perRunSum)}`;
+      break;
+    case "stopped":
+      title = `The run stopped (exit ${item.exit}): held back`;
+      detail = item.detail ?? item.reason;
       break;
     case "dropped":
       title = `Kane's change rolled back (${item.useCases.join(", ")})`;

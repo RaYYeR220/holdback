@@ -154,7 +154,7 @@ Only a drift you approve in the terminal settles an unverified change. `holdback
 | 0 | Success. For `run`: released, meaning the gate is open and every criterion is proved or passing. |
 | 1 | An error, or not finished (for example, the turn limit was reached). |
 | 2 | Tamper: something sealed changed. Nothing counts until you run `holdback reseal`. |
-| 3 | `run` finished but held back: criteria are still owed, vacuous (a planted bug survived) or have no test, or Kane could not finish checking a test. `run`, `status` and the dashboard read one verdict, so the dashboard never says "Released" for a run that exits 3. Also: the spec changed while it ran (run `holdback drift`), or the Kane credit cap was reached (any command). |
+| 3 | `run` finished but held back: criteria are still owed, vacuous (a planted bug survived) or have no test, or Kane could not finish checking a test. Also: the spec changed (run `holdback drift`), or the Kane credit cap was reached (any command). `run`, `status` and the dashboard read one verdict, which counts how the last `run` ended (it logs every stop on the ledger, before its summary), a spec changed since the seal and a reached Kane credit cap: none of them says "Released" unless `holdback run` would exit 0, and after a stopped run they give its exit code. |
 | 130 | Interrupted. One Ctrl-C stops after the current step; a second quits at once. |
 
 ### Planted bugs that get through

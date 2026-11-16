@@ -104,6 +104,50 @@ describe("the CLI and the dashboard give one verdict (R44)", () => {
   });
 });
 
+describe("a run that stopped reads the same in the CLI and the dashboard (N-1)", () => {
+  let tmp: string;
+  beforeAll(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "hb-dash-stop-"));
+  });
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("every criterion green, then the run stopped at the Kane credit cap: `status --json`, the server and the dashboard all hold it back with exit 3", async () => {
+    const home = path.join(tmp, "home");
+    const app = path.join(tmp, "app");
+    mkdirSync(app, { recursive: true });
+    writeFileSync(path.join(app, "PRD.md"), "# Pantry\n");
+    const prevHome = process.env.HOLDBACK_HOME;
+    process.env.HOLDBACK_HOME = home;
+    let srv: Awaited<ReturnType<typeof serve>> | undefined;
+    try {
+      const p = await loadProject(app);
+      const at = "2026-11-16T03:00:00.000Z";
+      const ac = { id: "ac-1", text: "criterion", useCase: "uc-1", cites: [], trust: "derived" };
+      const passed = { testFile: "t1.md", testId: "t-1", status: "passed", steps: [], criteriaPassed: ["ac-1"], criteriaFailed: [], credits: 0, replayDecisions: 1, authorDecisions: 0, healTriggered: false, durationS: 1 };
+      for (const e of [
+        { at, t: "design", useCase: "uc-1", acs: [ac], tests: [{ id: "t-1", title: "one", file: "t1.md", verifies: ["ac-1"] }], gaps: [], credits: 0 },
+        { at, t: "seal", manifest: await seal(p.verifierDir, { appDir: app, files: appSealFiles(p) }) },
+        { at, t: "run", kind: "build", turn: 1, result: passed },
+        { at, t: "run.end", stop: "kane-budget", exit: 3, detail: "Kane credit cap reached: 40 of 30" },
+      ])
+        await appendEvent(p.ledgerFile, e as never);
+      const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE")));
+      const cli = (JSON.parse(execFileSync(process.execPath, [CLI, "status", "--json"], { cwd: app, env: { ...env, HOLDBACK_HOME: home }, encoding: "utf8" })) as { verdict: Verdict }).verdict;
+      const dash = stateFromLedger(browserParse(readFileSync(p.ledgerFile, "utf8")), null);
+      expect(cli).toEqual(json(dash.verdict));
+      expect(cli).toMatchObject({ released: false, exit: 3, headline: "Held back — 1/1 green, the last run stopped: the Kane credit cap was reached" });
+      expect(gateLabel(dash).word).toBe("Held back");
+      srv = await serve(p, { port: 0 });
+      const r = await fetch(`http://127.0.0.1:${srv.port}/api/state`, { headers: { "x-holdback-token": srv.token } });
+      expect(((await r.json()) as { verdict: Verdict }).verdict).toEqual(cli);
+    } finally {
+      await srv?.close();
+      if (prevHome === undefined) delete process.env.HOLDBACK_HOME;
+      else process.env.HOLDBACK_HOME = prevHome;
+    }
+  });
+});
+
 describe("the browser's /api/state equals the server's", () => {
   let tmp: string;
   let prevHome: string | undefined;

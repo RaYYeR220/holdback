@@ -9,6 +9,13 @@ import type { Slip } from "../breaker/mutate.js";
  */
 export type RunKind = "build" | "falsify" | "exam" | "bisect" | "replay";
 
+/**
+ * Why a `holdback run` (or a `watch` pass) stopped short of a clean finish, apart from a tamper (on
+ * record on its own): the Kane credit cap, a spec change, Kane runs that proved nothing, the turn
+ * limit, an interrupt or an error.
+ */
+export type RunStop = "kane-budget" | "drift" | "inconclusive" | "max-turns" | "aborted" | "error";
+
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }
   | { t: "spec.paused"; sid: string; questions: PendingQuestion[]; credits?: number }
@@ -102,6 +109,12 @@ export type LedgerEvent = { at: string } & (
    * not be read, `error` says why), and the per-run credits the events logged in that batch carry.
    */
   | { t: "credits"; source: string; delta: number | null; perRunSum: number; error?: string }
+  /**
+   * The end of a `holdback run` (or a `watch` pass), logged before its summary (N-1): `stop`, `exit`
+   * (its exit code) and `detail` when it stopped short of a clean finish. The verdict holds back, with
+   * that exit code, until a run ends without one.
+   */
+  | { t: "run.end"; stop?: RunStop; exit?: number; detail?: string }
 );
 
 /** `rejected`: a human turned the criterion down when approving the design: never owed, never run. */
@@ -149,4 +162,6 @@ export type LedgerState = {
   inconclusive: { test: string; turn?: number; reason: string }[];
   /** A `tamper` event with no later `seal`: nothing verified since can be trusted until a human re-seals. */
   tampered: boolean;
+  /** How the latest `holdback run` stopped, when it did not finish clean (its `run.end`); absent otherwise. */
+  stopped?: { reason: RunStop; exit: number; detail?: string };
 };
