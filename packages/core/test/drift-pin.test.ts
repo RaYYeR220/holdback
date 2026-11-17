@@ -57,7 +57,7 @@ describe("drift's pin of the spec (coordinator addendum to I-1)", () => {
       if (file.endsWith("rules.md") && file.startsWith(p.appDir) && ++reads === 2) writeFileSync(join(p.appDir, "rules.md"), "# Rules\n\nRule A.\nSlipped in.\n");
     };
     const kane = new Proxy({}, { get: (_t, name) => () => Promise.reject(new Error(`Kane must not be called (${String(name)})`)) });
-    const io = { answer: async () => ({}), approve: async () => [] };
+    const io = { answer: async () => ({}), approve: async () => [], values: async () => ({}) };
     const r = await runDrift(p, io, log, { kane: kane as never, reviewed });
     expect(reads).toBeGreaterThanOrEqual(2);
     expect(r).toMatchObject({ changed: true, applied: false, specMoved: ["rules.md"] });

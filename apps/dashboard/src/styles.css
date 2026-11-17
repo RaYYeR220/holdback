@@ -269,6 +269,15 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 32px; letter-spac
 .appr label { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--hair); font-size: 14px; cursor: pointer; }
 .appr input { accent-color: var(--accent); }
 .appr-kind { font-size: 11px; color: var(--ink-3); }
+.appr li:has(.appr-note) label { border-bottom: 0; padding-bottom: 4px; }
+.appr-note { display: block; padding: 0 0 11px 34px; border-bottom: 1px solid var(--hair); font-size: 13px; line-height: 1.45; color: var(--accent-deep); overflow-wrap: anywhere; }
+.vars { margin-top: 18px; border-top: 1px solid var(--hair); }
+.var { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); align-items: center; gap: 6px 18px; padding: 14px 0; border-bottom: 1px solid var(--hair); }
+.var-d { font-size: 13.5px; line-height: 1.45; color: var(--ink-2); }
+.var-d .tag { margin-right: 8px; }
+.var-u { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+.var input { height: 42px; padding: 0 12px; border: 1px solid var(--hair-2); border-radius: 10px; background: var(--ground); font-family: var(--mono); font-size: 14px; min-width: 0; }
+.var input:focus { border-color: var(--ink); outline: none; }
 
 /* ---------------- blocked: no token, refused, unreachable ---------------- */
 .blocked { min-height: 100svh; display: grid; place-items: center; padding: 40px var(--gutter); }
@@ -343,6 +352,8 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 32px; letter-spac
   .opts { grid-template-columns: 1fr; }
   .appr label { grid-template-columns: auto auto minmax(0, 1fr); }
   .appr-kind { display: none; }
+  .appr-note { padding-left: 24px; }
+  .var { grid-template-columns: 1fr; }
   .foot { margin-top: 64px; }
 }
 

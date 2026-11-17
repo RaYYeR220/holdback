@@ -1,0 +1,67 @@
+{
+  "start_url": {
+    "secret": false,
+    "description": "Deployed web app start URL; the PRD only gives an external state-guidance URL.",
+    "value": "http://127.0.0.1:3190/"
+  },
+  "primary_phone": {
+    "value": "",
+    "secret": false,
+    "description": "Unused ten-digit household test phone, supplied as digits only; same digits as primary_phone_formatted."
+  },
+  "primary_phone_formatted": {
+    "value": "",
+    "secret": false,
+    "description": "Same ten digits as primary_phone with permitted punctuation in a different format."
+  },
+  "proxy_name": {
+    "value": "",
+    "secret": false,
+    "description": "Test proxy's name for the booking confirmation."
+  },
+  "slot_phone_1": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 1."
+  },
+  "slot_phone_2": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 2."
+  },
+  "slot_phone_3": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 3."
+  },
+  "slot_phone_4": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 4."
+  },
+  "slot_phone_5": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 5."
+  },
+  "slot_phone_6": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 6."
+  },
+  "slot_phone_7": {
+    "value": "",
+    "secret": false,
+    "description": "Distinct unused ten-digit phone for full-slot household 7."
+  },
+  "invalid_phone": {
+    "value": "",
+    "secret": false,
+    "description": "Test phone input consisting of exactly nine digits."
+  },
+  "spare_phone": {
+    "value": "",
+    "secret": false,
+    "description": "Unused valid ten-digit phone for the unchosen-visit-time case."
+  }
+}

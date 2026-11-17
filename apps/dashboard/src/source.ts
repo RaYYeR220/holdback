@@ -91,6 +91,7 @@ export type Live = {
   close(): void;
   answer(sid: string, answers: Record<string, string>): Promise<void>;
   approve(refs: string[]): Promise<void>;
+  values(sid: string, values: Record<string, string>): Promise<void>;
 };
 
 class Denied extends Error {}
@@ -195,5 +196,6 @@ export function connectLive(hash: string, deps: LiveDeps, onStatus: (s: Status) 
     close,
     answer: (sid, answers) => post("/api/answer", { sid, answers }),
     approve: (refs) => post("/api/approve", { refs }),
+    values: (sid, values) => post("/api/values", { sid, values }),
   };
 }

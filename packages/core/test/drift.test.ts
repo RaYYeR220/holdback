@@ -96,6 +96,7 @@ function human(calls: Calls, pick: (items: ApprovalItem[]) => string[]): HumanIO
       calls.push(`approve:${items.map((i) => i.ref).join(",")}`);
       return pick(items);
     },
+    values: async () => ({}),
   };
 }
 const all = (i: ApprovalItem[]) => i.map((x) => x.ref);
@@ -215,7 +216,7 @@ describe("runDrift", { timeout: 60_000 }, () => {
     await reseal(p, log);
     writeFileSync(join(p.appDir, "app.js"), "// the agent's work in progress\n");
     editPrd();
-    const r = await runDrift(p, { answer: async () => ({}), approve: async (items) => all(items) }, log, { kane: fakeKane([]) });
+    const r = await runDrift(p, { answer: async () => ({}), approve: async (items) => all(items), values: async () => ({}) }, log, { kane: fakeKane([]) });
     expect(r).toEqual({ changed: true, applied: true });
     expect(git("log", "--format=%s")).toBe("spec: PRD.md\nspec");
     expect(git("show", "--name-only", "--format=", "HEAD")).toBe("PRD.md");
@@ -232,7 +233,7 @@ describe("runDrift", { timeout: 60_000 }, () => {
     await reseal(p, log);
     editPrd();
     await log({ at: new Date().toISOString(), t: "spec.changed", files: ["PRD.md"], duringAgentTurn: true, before: {}, after: {} });
-    const r = await runDrift(p, { answer: async () => ({}), approve: async (items) => all(items) }, log, { kane: fakeKane([]) });
+    const r = await runDrift(p, { answer: async () => ({}), approve: async (items) => all(items), values: async () => ({}) }, log, { kane: fakeKane([]) });
     expect(r).toEqual({ changed: true, applied: true });
     expect(git("log", "-1", "--format=%s")).toBe("spec: PRD.md (origin unverified)");
   }, 60_000);
@@ -267,7 +268,7 @@ describe("runDrift", { timeout: 60_000 }, () => {
         resumeSession: async () => ({ status: "complete", rows: [MODIFY], summary: {}, credits: 4 }),
       };
     };
-    const answering = (pick: (i: ApprovalItem[]) => string[]): HumanIO => ({ answer: async () => ({ q1: "No" }), approve: async (items) => pick(items) });
+    const answering = (pick: (i: ApprovalItem[]) => string[]): HumanIO => ({ answer: async () => ({ q1: "No" }), approve: async (items) => pick(items), values: async () => ({}) });
 
     editPrd();
     const declined = await runDrift(p, answering(() => []), log, { kane: pausing([]) });
@@ -307,7 +308,7 @@ describe("runDrift", { timeout: 60_000 }, () => {
       resumeSession: async () => ({ status: 'complete', rows: [MODIFY], summary: {}, credits: 4 }),
     };
     editPrd();
-    const io: HumanIO = { answer: async () => ({ q1: 'No' }), approve: async (items) => all(items) };
+    const io: HumanIO = { answer: async () => ({ q1: 'No' }), approve: async (items) => all(items), values: async () => ({}) };
     const r = await runDrift(p, io, log, { kane });
     expect(r).toEqual({ changed: true, applied: true });
     const prd = readFileSync(join(p.appDir, 'PRD.md'), 'utf8');

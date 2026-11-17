@@ -394,6 +394,7 @@ export type Segment = {
 };
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+const oneLine = (t: string) => t.replace(/\s+/g, " ").trim();
 
 /** The ledger as the loop ran it: the spec stage, then one segment per agent turn and the checks after it. */
 export function timeline(events: LedgerEvent[]): Segment[] {
@@ -449,6 +450,24 @@ export function timeline(events: LedgerEvent[]): Segment[] {
           detail: e.tests.map((t) => `${t.id} ${t.title}`).join(" · "),
           credits: e.credits,
         });
+        {
+          // the gaps Kane left, with its kind and question (a gap with its id alone says nothing: left out)
+          const gaps = e.gaps.filter((g) => g.question);
+          if (gaps.length > 0) {
+            seg.items.push({
+              kind: "spec",
+              at: e.at,
+              title: `Kane left ${plural(gaps.length, "gap")} in ${e.useCase}'s design`,
+              detail: gaps.map((g) => `${g.id} [${g.kind}] ${oneLine(`${g.question!.header || g.title}${g.question!.prompt ? `: ${g.question!.prompt}` : ""}`)}`).join(" · "),
+            });
+          }
+        }
+        break;
+      case "spec.repaired":
+        seg.items.push({ kind: "spec", at: e.at, title: "Holdback repaired a broken import Kane wrote", detail: `${e.file} line ${e.line}: ${e.from} -> ${e.to}` });
+        break;
+      case "spec.variables":
+        seg.items.push({ kind: "spec", at: e.at, title: `A human filled ${plural(e.names.length, "test variable")} Kane left empty`, detail: e.names.join(", ") });
         break;
       case "seal":
         seg.items.push({ kind: "seal", at: e.at, files: Object.keys(e.manifest).length, reseal: tampered });

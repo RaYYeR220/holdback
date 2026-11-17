@@ -13,5 +13,5 @@ export { killsAc, notAnAppFailure } from "./kane/outcome.js";
 export type { RunKind, RunStop, LedgerEvent, AcStatus, AcState, LedgerState } from "./ledger/types.js";
 export type { AcNode, TestNode, GapNode, PendingQuestion } from "./kane/assurance.js";
 export type { BugVerdict, TestRunResult } from "./kane/testmd.js";
-export type { ApprovalItem } from "./loop/human.js";
+export type { ApprovalItem, VariableAsk } from "./loop/human.js";
 export type { PendingPrompt } from "./server.js";

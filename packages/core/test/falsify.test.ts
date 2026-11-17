@@ -326,6 +326,9 @@ function fakes(plan: Plan) {
     approve: async () => {
       throw new Error("falsify asks the human nothing");
     },
+    values: async () => {
+      throw new Error("falsify asks the human nothing");
+    },
   };
   return { deps, io, calls, kit };
 }

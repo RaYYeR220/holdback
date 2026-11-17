@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   designTests,
   extractResume,
+  gapsOf,
   ingest,
   listNodes,
   readGraph,
@@ -26,9 +27,12 @@ import type { EventBody } from "../ledger/vouched.js";
 import { kaneCapCredits, type Project } from "../project.js";
 import { attemptsText, specAttemptsSince } from "../agent/attempts.js";
 import { escapeControls } from "../text.js";
+import { parseTestMd } from "../kane/testmd-parse.js";
 import { appSealKey, checkSeal, isAppKeyOf, seal } from "../seal.js";
 import { clearTamper, logRecordings, markTampered, tamperMarker } from "../tamper.js";
 import type { HumanIO } from "./human.js";
+import { lintImports } from "./imports.js";
+import { fillVariables } from "./variables.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
 
@@ -766,7 +770,7 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
       const acIds = new Set(acs.map((a) => a.id));
       const tests = g.tests.filter((t) => t.verifies.some((v) => acIds.has(v)));
       const notes = designNotes(acs, tests, p.config.kane.designMax);
-      const e: Extract<EventBody, { t: "design" }> = { t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: d.credits, ...(notes ? { notes } : {}) };
+      const e: Extract<EventBody, { t: "design" }> = { t: "design", useCase: uc, acs, tests, gaps: gapsOf(g, uc), credits: d.credits, ...(notes ? { notes } : {}) };
       await emit(e);
       designed.set(uc, e);
     });
@@ -780,10 +784,12 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   const rejectedBefore = new Set(decided.flatMap((e) => e.rejected ?? []));
   const designIds = new Set([...designed.values()].flatMap((d) => [...d.acs.map((a) => a.id), ...d.tests.map((t) => t.id)]));
   const approvedDesignBefore = decided.some((e) => e.refs.some((r) => designIds.has(r)));
+  // an @import Kane wrote with an absolute path is repaired, and the human sees it on its test (Kane 0.10.4 on Windows)
+  const testNotes = await importNotes(cwd, earlier, emit);
   await unchanged();
   const derived = (await listNodes(cwd)).filter((n) => n.trust === "derived" && ["ac", "scenario", "test"].includes(n.label) && !rejectedBefore.has(n.id));
   if (derived.length > 0) {
-    const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label })));
+    const approved = await io.approve(derived.map((n) => ({ ref: n.id, title: n.title, kind: n.label, ...(n.label === "test" && testNotes.has(n.id) ? { note: testNotes.get(n.id)! } : {}) })));
     const approvedSet = derived.map((n) => n.id).filter((id) => approved.includes(id));
     const turnedDown = derived.map((n) => n.id).filter((id) => !approvedSet.includes(id));
     await emit({ t: "spec.approved", refs: approvedSet, rejected: turnedDown });
@@ -799,17 +805,51 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
         const { at: _at, notes: _notes, ...body } = d as Extract<EventBody, { t: "design" }> & { at?: string };
         // the notes follow the approval: Kane's set and cap as designed, the tests the human turned down (m-5)
         const notes = designNotes(d.acs, d.tests, p.config.kane.designMax, new Set(rejected));
-        await emit({ ...body, credits: 0, rejected, ...(notes ? { notes } : {}) });
+        const again = { ...body, credits: 0, rejected, ...(notes ? { notes } : {}) };
+        await emit(again);
+        designed.set(d.useCase, again);
       }
     }
   }
 
-  // 6. point the tests at the app, commit Holdback's own spec edit, then seal (a fresh seal is the only thing that lifts a tamper)
+  // 6. point the tests at the app, have the human fill every variable an approved test types that Kane
+  //    left empty (none is sealed empty), commit Holdback's own spec edit, then seal (a fresh seal is
+  //    the only thing that lifts a tamper)
   // n-3: the seal hashes the disk, so a spec edited since Kane last read it would be sealed as approved
   await unchanged();
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
+  const approvedTests = [...designed.values()].flatMap((d) => d.tests.filter((t) => t.file && !(d.rejected ?? []).includes(t.id)));
+  await fillVariables(cwd, approvedTests, io, emit);
+  // the values take the human a while too
+  await unchanged();
   await commitClarifications(p, clarifiedBefore, deps.warn);
   await reseal(p, log);
+}
+
+/**
+ * Repairs the `@import` lines Kane wrote with an absolute path (`lintImports`), logs each repair
+ * (`spec.repaired`), and returns what the human is shown on each test at its approval, by test id:
+ * the repairs of this attempt and of an earlier one (a resumed stage), and the imports that resolve
+ * to no file.
+ */
+async function importNotes(cwd: string, earlier: LedgerEvent[], emit: (e: EventBody) => Promise<void>): Promise<Map<string, string>> {
+  const lint = await lintImports(cwd);
+  const notes = new Map<string, string[]>();
+  const add = (test: string | undefined, note: string) => {
+    if (test) notes.set(test, [...(notes.get(test) ?? []), note]);
+  };
+  const repairNote = (r: { line: number; from: string; to: string }) => `Holdback repaired a broken import Kane wrote (line ${r.line}): ${r.from} -> ${r.to}`;
+  for (const e of earlier) {
+    if (e.t !== "spec.repaired") continue;
+    const text = await readFile(path.join(cwd, ...e.file.split("/")), "utf8").catch(() => "");
+    add(text ? (parseTestMd(text).id ?? undefined) : undefined, repairNote(e));
+  }
+  for (const r of lint.repaired) {
+    await emit({ t: "spec.repaired", file: r.file, line: r.line, from: r.from, to: r.to });
+    add(r.test, repairNote(r));
+  }
+  for (const b of lint.broken) add(b.test, `broken import Kane wrote (line ${b.line}): ${b.target} is not in the tests folder, so \`testmd run\` stops on it`);
+  return new Map([...notes].map(([k, v]) => [k, v.join("; ")]));
 }
 
 /**

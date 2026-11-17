@@ -1,11 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
-import { ScriptedHumanIO, type HumanIO } from "../src/loop/human.js";
+import { ScriptedHumanIO, type ApprovalItem, type HumanIO, type VariableAsk } from "../src/loop/human.js";
 import { checkSpecPaths, designNotes, mapIngestedFiles, runSpecStage, specHashAfterAppend, specSource, TESTS_TURNED_DOWN } from "../src/loop/spec.js";
 import { checkSeal } from "../src/seal.js";
 import { reduce } from "../src/ledger/reduce.js";
@@ -106,6 +106,7 @@ describe("runSpecStage", () => {
         approvals.push(items.map((i) => i.ref));
         return items.map((i) => i.ref);
       },
+      values: async () => ({}),
     };
     await markTampered(p, "left over from an earlier build"); // a fresh seal lifts it
     await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
@@ -255,11 +256,24 @@ describe("runSpecStage", () => {
     expect(await bad("[]")).toMatch(/expected a JSON object/);
     expect(await bad("{nope")).toMatch(/not valid JSON/);
     expect(await bad(JSON.stringify({ default: "recommended", approve: "all" }))).toBe("accepted");
+    expect(await bad(JSON.stringify({ variables: { phone: 2155550101 } }))).toMatch(/"variables" must map/);
+  });
+
+  it("ScriptedHumanIO fills test variables from its \"variables\", and with default \"recommended\" takes Holdback's suggestion, never for a secret or a placeholder", async () => {
+    const f = join(root, "script.json");
+    const ask = (name: string, extra: object = {}) => ({ name, description: "", secret: false, usedBy: ["t-1"], ...extra });
+    const asks = [ask("phone", { suggested: "2155550101" }), ask("coupon", { placeholder: "<coupon>" }), ask("password", { secret: true }), ask("guest_name", { suggested: "Maria Lopez" })];
+    writeFileSync(f, JSON.stringify({ variables: { password: "s3cret", guest_name: "Ana Ruiz" }, default: "recommended" }));
+    expect(await (await ScriptedHumanIO.fromFile(f)).values(asks)).toEqual({ phone: "2155550101", coupon: "", password: "s3cret", guest_name: "Ana Ruiz" });
+    // without the standing choice, an unnamed variable stays empty: the stage then stops before the seal
+    writeFileSync(f, JSON.stringify({ variables: { phone: "2155550199" } }));
+    expect(await (await ScriptedHumanIO.fromFile(f)).values(asks)).toEqual({ phone: "2155550199", coupon: "", password: "", guest_name: "" });
   });
 
   const acceptAll: HumanIO = {
     answer: async (qs) => Object.fromEntries(qs.map((q) => [q.id, "a\n  b"])),
     approve: async (items) => items.map((i) => i.ref),
+    values: async (asks) => Object.fromEntries(asks.map((a) => [a.name, a.suggested ?? ""])),
   };
 
   it("maps Kane's sources to spec files by Kane's source id, never by event order (M6)", () => {
@@ -503,6 +517,7 @@ describe("runSpecStage", () => {
         if (items.some((i) => i.ref === "t-1")) appendFileSync(join(appDir, "PRD.md"), "\nA late rule.\n");
         return items.map((i) => i.ref);
       },
+      values: async () => ({}),
     };
     const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
     expect(err?.message).toContain("the spec changed during the spec stage — run `holdback spec` again");
@@ -521,6 +536,7 @@ describe("runSpecStage", () => {
         if (items.some((i) => i.kind === "usecase")) appendFileSync(join(appDir, "PRD.md"), "\nA rule added during the approval.\n");
         return items.map((i) => i.ref);
       },
+      values: async () => ({}),
     };
     const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
     expect(err?.name).toBe("SpecChangedDuringStage");
@@ -542,6 +558,7 @@ describe("runSpecStage", () => {
       async approve(items) {
         return items.map((i) => i.ref);
       },
+      values: async () => ({}),
     };
     const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
     expect(err?.name).toBe("SpecChangedDuringStage");
@@ -549,5 +566,115 @@ describe("runSpecStage", () => {
     expect(readFileSync(join(root, "argv.log"), "utf8").trim().split("\n")).toHaveLength(1);
     expect(readFileSync(join(appDir, "PRD.md"), "utf8")).not.toContain("Clarifications");
     expect((await readEvents(p.ledgerFile)).some((e) => e.t === "spec.extracted")).toBe(false);
+  }, 60_000);
+
+  /** The test Kane designed for t-1 (it verifies uc-1's ac-1), and the variables it declared, written into the verifier before the stage. */
+  function kaneWrote(p: Awaited<ReturnType<typeof loadProject>>, body: string, vars: Record<string, { value: string; secret: boolean; description: string }>) {
+    const tests = join(p.verifierDir, ".testmuai", "tests");
+    mkdirSync(tests, { recursive: true });
+    mkdirSync(join(p.verifierDir, ".testmuai", "variables"), { recursive: true });
+    writeFileSync(join(tests, "snap_test.md"), `---\nassurance:\n  id: t-1\n---\n# Snap test\n\n${body}\n\n## Step 1 @verifies ac-1\n\nAt {{start_url}}, book with {{primary_phone}} for {{proxy_name}}.\n`);
+    writeFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), JSON.stringify(vars, null, 2));
+    return () => JSON.parse(readFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), "utf8")) as Record<string, { value: string }>;
+  }
+  const empty = (description: string) => ({ value: "", secret: false, description });
+
+  it("the variables gate: every empty variable an approved test types is asked with a suggestion, filled, and only then sealed", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const vars = kaneWrote(p, "", { primary_phone: empty("Unused ten-digit household test phone."), proxy_name: empty("Test proxy's name."), spare_phone: empty("Unused phone.") });
+    let asked: VariableAsk[] = [];
+    const io: HumanIO = { ...acceptAll, values: async (asks) => ((asked = asks), { primary_phone: asks[0]!.suggested!, proxy_name: "Ana Ruiz" }) };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    expect(asked).toEqual([
+      { name: "primary_phone", description: "Unused ten-digit household test phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] },
+      { name: "proxy_name", description: "Test proxy's name.", secret: false, suggested: "Maria Lopez", usedBy: ["t-1"] },
+    ]);
+    expect(vars()).toMatchObject({ start_url: { value: `http://127.0.0.1:${p.config.start.port}/` }, primary_phone: { value: "2155550101" }, proxy_name: { value: "Ana Ruiz" }, spare_phone: { value: "" } });
+    const events = await readEvents(p.ledgerFile);
+    expect(events.map((e) => e.t).slice(-3)).toEqual(["spec.approved", "spec.variables", "seal"]);
+    expect(events.at(-2)).toMatchObject({ t: "spec.variables", names: ["primary_phone", "proxy_name"], filledBy: "human" });
+    // the seal holds the values: a later edit of the variables file is a tamper
+    const manifest = (events.at(-1) as Extract<LedgerEvent, { t: "seal" }>).manifest;
+    expect(await checkSeal(p.verifierDir, manifest, p.appDir)).toEqual([]);
+  }, 60_000);
+
+  it("a variable the human leaves empty stops the stage before the seal (exit 3 in the CLI), and the resumed stage asks only for it", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    const vars = kaneWrote(p, "", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
+    const io: HumanIO = { ...acceptAll, values: async () => ({ primary_phone: "2155550101", proxy_name: "" }) };
+    const err = await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
+    expect(err?.name).toBe("VariablesMissing");
+    expect(err?.message).toContain("proxy_name");
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "seal")).toBe(false);
+    expect(vars().primary_phone!.value).toBe("2155550101");
+
+    // the resumed stage: list (use cases), list (derived nodes), review; then the gate asks for what is still empty
+    const seq = join(root, "seq-resume.txt");
+    writeFileSync(seq, [fx("10-list-derived.ndjson"), fx("10-list-derived.ndjson"), "-"].join("\n"));
+    process.env.FAKE_KANE_SEQUENCE = seq;
+    let asked: string[] = [];
+    await runSpecStage(p, { ...acceptAll, values: async (asks) => ((asked = asks.map((a) => a.name)), { proxy_name: "Ana Ruiz" }) }, (e) => appendEvent(p.ledgerFile, e));
+    expect(asked).toEqual(["proxy_name"]);
+    expect(vars().proxy_name!.value).toBe("Ana Ruiz");
+    expect((await readEvents(p.ledgerFile)).at(-1)!.t).toBe("seal");
+  }, 60_000);
+
+  it("a variable only a turned-down test types is never asked for", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    kaneWrote(p, "", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
+    const io: HumanIO = { ...acceptAll, approve: async (items) => items.map((i) => i.ref).filter((r) => r !== "t-1"), values: async () => Promise.reject(new Error("must not ask")) };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    const events = await readEvents(p.ledgerFile);
+    expect(events.at(-1)!.t).toBe("seal");
+    expect(events.some((e) => e.t === "spec.variables")).toBe(false);
+  }, 60_000);
+
+  it("an @import Kane wrote with an absolute path is repaired before the test approval, logged, and shown on the test", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    kaneWrote(p, "@import ./C:\\Users\\dev\\.holdback\\x\\verifier\\.testmuai\\tests\\base_test.md", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
+    writeFileSync(join(p.verifierDir, ".testmuai", "tests", "base_test.md"), "# Base\n\n## Step 1\n\nOpen {{start_url}}.\n");
+    let offered: ApprovalItem[] = [];
+    const io: HumanIO = { ...acceptAll, approve: async (items) => (items.some((i) => i.kind === "test") && (offered = items), items.map((i) => i.ref)) };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    expect(readFileSync(join(p.verifierDir, ".testmuai", "tests", "snap_test.md"), "utf8")).toContain("\n@import ./base_test.md\n");
+    const events = await readEvents(p.ledgerFile);
+    const repaired = events.filter((e) => e.t === "spec.repaired");
+    expect(repaired).toEqual([
+      { at: expect.any(String), t: "spec.repaired", file: ".testmuai/tests/snap_test.md", line: 7, from: "@import ./C:\\Users\\dev\\.holdback\\x\\verifier\\.testmuai\\tests\\base_test.md", to: "@import ./base_test.md" },
+    ]);
+    // logged before the human approves the tests, and shown on the test it repaired
+    expect(events.findIndex((e) => e.t === "spec.repaired")).toBeLessThan(events.findLastIndex((e) => e.t === "spec.approved"));
+    expect(offered.find((i) => i.ref === "t-1")?.note).toMatch(/^Holdback repaired a broken import Kane wrote \(line 7\): @import \.\/C:.*base_test\.md -> @import \.\/base_test\.md$/);
+    expect(events.at(-1)!.t).toBe("seal");
+  }, 60_000);
+
+  it("an @import that resolves to nothing is flagged on the test at its approval", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    kaneWrote(p, "@import ./C:\\nowhere\\gone_test.md", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
+    let offered: ApprovalItem[] = [];
+    const io: HumanIO = { ...acceptAll, approve: async (items) => (items.some((i) => i.kind === "test") && (offered = items), items.map((i) => i.ref)) };
+    await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
+    expect(offered.find((i) => i.ref === "t-1")?.note).toBe("broken import Kane wrote (line 7): ./C:\\nowhere\\gone_test.md is not in the tests folder, so `testmd run` stops on it");
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "spec.repaired")).toBe(false);
+  }, 60_000);
+
+  it("a design carries the gaps of its own use case, with Kane's kind and question", async () => {
+    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    mkdirSync(join(p.verifierDir, ".context"), { recursive: true });
+    cpSync(fx("context-commits"), join(p.verifierDir, ".context", "commits"), { recursive: true });
+    await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
+    const design = (await readEvents(p.ledgerFile)).find((e) => e.t === "design") as Extract<LedgerEvent, { t: "design" }>;
+    expect(design.gaps.map((g) => [g.id, g.kind, g.question?.header])).toEqual([
+      ["gap-1", "incomplete", "Missing inputs"],
+      ["gap-2", "budget-evicted", "Eight-person equality"],
+      ["gap-3", "budget-evicted", "Below-limit household"],
+      ["gap-4", "incomplete", "Pantry page URL"],
+    ]);
   }, 60_000);
 });

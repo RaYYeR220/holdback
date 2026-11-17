@@ -18,6 +18,7 @@ import {
   ScriptedHumanIO,
   seal,
   serve,
+  VariablesMissing,
   type BuildResult,
   type DriftResult,
   type FalsifyResult,
@@ -126,7 +127,7 @@ const notCalled = (name: string) => async () => {
 
 /** Fake IO that records `close`. */
 function fakeIO() {
-  const io = { closed: 0, answer: async () => ({}), approve: async () => [], close() { io.closed++; } };
+  const io = { closed: 0, answer: async () => ({}), approve: async () => [], values: async () => ({}), close() { io.closed++; } };
   return io;
 }
 
@@ -517,6 +518,89 @@ describe("spec", () => {
     expect(r.err).toContain("Kane is not logged in");
     expect(io.closed).toBe(1);
   });
+
+  it("a spec stage stopped by a test variable left empty exits 3 and names it", async () => {
+    await fixture({ seal: false });
+    const io = fakeIO();
+    const r = await cli(["spec"], {
+      humanIO: () => io as never,
+      runSpecStage: async () => {
+        throw new VariablesMissing(["proxy_name", "spare_phone"]);
+      },
+    });
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("proxy_name, spare_phone");
+    expect(r.err).toContain("holdback spec");
+    expect(r.err).not.toContain("error:");
+    expect(io.closed).toBe(1);
+  });
+
+  it("prints Kane's design gaps, the variables a human filled and the imports Holdback repaired", async () => {
+    await fixture({ seal: false });
+    const ac = (id: string) => ({ id, text: `criterion ${id}`, useCase: "uc-2", cites: [], trust: "derived" as const });
+    const r = await cli(["spec"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async (_p, _io, logFn) => {
+        await logFn({
+          at,
+          t: "design",
+          useCase: "uc-2",
+          acs: [ac("ac-3")],
+          tests: [{ id: "t-3", title: "three", file: ".testmuai/tests/t3_test.md", verifies: ["ac-3"] }],
+          gaps: [
+            { id: "gap-1", title: "Pantry page URL", kind: "incomplete", acs: [], question: { header: "Pantry page URL", prompt: "What product URL should\n{{start_url}} contain?", options: [] } },
+            { id: "gap-2", title: "gap-2", kind: "gap", acs: [] },
+          ],
+          credits: 1,
+        });
+        await logFn({ at, t: "spec.repaired", file: ".testmuai/tests/t3_test.md", line: 12, from: "@import ./C:\\x\\t1_test.md", to: "@import ./t1_test.md" });
+        await logFn({ at, t: "spec.variables", names: ["primary_phone", "proxy_name"], filledBy: "human" });
+        await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Kane left 1 gap in its design (nothing tests it):");
+    expect(r.out).toContain("  gap-1 [incomplete] Pantry page URL: What product URL should {{start_url}} contain?");
+    expect(r.out).not.toContain("gap-2"); // its id alone says nothing
+    expect(r.out).toContain("Holdback repaired 1 broken import Kane wrote: .testmuai/tests/t3_test.md line 12 (@import ./t1_test.md).");
+    expect(r.out).toContain("You filled 2 test variables Kane left empty: primary_phone, proxy_name.");
+  });
+
+  it("--dashboard asks for test variables in the browser: a POST to /api/values fills them", async () => {
+    await fixture({ seal: false });
+    let filled: Record<string, string> | undefined;
+    const out: string[] = [];
+    const run = main(["spec", "--dashboard", "--port", "0"], {
+      cwd: appDir,
+      out: (l) => out.push(l),
+      err: () => {},
+      deps: {
+        env: {},
+        runSpecStage: async (_p, io, logFn) => {
+          filled = await io.values([{ name: "primary_phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] }]);
+          await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+        },
+      },
+    });
+    let m: RegExpExecArray | null = null;
+    for (let i = 0; i < 200 && !m; i++) {
+      for (const l of out) m ??= /http:\/\/127\.0\.0\.1:(\d+)\/#token=([0-9a-f]+)/.exec(l);
+      if (!m) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(m).not.toBeNull();
+    const base = `http://127.0.0.1:${m![1]}`;
+    const headers = { "x-holdback-token": m![2]! };
+    let state: { pending: { kind: string; sid: string }[] } = { pending: [] };
+    for (let i = 0; i < 200 && state.pending.length === 0; i++) {
+      state = (await (await fetch(`${base}/api/state`, { headers })).json()) as typeof state;
+      if (state.pending.length === 0) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(state.pending[0]?.kind).toBe("values");
+    const res = await fetch(`${base}/api/values`, { method: "POST", headers, body: JSON.stringify({ sid: state.pending[0]!.sid, values: { primary_phone: "2155550199" } }) });
+    expect(res.status).toBe(200);
+    expect(await run).toBe(0);
+    expect(filled).toEqual({ primary_phone: "2155550199" });
+  });
 });
 
 describe("--answers", () => {
@@ -583,6 +667,36 @@ describe("--answers", () => {
     stdin.write("yes\n");
     expect(await last).toBe(true);
     expect(stdin.isPaused()).toBe(true);
+  }, 10_000);
+
+  it("the terminal asks for each empty test variable: Enter takes Holdback's suggestion, a typed value replaces it, a secret is never shown", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    let shown = "";
+    stdout.on("data", (b: Buffer) => (shown += b.toString("utf8")));
+    const io = new CliHumanIO(stdin, stdout);
+    const got = io.values([
+      { name: "primary_phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1", "t-2"] },
+      { name: "primary_phone_formatted", description: "Same digits, punctuated.", secret: false, suggested: "(215) 555-0101", sameAs: "primary_phone", usedBy: ["t-2"] },
+      { name: "coupon", description: `A coupon code${String.fromCharCode(0x202e)}.`, secret: false, placeholder: "<coupon>", usedBy: ["t-3"] },
+      { name: "login_password", description: "Password of the test account.", secret: true, usedBy: ["t-4"] },
+    ]);
+    stdin.write("\n(215) 555 0101\nSAVE10\nhunter2\n");
+    expect(await got).toEqual({ primary_phone: "2155550101", primary_phone_formatted: "(215) 555 0101", coupon: "SAVE10", login_password: "hunter2" });
+    expect(shown).toContain("{{primary_phone}} Unused ten-digit phone. (used by t-1, t-2)");
+    expect(shown).toContain("value (Enter = 2155550101): ");
+    expect(shown).toContain("(same digits as primary_phone)");
+    expect(shown).toContain("value (no suggestion, e.g. <coupon>; Enter leaves it empty): ");
+    expect(shown).toContain("A coupon code\\u202E."); // Kane wrote it: escaped
+    expect(shown).toContain("value (secret: never printed or logged; Enter leaves it empty): ");
+    expect(shown).not.toContain("hunter2");
+
+    // an approval shows what Holdback did to a test, under it
+    const approved = io.approve([{ ref: "t-2", title: "two", kind: "test", note: "Holdback repaired a broken import Kane wrote (line 12): a -> b" }]);
+    stdin.write("\n");
+    expect(await approved).toEqual(["t-2"]);
+    expect(shown).toContain("  t-2 [test] two\n      Holdback repaired a broken import Kane wrote (line 12): a -> b\n");
+    io.close();
   }, 10_000);
 
   it("refuses an answers file inside the app folder, also through a linked folder, before anything runs", async () => {

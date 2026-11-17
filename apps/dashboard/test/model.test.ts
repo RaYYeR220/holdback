@@ -167,6 +167,33 @@ describe("timeline", () => {
     ]);
   });
 
+  it("shows Kane's design gaps with their kind and question, an import Holdback repaired, and the variables a human filled (names only)", () => {
+    const events = [
+      ev({
+        ...design(["ac-1"], [["t-1", ["ac-1"]]]),
+        gaps: [
+          { id: "gap-1", title: "Pantry page URL", kind: "incomplete", acs: [], question: { header: "Pantry page URL", prompt: "What product URL should {{start_url}} contain?", options: [] } },
+          { id: "gap-2", title: "Eight-person equality", kind: "budget-evicted", acs: [], question: { header: "Eight-person equality", prompt: "Raise the ceiling?", options: [] } },
+          { id: "gap-3", title: "gap-3", kind: "gap", acs: [] },
+        ],
+      }),
+      ev({ t: "spec.repaired", file: ".testmuai/tests/t2_test.md", line: 12, from: "@import ./C:\\x\\t1_test.md", to: "@import ./t1_test.md" }),
+      ev({ t: "spec.variables", names: ["primary_phone", "proxy_name"], filledBy: "human" }),
+    ];
+    const items = timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "spec");
+    expect(items).toMatchObject([
+      { title: "Kane designed uc-1: 1 criterion, 1 test" },
+      {
+        title: "Kane left 2 gaps in uc-1's design",
+        detail: "gap-1 [incomplete] Pantry page URL: What product URL should {{start_url}} contain? · gap-2 [budget-evicted] Eight-person equality: Raise the ceiling?",
+      },
+      { title: "Holdback repaired a broken import Kane wrote", detail: ".testmuai/tests/t2_test.md line 12: @import ./C:\\x\\t1_test.md -> @import ./t1_test.md" },
+      { title: "A human filled 2 test variables Kane left empty", detail: "primary_phone, proxy_name" },
+    ]);
+    // a design whose gaps carry nothing but an id (the first live run's) adds no row
+    expect(timeline([design(["ac-1"], [["t-1", ["ac-1"]]])]).flatMap((s) => s.items)).toHaveLength(1);
+  });
+
   it("shows Kane's evolve after a surviving planted bug as a loop event: minted, retired, the because and its credits (R40)", () => {
     const because = "A planted bug got past every test of this use case. ac-3: a household of 9 is held to the 8-person limit.";
     const events = [

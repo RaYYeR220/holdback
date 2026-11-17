@@ -237,6 +237,7 @@ function Approvals({ p, onSubmit }: { p: Extract<PendingPrompt, { kind: "approve
               <span className="appr-kind mono">{it.kind}</span>
               <span className="appr-t">{it.title}</span>
             </label>
+            {it.note && <span className="appr-note">{it.note}</span>}
           </li>
         ))}
       </ul>
@@ -254,22 +255,99 @@ function Approvals({ p, onSubmit }: { p: Extract<PendingPrompt, { kind: "approve
   );
 }
 
-export function HumanPanel({ pending, answer, approve }: { pending: PendingPrompt[]; answer: (sid: string, a: Record<string, string>) => Promise<void>; approve: (refs: string[]) => Promise<void> }) {
+function Values({ p, onSubmit }: { p: Extract<PendingPrompt, { kind: "values" }>; onSubmit: (values: Record<string, string>) => Promise<void> }) {
+  const [v, setV] = useState<Record<string, string>>(() => Object.fromEntries(p.vars.map((a) => [a.name, a.suggested ?? ""])));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const ready = p.vars.every((a) => (v[a.name] ?? "").trim() !== "");
+  return (
+    <form
+      className="hp-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ready || busy) return;
+        setBusy(true);
+        setErr(null);
+        onSubmit(v)
+          .catch((x: unknown) => setErr(x instanceof Error ? x.message : String(x)))
+          .finally(() => setBusy(false));
+      }}
+    >
+      <div className="vars">
+        {p.vars.map((a) => (
+          <label key={a.name} className="var">
+            <span className="var-d">
+              <span className="tag">{a.name}</span>
+              {a.description}
+              <span className="var-u">
+                used by {a.usedBy.join(", ")}
+                {a.sameAs && ` · same digits as ${a.sameAs}`}
+                {a.suggested !== undefined && " · Holdback suggests a test value"}
+                {a.secret && " · secret: never shown or logged"}
+              </span>
+            </span>
+            <input
+              type={a.secret ? "password" : "text"}
+              aria-label={a.name}
+              autoComplete="off"
+              spellCheck={false}
+              value={v[a.name] ?? ""}
+              placeholder={a.placeholder ?? ""}
+              onChange={(e) => setV({ ...v, [a.name]: e.target.value })}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="hp-actions">
+        <button type="submit" className="btn" disabled={!ready || busy}>
+          <i aria-hidden="true" />
+          {busy ? "Saving…" : `Save ${p.vars.length === 1 ? "value" : `${p.vars.length} values`}`}
+        </button>
+        {err && <p className="hp-err" role="alert">{err}</p>}
+      </div>
+    </form>
+  );
+}
+
+const HEADS: Record<PendingPrompt["kind"], { h: string; p: string }> = {
+  answer: { h: "Kane is waiting for your answers", p: "The run is paused until you answer. Your answers go to Kane." },
+  approve: { h: "Kane is waiting for your approval", p: "Approve what Kane designed before Holdback seals it. Anything you leave unticked is rejected." },
+  values: {
+    h: "Kane's tests need values",
+    p: "Kane's tests type these values, and Kane left them empty. Holdback suggests test values where it can: check or edit each. Nothing is sealed with an empty one.",
+  },
+};
+
+export function HumanPanel({
+  pending,
+  answer,
+  approve,
+  values,
+}: {
+  pending: PendingPrompt[];
+  answer: (sid: string, a: Record<string, string>) => Promise<void>;
+  approve: (refs: string[]) => Promise<void>;
+  values: (sid: string, v: Record<string, string>) => Promise<void>;
+}) {
   if (pending.length === 0) return null;
   const p = pending[0]!;
   return (
     <section className="human" aria-labelledby="human-h" data-testid="human">
       <div className="hp-head">
         <span className="hp-dot" aria-hidden="true" />
-        <h2 id="human-h">{p.kind === "answer" ? "Kane is waiting for your answers" : "Kane is waiting for your approval"}</h2>
+        <h2 id="human-h">{HEADS[p.kind].h}</h2>
         <p>
-          {p.kind === "answer"
-            ? "The run is paused until you answer. Your answers go to Kane."
-            : "Approve what Kane designed before Holdback seals it. Anything you leave unticked is rejected."}
+          {HEADS[p.kind].p}
           {pending.length > 1 && ` ${pending.length - 1} more waiting after this one.`}
         </p>
       </div>
-      {p.kind === "answer" ? <Questions key={p.sid} p={p} onSubmit={(a) => answer(p.sid, a)} /> : <Approvals key={p.sid} p={p} onSubmit={approve} />}
+      {p.kind === "answer" ? (
+        <Questions key={p.sid} p={p} onSubmit={(a) => answer(p.sid, a)} />
+      ) : p.kind === "values" ? (
+        <Values key={p.sid} p={p} onSubmit={(v) => values(p.sid, v)} />
+      ) : (
+        <Approvals key={p.sid} p={p} onSubmit={approve} />
+      )}
     </section>
   );
 }
