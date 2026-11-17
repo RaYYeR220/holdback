@@ -10,6 +10,7 @@ import {
   reconcile,
   resumeSession,
   review,
+  gapsOf,
   type ListedNode,
   type ReconcileRow,
 } from "../kane/assurance.js";
@@ -323,7 +324,7 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
         const kaneAcs = g.acs.filter((a) => a.useCase === uc);
         const kaneIds = new Set(kaneAcs.map((a) => a.id));
         const notes = designNotes(kaneAcs, g.tests.filter((t) => t.verifies.some((v) => kaneIds.has(v))), p.config.kane.designMax, rejected);
-        designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.design.get(uc) ?? 0, ...(notes ? { notes } : {}) });
+        designs.push({ t: "design", useCase: uc, acs, tests, gaps: gapsOf(g, uc), credits: credits.design.get(uc) ?? 0, ...(notes ? { notes } : {}) });
       }
       // the seal hashes whatever is on disk: every test byte Kane wrote must be one the human approved
       const approvedFiles = new Set(

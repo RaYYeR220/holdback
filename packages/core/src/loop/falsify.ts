@@ -6,7 +6,7 @@ import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
-import { balance, evolve, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
+import { balance, evolve, gapsOf, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
 import { inconclusiveNote, killsAc, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 
 export { killsAc };
@@ -923,7 +923,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       useCase: uc,
       acs,
       tests,
-      gaps: g.gaps,
+      gaps: gapsOf(g, uc),
       credits: 0,
       ...(rejected.length > 0 ? { rejected } : {}),
       ...(Object.keys(notes).length > 0 ? { notes } : {}),

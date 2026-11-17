@@ -211,6 +211,60 @@ describe("readGraph", () => {
     expect(argvs()[0]).toEqual(["context", "view", "--json"]);
   });
 
+  it("reads each gap's kind and question from Kane's store, not the view's \"[object Object]\" title", async () => {
+    seed();
+    useFixture(fx("context-view.json"));
+    const g = await readGraph(cwd);
+    expect(g.gaps[0]).toEqual({
+      id: "gap-1",
+      title: "Missing inputs",
+      kind: "incomplete",
+      acs: [],
+      useCase: "uc-1",
+      question: {
+        header: "Missing inputs",
+        prompt: "What should happen when household size or monthly income is missing or invalid, including when SNAP is selected?",
+        options: [
+          { label: "Specify validation", detail: "Supply the validation and SNAP-path required-field rules before adding negative-input scenarios." },
+          expect.objectContaining({ label: "Valid inputs only" }),
+        ],
+      },
+    });
+    expect(g.gaps.map((x) => [x.kind, x.title])).toEqual([
+      ["incomplete", "Missing inputs"],
+      ["budget-evicted", "Eight-person equality"],
+      ["budget-evicted", "Below-limit household"],
+      ["incomplete", "Pantry page URL"],
+    ]);
+  });
+
+  it("takes a gap from Kane's derived node file too, options given as plain strings (the second live run)", async () => {
+    // no commits: the view's gap-1 cid, as Kane 0.10.4 keeps it under .context/derived/nodes/<2>/<rest>.json
+    const cid = "26a26591d65020433b9456f3a967330333a1f11640c7c1d00e26189a3884d46d";
+    mkdirSync(join(cwd, ".context", "derived", "nodes", cid.slice(0, 2)), { recursive: true });
+    writeFileSync(
+      join(cwd, ".context", "derived", "nodes", cid.slice(0, 2), `${cid.slice(2)}.json`),
+      JSON.stringify({
+        label: "gap",
+        content: {
+          kind: "budget-evicted",
+          question: { header: "today end availability", prompt: "Raise the six-pair ceiling?", options: ["Keep the six-pair limit", "Raise the ceiling"], recommended_index: 0 },
+        },
+      }),
+    );
+    useFixture(fx("context-view.json"));
+    const g = await readGraph(cwd);
+    expect(g.gaps[0]).toEqual({
+      id: "gap-1",
+      title: "today end availability",
+      kind: "budget-evicted",
+      acs: [],
+      question: { header: "today end availability", prompt: "Raise the six-pair ceiling?", options: [{ label: "Keep the six-pair limit" }, { label: "Raise the ceiling" }] },
+    });
+    // a gap Kane keeps nothing for keeps the old shape
+    expect(g.gaps[1]).toEqual({ id: "gap-2", title: "gap-2", kind: "gap", acs: [] });
+  });
+
   it("refuses two test files that claim one test id: a stale file must never shadow a re-designed one (M5)", async () => {
     seed();
     cpSync(join(fx("tests"), "inclusive-limits-and-published-household-size-schedule_test.md"), join(cwd, ".testmuai", "tests", "inclusive-limits-and-published-household-size-schedule_test.md"));
