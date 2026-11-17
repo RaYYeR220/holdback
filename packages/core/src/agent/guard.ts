@@ -29,23 +29,21 @@ function msys(n: string): string | undefined {
 }
 
 /**
- * True when `needle` occurs in `text` (both lowercased, `/` slashes) as a path segment or a whole
- * key: with no identifier character (a letter, a digit, `_`) right before it or right after it. A
- * path spells `.holdback` after a separator, a quote, a space, `=` or `~/`; app code that only
- * contains the name (`process.env.HOLDBACK_TODAY`, `cfg.testmuai_id`) is no path to it. Live demo,
- * 2026-11-17: a plain substring match denied the agent the env var its STACK.md asks the app to read.
+ * True when `needle` occurs in `text` (both lowercased, `/` slashes) and the character right after
+ * it is not a letter, a digit or `_`: an identifier that only starts with the name
+ * (`process.env.HOLDBACK_TODAY`, `env.holdback_now`, `obj.testmuai_id`) is another name, not a path
+ * to the folder. Live demo, 2026-11-17: a plain substring match denied the code the agent wrote the
+ * env var its STACK.md asks the app to read. Whatever comes before the needle is never looked at: a
+ * path can follow anything (`-C.holdback`, `$D.holdback`, `/cygdrive/c/…`, `-ccore.hookspath`).
  */
 function hasSegment(text: string, needle: string): boolean {
-  const id = /[a-z0-9_]/;
   for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1)) {
-    const before = i > 0 ? text[i - 1]! : "";
-    const after = text[i + needle.length] ?? "";
-    if (!id.test(before) && !id.test(after)) return true;
+    if (!/[a-z0-9_]/.test(text[i + needle.length] ?? "")) return true;
   }
   return false;
 }
 
-/** Holdback's and Kane's folders, by name and by Holdback's own paths: matched as path segments (`hasSegment`). */
+/** Holdback's and Kane's folders, by name and by Holdback's own paths (`hasSegment`). */
 function needles(ctx: GuardContext): string[] {
   const out = new Set<string>([".holdback", ".testmuai"]);
   for (const p of [ctx.home, ctx.verifierDir]) {
@@ -101,7 +99,7 @@ const HOLDBACK_ENTRY = /(?:^|[/\\])(?:cli|holdback)[/\\]dist[/\\]index\.[cm]?js$
 /** Subcommands only the human runs. `status` and `owed` only read, and stay open to the agent. */
 const HUMAN_COMMANDS = new Set(["reseal", "spec", "run", "drift", "watch", "init", "clean", "serve", "hook"]);
 
-/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes; matched as path segments or whole keys). */
+/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes; `hasSegment`). */
 const GIT_INTERNALS = [".git/hooks", ".git/config", "core.hookspath"];
 
 // References to the user's home directory from a shell. A tilde must stand alone as a word.

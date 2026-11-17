@@ -46,28 +46,34 @@ describe("guardDecision", () => {
   });
 });
 
-describe("the guard's names match as path segments, never inside an identifier (live demo, 2026-11-17)", () => {
+describe("a guard name followed by a letter, digit or `_` is no match (live demo, 2026-11-17)", () => {
   // the demo's turn 1 was denied `process.env.HOLDBACK_TODAY`, which STACK.md asks the app to read
   const write = (content: string) => denied("Write", { file_path: "src/server.js", content });
   it("still denies Holdback's and Kane's folders, however a path spells them", () => {
-    for (const s of ["cat ~/.holdback/x", "type C:\\Users\\u\\.holdback\\v", "cat .testmuai/tests/a.md", 'const dir = "$HOME/.holdback";', "x=.holdback", "ls ./.TestMuai", "p = '.holdback'"]) {
+    for (const s of ["cat ~/.holdback/x", "type C:\\Users\\u\\.holdback\\v", "cat .testmuai/tests/a.md", 'const dir = "$HOME/.holdback";', "x=.holdback", "ls ./.TestMuai", "p = '.holdback'", "const t = cfg.holdback;"]) {
       expect(write(s), s).toBe(true);
       expect(denied("Bash", { command: s }), s).toBe(true);
     }
     expect(denied("Read", { file_path: "C:\\Users\\u\\.holdback\\v\\verifier\\a.md" })).toBe(true);
     expect(guardPayload({ tool_name: "Write", tool_input: { file_path: "a.js", content: "require('fs').readFileSync('/home/u/.testmuai/x')" } }, ctx).allow).toBe(false);
   });
-  it("allows an identifier that only contains the name: an env var or a property", () => {
-    for (const s of ["const today = process.env.HOLDBACK_TODAY;", "const now = env.holdback_now;", "id = myobj.testmuai_id;", "const t = cfg.holdback;"]) {
+  it("whatever comes before the name: an option glued to it, a variable, another root (review of the first fix)", () => {
+    for (const c of ["make -C.holdback/abc", "sed -f.holdback/x a.txt", "cat $D.holdback/v/a.md", "tar -C.testmuai -xf a.tar"]) expect(denied("Bash", { command: c }), c).toBe(true);
+    expect(denied("PowerShell", { command: 'Get-Content "$d.holdback\\v\\a.md"' })).toBe(true);
+    const custom = { home: "C:\\hb\\p1", verifierDir: "C:\\hb\\p1\\verifier" };
+    for (const c of ["cat /cygdrive/c/hb/p1/verifier/a.md", "cat /mnt/c/hb/p1/verifier/a.md"]) expect(denied("Bash", { command: c }, custom), c).toBe(true);
+  });
+  it("allows an identifier that only starts with the name: an env var or a property", () => {
+    for (const s of ["const today = process.env.HOLDBACK_TODAY;", "const now = env.holdback_now;", "id = myobj.testmuai_id;"]) {
       expect(write(s), s).toBe(false);
       expect(guardPayload({ tool_name: "Write", tool_input: { file_path: "src/server.js", content: s } }, ctx), s).toEqual({ allow: true });
     }
     expect(denied("Bash", { command: 'node -e "console.log(process.env.HOLDBACK_TODAY, process.env.HOLDBACK_NOW)"' })).toBe(false);
   });
-  it("the git internals match the same way: another repo's .git or a longer key is not this repo's", () => {
-    for (const c of ["cat .git/config", "cat ./.git/hooks/pre-commit", "git -c core.hooksPath=/x status", "cat .git/config.worktree", "GIT_CONFIG_KEY_0=core.hooksPath git status"])
+  it("the git internals match the same way: only a longer name after them is another one", () => {
+    for (const c of ["cat .git/config", "cat ./.git/hooks/pre-commit", "git -c core.hooksPath=/x status", "git -ccore.hookspath=/x status", "cat .git/config.worktree", "GIT_CONFIG_KEY_0=core.hooksPath git status"])
       expect(denied("Bash", { command: c }), c).toBe(true);
-    for (const c of ["cat vendor/repo.git/config", "grep mycore.hooksPath notes.txt", "ls .git/hooksbackup"]) expect(denied("Bash", { command: c }), c).toBe(false);
+    expect(denied("Bash", { command: "ls .git/hooksbackup" })).toBe(false);
   });
 });
 
