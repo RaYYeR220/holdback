@@ -116,7 +116,7 @@ You need Node 24, pnpm 9, git, Kane CLI 0.10.4 or later (logged in, with credits
 
 ```sh
 holdback init    # in your app's folder: a git repository with PRD.md
-holdback spec    # answer Kane's questions and approve its criteria
+holdback spec    # answer Kane's questions, approve its criteria, fill the test variables it left empty
 holdback run     # build, check, falsify
 ```
 
