@@ -93,7 +93,8 @@ function stallOf(state: LedgerState, turns: number[]): Stall {
 /**
  * True when the guard recorded an Edit or Write of the agent's in this turn to a git-ignored file of
  * the app: a change git does not see (a tracked file's change shows in the turn's commit). A path
- * outside the app, under `.git`, the config or a spec file never counts. (The hook runs before the
+ * outside the app, under `.git`, the config or a spec file never counts (case aside on win32 and
+ * darwin); a path git cannot check counts. (The hook runs before the
  * call, so an edit that then failed still counts: a stall waits a turn longer, never a change missed.)
  */
 async function agentEdited(p: Project, gitOpts: GitOptions): Promise<boolean> {
@@ -103,8 +104,10 @@ async function agentEdited(p: Project, gitOpts: GitOptions): Promise<boolean> {
   } catch {
     return false;
   }
+  // win32 and darwin file systems ignore case: `.GIT/config`, `PRD.MD` are the same files there
+  const fold = process.platform === "win32" || process.platform === "darwin" ? (f: string) => f.toLowerCase() : (f: string) => f;
   const inApp = (f: string) => path.relative(p.appDir, path.resolve(p.appDir, f)).split(path.sep).join("/");
-  const own = new Set(["holdback.config.json", ...p.config.spec].map(inApp));
+  const own = new Set(["holdback.config.json", ...p.config.spec].map((f) => fold(inApp(f))));
   const rels: string[] = [];
   for (const line of text.split("\n")) {
     let rec: unknown;
@@ -117,13 +120,24 @@ async function agentEdited(p: Project, gitOpts: GitOptions): Promise<boolean> {
     if (typeof f !== "string" || f === "") continue;
     const slashed = inApp(f);
     if (slashed === "" || slashed === ".." || slashed.startsWith("../") || path.isAbsolute(slashed)) continue;
-    if (slashed === ".git" || slashed.startsWith(".git/") || own.has(slashed)) continue;
+    const key = fold(slashed);
+    if (key === ".git" || key.startsWith(".git/") || own.has(key)) continue;
     rels.push(slashed);
   }
   if (rels.length === 0) return false;
-  // `git check-ignore` exits 0 when at least one of them is ignored
-  const r = await git(p.appDir, ["check-ignore", "-q", "--", ...new Set(rels)], gitOpts);
-  return r.code === 0;
+  // `git check-ignore` prints each ignored path (exit 0), none (exit 1), or fails (128: `-q` takes one
+  // path only, and one path it rejects, such as pathspec magic, fails them all). A failure is a change:
+  // a stall is never premature. After a failure, each path is checked on its own
+  const ignored = async (paths: string[]): Promise<boolean | undefined> => {
+    const r = await git(p.appDir, ["check-ignore", "--", ...paths], gitOpts);
+    if (r.code === 0) return r.stdout.trim() !== "";
+    return r.code === 1 ? false : undefined;
+  };
+  const unique = [...new Set(rels)];
+  const all = await ignored(unique);
+  if (all !== undefined) return all;
+  for (const f of unique) if ((await ignored([f])) !== false) return true;
+  return false;
 }
 
 /**

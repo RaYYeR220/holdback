@@ -303,6 +303,46 @@ describe("a stalled build loop: the agent changes nothing on code Kane checked (
     expect(calls.stops).toBe(calls.starts);
   });
 
+  it("several ignored files in one turn count, and a path git rejects counts as a change too: a stall is never premature", async () => {
+    await setup({ config: { loop: { maxTurns: 3 } } });
+    writeFileSync(join(appDir, ".gitignore"), ".env\n.env.local\n");
+    const record = (...paths: string[]) => {
+      for (const f of paths) appendFileSync(join(p.home, "agent-edits.log"), JSON.stringify({ tool: "Write", path: f }) + "\n");
+    };
+    const { deps, calls } = fakes({
+      edit: (turn) => {
+        if (turn === 1) writeFileSync(join(appDir, "app.js"), "// turn 1\n");
+        // two ignored files and one path git rejects (pathspec magic it does not take)
+        if (turn === 2) record(".env", ".env.local", ":!x");
+        // a rejected path alone: git cannot say, so it is a change
+        if (turn === 3) record(":!x");
+      },
+      kane: (_t, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))),
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, reason: "max-turns" });
+    expect([...new Set(calls.tests.map((t) => t.turn))]).toEqual([1, 2, 3]);
+    expect(calls.stops).toBe(calls.starts);
+  });
+
+  it("a spec file is left out however a case-insensitive file system spells it, though git ignores it", async () => {
+    // an untracked spec file that git ignores: only the exclusion keeps an edit of it from counting
+    await setup({ config: { spec: ["PRD.md", "Notes.md"] } });
+    writeFileSync(join(appDir, ".gitignore"), "notes.md\n");
+    const { deps, calls } = fakes({
+      edit: (turn) => {
+        if (turn === 1) writeFileSync(join(appDir, "app.js"), "// turn 1\n");
+        else appendFileSync(join(p.home, "agent-edits.log"), JSON.stringify({ tool: "Edit", path: "NOTES.MD" }) + "\n");
+      },
+      kane: (_t, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))),
+    });
+    const r = await runBuildLoop(p, deps, log);
+    // on win32 and darwin NOTES.MD is the spec (and git, ignoring case, would call it ignored); elsewhere
+    // it is another file, which git does not ignore: either way no change, and the loop stalls
+    expect(r).toMatchObject({ reason: "stalled", turns: 3 });
+    expect(calls.stops).toBe(calls.starts);
+  });
+
   it("an Edit the guard recorded counts as a change though git sees none (a git-ignored file), and so does a commit the agent made itself", async () => {
     await setup({ config: { loop: { maxTurns: 3 } } });
     writeFileSync(join(appDir, ".gitignore"), ".env\n");
