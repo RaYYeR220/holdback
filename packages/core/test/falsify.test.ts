@@ -133,7 +133,7 @@ const testNodes = (): TestNode[] => [
 ];
 
 /** App repo (one commit, a node_modules dir outside git) + verifier with t-1/t-3 + a ledger where ac-1 and ac-3 pass. */
-async function setup(opts: { before?: () => Promise<void>; config?: object } = {}) {
+async function setup(opts: { before?: () => Promise<void>; config?: object; vars?: object } = {}) {
   appDir = join(root, "app");
   mkdirSync(join(appDir, "src"), { recursive: true });
   mkdirSync(join(appDir, "node_modules", "dep"), { recursive: true });
@@ -158,7 +158,7 @@ async function setup(opts: { before?: () => Promise<void>; config?: object } = {
   copyFileSync(join(fxTests, "non-snap-household-above-2-461-is-not-eligible_test.md"), T3);
   const vars = join(p.verifierDir, ".testmuai", "variables", "assurance.json");
   mkdirSync(dirname(vars), { recursive: true });
-  writeFileSync(vars, JSON.stringify({ start_url: { value: "http://127.0.0.1:3100/" } }));
+  writeFileSync(vars, JSON.stringify({ start_url: { value: "http://127.0.0.1:3100/" }, ...opts.vars }));
   await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests: testNodes(), gaps: [], credits: 12 });
   await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
   await greenTurn(1);
@@ -747,6 +747,52 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     const sealEv = all.filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>;
     expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
     expect((await checkRecordingsAnchor(p, all)).moved).toEqual([]);
+  });
+
+  /** Kane's evolve: t-4 minted for uc-1 (its body typing `body`), t-1 and t-3 retired. */
+  const mintsTyping = (body: string) => (_n: number, kit: EvolveKit) => (kit.mint("t-4", ["ac-1", "ac-3"]), appendFileSync(testFile("t-4"), `${body}\n`), kit.retire("t-1", "t-3"), EVOLVED);
+  const varsFile = () => join(p.verifierDir, ".testmuai", "variables", "assurance.json");
+
+  it("Kane's new test types an empty variable: Holdback fills its suggestion with no human, logs it as suggested, and Kane's seal holds it (R46)", async () => {
+    await setup({ vars: { guest_phone: { value: "", secret: false, description: "Unused ten-digit phone." } } });
+    const since = (await readEvents(p.ledgerFile)).length;
+    const { deps, io } = fakes({ mutantRun: survives3, evolve: mintsTyping("Type {{guest_phone}}.") });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: ["uc-1"], vacuous: [], reason: "done" });
+    const ev = await after(since);
+    const t = ev.map((e) => e.t);
+    expect(t.slice(t.indexOf("falsify.evolved"), t.indexOf("seal") + 1)).toEqual(["falsify.evolved", "spec.variables", "design", "seal"]);
+    expect(ev.find((e) => e.t === "spec.variables")).toEqual({ at: expect.any(String), t: "spec.variables", names: ["guest_phone"], filledBy: "suggested" });
+    expect(JSON.parse(readFileSync(varsFile(), "utf8")).guest_phone).toEqual({ value: "2155550101", secret: false, description: "Unused ten-digit phone." });
+    const sealEv = ev.find((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
+    expect(sealEv.by).toBe("kane");
+    expect(await checkSeal(p.verifierDir, (ev.filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>).manifest, appDir)).toEqual([]);
+    expect(ev.some((e) => e.t === "tamper" || e.t === "falsify.evolve.stray")).toBe(false);
+  });
+
+  it.each([
+    ["an empty secret", "login_password", { value: "", secret: true, description: "Password of the test account." }],
+    ["a variable Holdback has no value for", "coupon", { value: "", secret: false, description: "A coupon code the shop accepts." }],
+  ] as const)("Kane's new test types %s: nothing is sealed, and the criterion stays vacuous with why (R46)", async (_what, name, decl) => {
+    {
+      await setup({ vars: { [name]: decl } });
+      const varsBefore = readFileSync(varsFile(), "utf8");
+      const since = (await readEvents(p.ledgerFile)).length;
+      const { deps, io, calls } = fakes({ mutantRun: survives3, evolve: mintsTyping(`Use {{${name}}}.`) });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: [], vacuous: ["ac-3"], reason: "done" });
+      expect(calls.evolve).toHaveLength(1);
+      const why = `Kane's new test needs a value only you can give: ${name}`;
+      const ev = await after(since);
+      expect(ev.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 11.39, acs: ["ac-3"], reason: why });
+      expect(ev.some((e) => e.t === "falsify.evolved" || e.t === "spec.variables" || (e.t === "seal" && e.by === "kane"))).toBe(false);
+      expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: why });
+      // rolled back: Kane's new test is gone, the variables file is as sealed
+      expect(existsSync(testFile("t-4"))).toBe(false);
+      expect(readFileSync(varsFile(), "utf8")).toBe(varsBefore);
+      const sealEv = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").pop() as Extract<LedgerEvent, { t: "seal" }>;
+      expect(await checkSeal(p.verifierDir, sealEv.manifest, appDir)).toEqual([]);
+    }
   });
 
   /** Kane's own graph store in the verifier, file by file (hex), and its folders. */

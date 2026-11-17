@@ -26,6 +26,7 @@ import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js"
 import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed, stateDiffersFrom, verifierDiffersFrom } from "./falsify.js";
 import type { HumanIO } from "./human.js";
+import { fillVariables, liveTests, VariablesMissing, VariablesUnchecked } from "./variables.js";
 import {
   appPinOf,
   appMovedFrom,
@@ -334,6 +335,15 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
       if (unapproved.length > 0) throw new DriftDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
       const moved = await recordingsMoved();
       if (moved.length > 0) throw new DriftTamper(`${moved.join(", ")} changed while Kane ran`);
+      // R46, the variables gate: no live test is sealed typing a variable Kane left empty. The human gives
+      // each one a value; one left empty (or a test Holdback finds no file for) drops the drift
+      const stamp = new Date().toISOString();
+      try {
+        await fillVariables(cwd, liveTests([...events, ...designs.map((d) => ({ at: stamp, ...d }) as LedgerEvent)]), io, emit);
+      } catch (e) {
+        if (e instanceof VariablesMissing || e instanceof VariablesUnchecked) throw new DriftDropped(e.message);
+        throw e;
+      }
       // what is sealed next is what the human reviewed and the config as drift found it (N-I2, I-1):
       // a config that moved is a tamper; a spec that moved is not re-planned. Checked before Kane
       // hears of the approval, and again after it, right before the events and the seal

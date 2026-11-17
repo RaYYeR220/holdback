@@ -9,7 +9,7 @@ import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { runDrift, watchSpec, type DriftKane } from "../src/loop/drift.js";
-import type { ApprovalItem, HumanIO } from "../src/loop/human.js";
+import type { ApprovalItem, HumanIO, VariableAsk } from "../src/loop/human.js";
 import { reseal } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
 import { checkSeal } from "../src/seal.js";
@@ -48,7 +48,7 @@ afterEach(() => {
 const editPrd = () => writeFileSync(join(p.appDir, "PRD.md"), "# PRD\n\nRule 1.\nRule 2.\n");
 
 type Calls = string[];
-type FakeOpts = { rows?: ReconcileRow[]; nodes?: ListedNode[]; extraFiles?: boolean };
+type FakeOpts = { rows?: ReconcileRow[]; nodes?: ListedNode[]; extraFiles?: boolean; /** What Kane writes in t-2's file. */ t2?: string };
 const MODIFY: ReconcileRow = { kind: "MODIFY", ref: "uc-1", why: "rule 2 added" };
 
 function fakeKane(calls: Calls, o: FakeOpts = {}): DriftKane {
@@ -69,7 +69,7 @@ function fakeKane(calls: Calls, o: FakeOpts = {}): DriftKane {
     },
     designTests: async (cwd, uc, opt) => {
       calls.push(`design:${uc}:${opt.force ? "force" : "plain"}`);
-      writeFileSync(join(cwd, T2), "t-2 body");
+      writeFileSync(join(cwd, T2), o.t2 ?? "t-2 body");
       if (o.extraFiles) writeFileSync(join(cwd, T3), "t-3 body");
       return { status: "complete", tests: ["t-2"], acs: ["ac-2"], gaps: [], variables: [], credits: 2, next: [] };
     },
@@ -161,6 +161,46 @@ describe("runDrift", { timeout: 60_000 }, () => {
     }
     // the terminal or the dashboard, or a yes typed in the terminal: a checkpoint; an answers file alone: not
     expect(seals).toEqual([true, true, undefined]);
+  });
+
+  describe("the variables gate runs before drift's seal too (R46)", () => {
+    const vars = () => join(p.verifierDir, ".testmuai", "variables", "assurance.json");
+    /** A variable Kane declared empty, sealed so, and a re-designed t-2 that types it. */
+    const declared = async () => {
+      mkdirSync(join(p.verifierDir, ".testmuai", "variables"), { recursive: true });
+      writeFileSync(vars(), JSON.stringify({ guest_phone: { value: "", secret: false, description: "Unused ten-digit phone." } }, null, 2));
+      await reseal(p, log);
+      editPrd();
+    };
+
+    it("asks the human for an empty variable the new tests type, writes it and seals it", async () => {
+      await declared();
+      const calls: Calls = [];
+      let asked: VariableAsk[] = [];
+      const io: HumanIO = { ...human(calls, all), values: async (a) => ((asked = a), { guest_phone: a[0]!.suggested! }) };
+      expect(await runDrift(p, io, log, { kane: fakeKane(calls, { t2: "Type {{guest_phone}}." }) })).toEqual({ changed: true, applied: true });
+      expect(asked.map((a) => [a.name, a.suggested, a.usedBy])).toEqual([["guest_phone", "2155550101", ["t-2"]]]);
+      expect(JSON.parse(readFileSync(vars(), "utf8")).guest_phone.value).toBe("2155550101");
+      const events = await readEvents(p.ledgerFile);
+      expect(events.find((e) => e.t === "spec.variables")).toMatchObject({ names: ["guest_phone"], filledBy: "human" });
+      expect(events.at(-1)?.t).toBe("seal");
+      expect(await checkSeal(p.verifierDir, (await sealed()).manifest, p.appDir)).toEqual([]);
+    });
+
+    it("one left empty drops the drift: the verifier is rolled back, nothing is sealed, and the reason names it", async () => {
+      await declared();
+      const sealsBefore = (await readEvents(p.ledgerFile)).filter((e) => e.t === "seal").length;
+      const calls: Calls = [];
+      const io: HumanIO = { ...human(calls, all), values: async () => ({}) };
+      const r = await runDrift(p, io, log, { kane: fakeKane(calls, { t2: "Type {{guest_phone}}." }) });
+      expect(r).toMatchObject({ changed: true, applied: false, reason: expect.stringContaining("guest_phone") });
+      const events = await readEvents(p.ledgerFile);
+      expect(events.filter((e) => e.t === "seal")).toHaveLength(sealsBefore);
+      expect(events.at(-1)).toMatchObject({ t: "redesign.dropped", useCases: ["uc-1"], detail: expect.stringContaining("guest_phone") });
+      expect(JSON.parse(readFileSync(vars(), "utf8")).guest_phone.value).toBe("");
+      expect(existsSync(join(p.verifierDir, T2))).toBe(false);
+      await verifierClean();
+    });
   });
 
   it("reads the Kane source id from the ledger, never from the file name", async () => {

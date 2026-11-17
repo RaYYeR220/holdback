@@ -31,10 +31,12 @@ export type LedgerEvent = { at: string } & (
   /** The spec stage's extraction finished for the spec files and links as they hash to `hash`: a resumed stage need not ingest again. */
   | { t: "spec.extracted"; hash: string }
   /**
-   * The spec stage's variables gate: a human gave values to the test variables `names`, which Kane
-   * declared empty and an approved test types. Names only: a value never goes on the ledger.
+   * The variables gate (R46): the test variables `names`, which Kane declared empty and a test about
+   * to be sealed types, got values. `human`: a human gave them (the spec stage, a drift); `suggested`:
+   * Holdback wrote its own suggestions, with no human there (Kane's evolve). Names only: a value never
+   * goes on the ledger.
    */
-  | { t: "spec.variables"; names: string[]; filledBy: "human" }
+  | { t: "spec.variables"; names: string[]; filledBy: "human" | "suggested" }
   /**
    * Holdback rewrote an `@import` line Kane wrote with an absolute path after `./` (`file` relative to
    * the verifier, `line` 1-based) to the file of that name next to it, before the test approval.

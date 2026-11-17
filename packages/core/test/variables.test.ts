@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HumanIO, VariableAsk } from "../src/loop/human.js";
-import { emptyVariables, fillVariables, suggestValues, VariablesMissing } from "../src/loop/variables.js";
-import { lintImports } from "../src/loop/imports.js";
+import { emptyVariables, fillSuggested, fillVariables, suggestValues, VariablesMissing, VariablesUnchecked } from "../src/loop/variables.js";
+import { lintImports, type ImportRepair } from "../src/loop/imports.js";
 import type { EventBody } from "../src/ledger/vouched.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -205,5 +205,85 @@ describe("lintImports (Kane 0.10.4 on Windows)", () => {
   it("no tests folder: nothing to lint", async () => {
     rmSync(tests, { recursive: true });
     expect(await lintImports(verifier)).toEqual({ repaired: [], broken: [] });
+  });
+
+  it("an absolute path after ./ it cannot repair is broken even when that absolute path exists: testmd run never resolves it (fix round 1)", async () => {
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "base_test.md"), "# base\n");
+    const text = `---\nassurance:\n  id: t-5\n---\n# t-5\n\n@import ./${join(elsewhere, "base_test.md")}\n`;
+    writeFileSync(join(tests, "five_test.md"), text);
+    const r = await lintImports(verifier);
+    expect(r.repaired).toEqual([]);
+    expect(r.broken).toEqual([{ file: ".testmuai/tests/five_test.md", test: "t-5", line: 7, target: `./${join(elsewhere, "base_test.md")}` }]);
+    expect(readFileSync(join(tests, "five_test.md"), "utf8")).toBe(text);
+  });
+
+  it("tells the caller of each repair before the file is written, so the record comes first (fix round 1)", async () => {
+    writeFileSync(join(tests, "base_test.md"), "# base\n");
+    writeFileSync(join(tests, "two_test.md"), "---\nassurance:\n  id: t-2\n---\n# two\n\n@import ./C:\\x\\verifier\\.testmuai\\tests\\base_test.md\n");
+    const seen: { r: ImportRepair; onDisk: string }[] = [];
+    const r = await lintImports(verifier, async (rep) => void seen.push({ r: rep, onDisk: readFileSync(join(tests, "two_test.md"), "utf8") }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.r).toEqual(r.repaired[0]);
+    expect(seen[0]!.onDisk).toContain("@import ./C:\\x\\");
+    expect(readFileSync(join(tests, "two_test.md"), "utf8")).toContain("\n@import ./base_test.md\n");
+    // a record that cannot be written stops the repair: the file stays as Kane wrote it
+    writeFileSync(join(tests, "two_test.md"), "---\nassurance:\n  id: t-2\n---\n# two\n\n@import ./C:\\x\\base_test.md\n");
+    await expect(lintImports(verifier, async () => Promise.reject(new Error("ledger unwritable")))).rejects.toThrow("ledger unwritable");
+    expect(readFileSync(join(tests, "two_test.md"), "utf8")).toContain("@import ./C:\\x\\base_test.md");
+  });
+});
+
+describe("fail closed and automatic fills (fix round 1)", () => {
+  it("only a person's name gets a test name: any other name gets a placeholder", () => {
+    const s = suggestValues([
+      { name: "product_name", description: "Name of the product to search for.", secret: false },
+      { name: "file_label", description: "A name for the uploaded file.", secret: false },
+      { name: "contact", description: "The contact's full name.", secret: false },
+      { name: "first_name", description: "Given name on the form.", secret: false },
+    ]);
+    expect(s.product_name).toEqual({ placeholder: "<product_name>" });
+    expect(s.file_label).toEqual({ placeholder: "<file_label>" });
+    expect(s.contact!.suggested).toBe("Maria Lopez");
+    expect(s.first_name!.suggested).toBe("James Carter");
+  });
+
+  it("an approved test with no file Holdback can name stops the gate: its variables cannot be checked", async () => {
+    writeFileSync(varsFile(), readFileSync(fx("variables-declared-empty.json")));
+    const t1 = testFile("a_test.md", "t-1", "{{start_url}}");
+    const err = await emptyVariables(verifier, [t1, { id: "t-2", file: "" }, { id: "t-3", file: "" }]).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(VariablesUnchecked);
+    expect(err?.name).toBe("VariablesUnchecked");
+    expect(err?.message).toContain("t-2, t-3");
+    await expect(fillVariables(verifier, [{ id: "t-2", file: "" }], io(async () => ({})), async () => {})).rejects.toBeInstanceOf(VariablesUnchecked);
+  });
+
+  it("with no human (Kane's evolve), fills the empty variables with Holdback's suggestions, or writes nothing when one needs a human", async () => {
+    writeFileSync(
+      varsFile(),
+      JSON.stringify(
+        {
+          guest_phone: { value: "", secret: false, description: "Unused ten-digit phone." },
+          guest_phone_formatted: { value: "", secret: false, description: "Same digits as guest_phone, punctuated." },
+          coupon: { value: "", secret: false, description: "A coupon code." },
+          login_password: { value: "", secret: true, description: "Password of the test account." },
+        },
+        null,
+        2,
+      ),
+    );
+    const t4 = testFile("four_test.md", "t-4", "Type {{guest_phone}} then {{guest_phone_formatted}}.");
+    expect(await fillSuggested(verifier, [t4])).toEqual({ filled: ["guest_phone", "guest_phone_formatted"], files: [".testmuai/variables/assurance.json"] });
+    expect([declared().guest_phone!.value, declared().guest_phone_formatted!.value]).toEqual(["2155550101", "(215) 555-0101"]);
+    expect(await fillSuggested(verifier, [t4])).toEqual({ filled: [], files: [] });
+
+    const before = readFileSync(varsFile(), "utf8");
+    const t5 = testFile("five_test.md", "t-5", "Use {{coupon}}, sign in with {{login_password}}.");
+    expect(await fillSuggested(verifier, [t5])).toEqual({ needsHuman: ["coupon", "login_password"] });
+    expect(readFileSync(varsFile(), "utf8")).toBe(before);
   });
 });

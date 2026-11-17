@@ -23,6 +23,7 @@ import { byAcId } from "./brief.js";
 import { logMarkedTamper, recordTamperIn } from "./session.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
+import { fillSuggested } from "./variables.js";
 import { appMovedFrom, appPinOf, appSealFiles, classifySpecChange, driftHint, isSpecKey, reseal, specFileOf, type AppPin, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
@@ -169,6 +170,8 @@ const MAX_BECAUSE = 1500;
 export const NO_TEST = "Kane could not add a test that catches this planted bug";
 /** Why a criterion an evolve left without a test needs the spec. */
 const UNCOVERED = "Kane's evolved tests no longer cover it";
+/** Why a survivor stays vacuous when Kane's new test types a variable only a human can fill (R46): the names follow. */
+export const NEEDS_HUMAN = "Kane's new test needs a value only you can give";
 
 /** A survivor of this pass: what Kane is told about it if its use case is evolved. */
 type Survivor = { ac: AcState; id: string; patch: string; rationale: string; slip?: Slip };
@@ -877,11 +880,14 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     // R44: only this survivor-triggered evolve counts toward the run's bound; its follow-up does not
     evolves.set(uc, spent + 1);
     const because = becauseText(list);
+    // the verifier before any evolve of this use case: what an evolve that cannot be sealed goes back to
+    const ucCopy = await copySealed(p);
     const first = await evolveOnce(uc, because, list);
     if ("stray" in first) return strayTamper(uc, first.stray, first.credits);
     if ("failed" in first) return giveUp(first.failed, first.credits);
     const out_: EventBody[] = [{ t: "falsify.evolved", uc, because, minted: first.minted, retired: first.retired, credits: first.credits, mutants }];
     let g = first.graph;
+    const mintedAll = [...first.minted];
     let left = uncoveredIn(g, uc);
     let why = UNCOVERED;
     if (left.length > 0) {
@@ -905,11 +911,26 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         } else {
           out_.push({ t: "falsify.evolved", uc, because: oneLine(cover).slice(0, MAX_BECAUSE), minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
+          mintedAll.push(...again.minted);
           g = again.graph;
           left = uncoveredIn(g, uc);
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         }
       }
+    }
+    // R46: no test of Kane's is sealed typing a variable it left empty. With no human here, Holdback
+    // writes its own suggestions; a value only a human can give (a secret, or one Holdback has no
+    // suggestion for) and the evolve is not sealed: rolled back, its survivors stay vacuous with why
+    const fill = await fillSuggested(cwd, g.tests.filter((t) => mintedAll.includes(t.id)));
+    if ("needsHuman" in fill) {
+      await rollBack(ucCopy);
+      const spentHere = out_.reduce((n, e) => n + (e.t === "falsify.evolved" || e.t === "redesign.dropped" ? e.credits : 0), 0);
+      const names = fill.needsHuman.join(", ");
+      return giveUp(`Kane's evolve of ${uc} minted a test that types ${names}, which Kane left empty: nothing was sealed`, Math.round(spentHere * 1e4) / 1e4, `${NEEDS_HUMAN}: ${names}`);
+    }
+    if (fill.filled.length > 0) {
+      for (const f of fill.files) allowedPaths.add(f);
+      out_.push({ t: "spec.variables", names: fill.filled, filledBy: "suggested" });
     }
     // the use case as Kane now has it: every criterion owed again; one left without a test needs the spec
     const prev = events.findLast((e): e is Extract<LedgerEvent, { t: "design" }> => e.t === "design" && e.useCase === uc);

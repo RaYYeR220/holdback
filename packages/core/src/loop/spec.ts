@@ -818,7 +818,8 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
   // n-3: the seal hashes the disk, so a spec edited since Kane last read it would be sealed as approved
   await unchanged();
   await writeStartUrl(cwd, `http://127.0.0.1:${p.config.start.port}/`);
-  const approvedTests = [...designed.values()].flatMap((d) => d.tests.filter((t) => t.file && !(d.rejected ?? []).includes(t.id)));
+  // every approved test, one with no file too: what it types cannot be checked, so nothing is sealed (fail closed)
+  const approvedTests = [...designed.values()].flatMap((d) => d.tests.filter((t) => !(d.rejected ?? []).includes(t.id)));
   await fillVariables(cwd, approvedTests, io, emit);
   // the values take the human a while too
   await unchanged();
@@ -833,7 +834,8 @@ export async function runSpecStage(p: Project, io: HumanIO, log: Log, deps: Spec
  * to no file.
  */
 async function importNotes(cwd: string, earlier: LedgerEvent[], emit: (e: EventBody) => Promise<void>): Promise<Map<string, string>> {
-  const lint = await lintImports(cwd);
+  // each repair is on the ledger before its file is written
+  const lint = await lintImports(cwd, (r) => emit({ t: "spec.repaired", file: r.file, line: r.line, from: r.from, to: r.to }));
   const notes = new Map<string, string[]>();
   const add = (test: string | undefined, note: string) => {
     if (test) notes.set(test, [...(notes.get(test) ?? []), note]);
@@ -844,10 +846,7 @@ async function importNotes(cwd: string, earlier: LedgerEvent[], emit: (e: EventB
     const text = await readFile(path.join(cwd, ...e.file.split("/")), "utf8").catch(() => "");
     add(text ? (parseTestMd(text).id ?? undefined) : undefined, repairNote(e));
   }
-  for (const r of lint.repaired) {
-    await emit({ t: "spec.repaired", file: r.file, line: r.line, from: r.from, to: r.to });
-    add(r.test, repairNote(r));
-  }
+  for (const r of lint.repaired) add(r.test, repairNote(r));
   for (const b of lint.broken) add(b.test, `broken import Kane wrote (line ${b.line}): ${b.target} is not in the tests folder, so \`testmd run\` stops on it`);
   return new Map([...notes].map(([k, v]) => [k, v.join("; ")]));
 }

@@ -76,15 +76,37 @@ export class LineReader {
     rl.close();
   }
 
-  /** Writes `prompt` and returns the next line, trimmed; null when the input ended first. */
-  async ask(prompt: string): Promise<string | null> {
+  /**
+   * Writes `prompt` and returns the next line, trimmed; null when the input ended first. `muted` (a
+   * secret): on a terminal, the line is read with its echo off (raw mode, for that line only), a
+   * backspace takes back a character, and Ctrl-C stops the prompt; a line typed ahead was echoed already.
+   */
+  async ask(prompt: string, opts: { muted?: boolean } = {}): Promise<string | null> {
     this.open();
     this.output.write(prompt);
     const queued = this.lines.shift();
     if (queued !== undefined) return queued.trim();
     if (this.ended) return null;
-    const l = await new Promise<string | null>((res) => this.waiting.push(res));
-    return l === null ? null : l.trim();
+    const tty = this.input as NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (on: boolean) => unknown };
+    const mute = opts.muted === true && tty.isTTY === true && typeof tty.setRawMode === "function";
+    if (mute) tty.setRawMode!(true);
+    let l: string | null;
+    try {
+      l = await new Promise<string | null>((res) => this.waiting.push(res));
+    } finally {
+      if (mute) {
+        tty.setRawMode!(false);
+        this.output.write("\n"); // the Enter was not echoed either
+      }
+    }
+    if (l === null || !mute) return l === null ? null : l.trim();
+    let typed = "";
+    for (const c of l) {
+      if (c === "\x03") throw new Error("the prompt was interrupted (Ctrl-C)");
+      if (c === "\x7f" || c === "\b") typed = typed.slice(0, -1);
+      else typed += c;
+    }
+    return typed.trim();
   }
 }
 
@@ -133,13 +155,13 @@ export class CliHumanIO implements HumanIO {
     this.reader.release();
   }
 
-  private async ask(prompt: string): Promise<string> {
+  private async ask(prompt: string, opts: { muted?: boolean } = {}): Promise<string> {
     // the session holds the reader from its first prompt until `close`
     if (!this.holding) {
       this.holding = true;
       this.reader.hold();
     }
-    const l = await this.reader.ask(prompt);
+    const l = await this.reader.ask(prompt, opts);
     if (l === null) throw new Error("CliHumanIO: input closed before an answer was given");
     return l;
   }
@@ -181,7 +203,8 @@ export class CliHumanIO implements HumanIO {
         : a.suggested !== undefined
           ? `Enter = ${a.suggested}`
           : `no suggestion${a.placeholder ? `, e.g. ${a.placeholder}` : ""}; Enter leaves it empty`;
-      const raw = await this.ask(escapeControls(`  value (${how}): `));
+      // a secret is typed with the terminal's echo off
+      const raw = await this.ask(escapeControls(`  value (${how}): `), { muted: a.secret });
       out[a.name] = raw === "" && !a.secret ? (a.suggested ?? "") : raw;
     }
     return out;

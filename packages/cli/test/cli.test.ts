@@ -19,6 +19,7 @@ import {
   seal,
   serve,
   VariablesMissing,
+  VariablesUnchecked,
   type BuildResult,
   type DriftResult,
   type FalsifyResult,
@@ -533,6 +534,15 @@ describe("spec", () => {
     expect(r.err).toContain("holdback spec");
     expect(r.err).not.toContain("error:");
     expect(io.closed).toBe(1);
+    // an approved test whose file Holdback cannot find: its variables are unchecked, the stage stops the same way (fix round 1)
+    const unchecked = await cli(["spec"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async () => {
+        throw new VariablesUnchecked(["t-3"]);
+      },
+    });
+    expect(unchecked.code).toBe(3);
+    expect(unchecked.err).toContain("t-3");
   });
 
   it("prints Kane's design gaps, the variables a human filled and the imports Holdback repaired", async () => {
@@ -696,6 +706,27 @@ describe("--answers", () => {
     stdin.write("\n");
     expect(await approved).toEqual(["t-2"]);
     expect(shown).toContain("  t-2 [test] two\n      Holdback repaired a broken import Kane wrote (line 12): a -> b\n");
+    io.close();
+  }, 10_000);
+
+  it("a secret is read with the terminal's echo off: raw mode for that line only, a backspace honoured (fix round 1)", async () => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+    const stdout = new PassThrough();
+    let shown = "";
+    stdout.on("data", (b: Buffer) => (shown += b.toString("utf8")));
+    const io = new CliHumanIO(stdin, stdout);
+    const got = io.values([
+      { name: "login_password", description: "Password of the test account.", secret: true, usedBy: ["t-4"] },
+      { name: "phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] },
+    ]);
+    await new Promise((r) => setImmediate(r));
+    expect(stdin.setRawMode.mock.calls).toEqual([[true]]); // only while the secret is typed
+    stdin.write("hunterX\x7f2\r");
+    await new Promise((r) => setTimeout(r, 150)); // past readline's CRLF window
+    stdin.write("2155550199\n");
+    expect(await got).toEqual({ login_password: "hunter2", phone: "2155550199" });
+    expect(stdin.setRawMode.mock.calls).toEqual([[true], [false]]);
+    expect(shown).not.toContain("hunter");
     io.close();
   }, 10_000);
 

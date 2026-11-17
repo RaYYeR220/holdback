@@ -74,6 +74,6 @@ function printDesignNotes(ctx: Ctx, events: LedgerEvent[]): void {
     const where = repaired.map((r) => `${r.file} line ${r.line} (${r.to})`).join("; ");
     ctx.out(`Holdback repaired ${repaired.length} broken ${repaired.length === 1 ? "import" : "imports"} Kane wrote: ${where}.`);
   }
-  const filled = [...new Set(events.flatMap((e) => (e.t === "spec.variables" ? e.names : [])))];
+  const filled = [...new Set(events.flatMap((e) => (e.t === "spec.variables" && e.filledBy === "human" ? e.names : [])))];
   if (filled.length > 0) ctx.out(`You filled ${filled.length} test ${filled.length === 1 ? "variable" : "variables"} Kane left empty: ${filled.join(", ")}.`);
 }

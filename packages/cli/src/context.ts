@@ -357,7 +357,7 @@ export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise
     ctx.err(tamperMessage(msg));
     return EXIT.tamper;
   }
-  if (e instanceof Error && (e.name === "KaneCapReached" || e.name === "SpecChangedDuringStage" || e.name === "VariablesMissing")) {
+  if (e instanceof Error && (e.name === "KaneCapReached" || e.name === "SpecChangedDuringStage" || e.name === "VariablesMissing" || e.name === "VariablesUnchecked")) {
     ctx.err(msg);
     return EXIT.unfinished;
   }

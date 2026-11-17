@@ -192,6 +192,10 @@ describe("timeline", () => {
     ]);
     // a design whose gaps carry nothing but an id (the first live run's) adds no row
     expect(timeline([design(["ac-1"], [["t-1", ["ac-1"]]])]).flatMap((s) => s.items)).toHaveLength(1);
+    // with no human there (Kane's evolve), Holdback's own suggestions filled them (R46)
+    expect(timeline([ev({ t: "spec.variables", names: ["guest_phone"], filledBy: "suggested" })]).flatMap((s) => s.items)).toMatchObject([
+      { kind: "spec", title: "Holdback filled 1 test variable Kane's new tests left empty with its suggestion", detail: "guest_phone" },
+    ]);
   });
 
   it("shows Kane's evolve after a surviving planted bug as a loop event: minted, retired, the because and its credits (R40)", () => {

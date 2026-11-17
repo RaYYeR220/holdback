@@ -1,16 +1,27 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { reduce } from "../ledger/reduce.js";
+import type { LedgerEvent } from "../ledger/types.js";
 import type { EventBody } from "../ledger/vouched.js";
 import type { HumanIO, VariableAsk } from "./human.js";
 import { importTargets } from "./imports.js";
 
 /**
- * The variables gate (live run, 2026-11-17): `design tests` declares the test data it needs in
+ * The variables gate (live run, 2026-11-17; R46): `design tests` declares the test data it needs in
  * `.testmuai/variables/*.json`, often with an empty value for the owner to fill. Kane 0.10.4 seals
  * and runs such a test as it is: it types nothing, and its verdict is `automation_bug`, a run that
- * never proves anything. Before the seal, Holdback asks the human for every empty variable an
- * approved test types, and seals none of them empty.
+ * never proves anything. Before every seal of new tests, Holdback has every empty variable a test
+ * types filled: by the human in the spec stage and in a drift, by its own suggestions after Kane's
+ * evolve (or that evolve is not sealed).
  */
+
+/** The tests a ledger runs (every criterion's, after its latest design, rejections and evolves), with their files ("" when unknown). */
+export function liveTests(events: LedgerEvent[]): { id: string; file: string }[] {
+  const ids = new Set(Object.values(reduce(events).acs).flatMap((a) => a.tests));
+  const files = new Map<string, string>();
+  for (const e of events) if (e.t === "design") for (const t of e.tests) files.set(t.id, t.file);
+  return [...ids].sort().map((id) => ({ id, file: files.get(id) ?? "" }));
+}
 
 const VARIABLES_DIR = [".testmuai", "variables"];
 const REF = /\{\{\s*([A-Za-z_][\w.-]*)\s*\}\}/g;
@@ -76,7 +87,13 @@ const formatted = (d: string) => (d.length === 10 ? `(${d.slice(0, 3)}) ${d.slic
 const isNineDigits = (name: string, description: string) => /\b(nine|9)[\s-]digits?\b/i.test(description) || /nine[_-]?digit/i.test(name);
 const isFormatted = (name: string, description: string) => /formatted|punctuat/i.test(name) || /\b(formatted|punctuation|punctuated)\b/i.test(description);
 const isPhone = (name: string, description: string) => /phone|mobile/i.test(name) || /\b(phone|mobile|telephone)\b/i.test(description) || /\b(ten|10)[\s-]digits?\b/i.test(description);
-const isPersonName = (name: string, description: string) => /(^|_)name$/i.test(name) || /\bname\b/i.test(description);
+/** Who a "name" belongs to when it is a person's: a product's, a file's or a store's name is not. */
+const PERSON = "person|proxy|contact|customer|client|guest|visitor|member|owner|recipient|patient|volunteer|attendee|applicant|resident|tenant|caller|sender|buyer|employee|student|driver";
+const isPersonName = (name: string, description: string) =>
+  new RegExp(`(^|_)(${PERSON}|full|first|last|given|family)_?name$`, "i").test(name) ||
+  new RegExp(`\\b(${PERSON})(?:'s)?\\s+(?:(?:full|first|last|given|family)\\s+)?name\\b`, "i").test(description) ||
+  new RegExp(`\\bname of (?:the |a |an |this )?(${PERSON})\\b`, "i").test(description) ||
+  /\b(full|first|last|given|family)\s+name\b|\bsurname\b/i.test(description);
 
 /**
  * A test value for each variable, derived from its name and description alone, so the same
@@ -85,7 +102,8 @@ const isPersonName = (name: string, description: string) => /(^|_)name$/i.test(n
  * - one "formatted" or "punctuated": its sibling's digits as `(215) 555-0101` (`sameAs`), the
  *   sibling being a variable its description names, or its own name without "formatted";
  * - one of "nine digits": nine digits;
- * - a name: a plain test name;
+ * - a person's name (a proxy's, a contact's, a first or full name; not a product's or a file's): a
+ *   plain test name;
  * - anything else: only a placeholder the human must replace; a secret: nothing.
  * `filled`: the values already given (non-secret), by name.
  */
@@ -133,12 +151,15 @@ export function suggestValues(
  * The variables the approved `tests` (or a file one of them imports) type as `{{name}}` that Kane
  * declared with no value, in the order Kane declared them, each with Holdback's suggestion
  * (`suggestValues`) and the tests that use it. A name Kane never declared is not one of them.
+ * Fails closed: a test with no file Holdback can name (Kane's graph has it, its tests folder does
+ * not) throws `VariablesUnchecked`, since what it types cannot be checked.
  */
 export async function emptyVariables(verifierDir: string, tests: { id: string; file: string }[]): Promise<VariableAsk[]> {
+  const unnamed = tests.filter((t) => !t.file).map((t) => t.id);
+  if (unnamed.length > 0) throw new VariablesUnchecked(unnamed);
   const declared = await readDeclared(verifierDir);
   const usedBy = new Map<string, string[]>();
   for (const t of tests) {
-    if (!t.file) continue;
     for (const name of await referencesOf(path.resolve(verifierDir, t.file))) {
       const ids = usedBy.get(name) ?? [];
       if (!ids.includes(t.id)) ids.push(t.id);
@@ -169,6 +190,42 @@ export class VariablesMissing extends Error {
   }
 }
 
+/** Approved tests Holdback finds no file for: what they type cannot be checked, so nothing is sealed (fail closed). The CLI exits 3. */
+export class VariablesUnchecked extends Error {
+  constructor(readonly tests: string[]) {
+    super(
+      `Kane's graph has ${tests.length === 1 ? "test" : "tests"} ${tests.join(", ")} but Holdback finds no file for ${tests.length === 1 ? "it" : "them"} in the tests folder, ` +
+        "so it cannot check the variables they type: nothing was sealed. Run `holdback spec` again once Kane's tests folder has them.",
+    );
+    this.name = "VariablesUnchecked";
+  }
+}
+
+/** Writes `values` (by name) into each variables file that declares that name empty; returns those files, relative to the verifier (`/`). */
+async function writeValues(verifierDir: string, values: Map<string, string>): Promise<string[]> {
+  const byFile = new Map<string, Declared[]>();
+  for (const d of await readDeclared(verifierDir)) if (d.empty && values.has(d.name)) byFile.set(d.file, [...(byFile.get(d.file) ?? []), d]);
+  for (const [file, ds] of byFile) {
+    const doc = JSON.parse(await readFile(file, "utf8")) as Record<string, Record<string, unknown>>;
+    for (const d of ds) doc[d.name] = { ...doc[d.name], value: values.get(d.name)! };
+    await writeFile(file, JSON.stringify(doc, null, 2) + "\n", "utf8");
+  }
+  return [...byFile.keys()].map((f) => path.relative(verifierDir, f).split(path.sep).join("/"));
+}
+
+/**
+ * With no human to ask (Kane's evolve, R46): every empty variable the `tests` type gets Holdback's
+ * suggestion, written into the file that declares it. When one has none (a secret, or one with only
+ * a placeholder), nothing is written and `needsHuman` names them all.
+ */
+export async function fillSuggested(verifierDir: string, tests: { id: string; file: string }[]): Promise<{ filled: string[]; files: string[] } | { needsHuman: string[] }> {
+  const asks = await emptyVariables(verifierDir, tests);
+  const needsHuman = asks.filter((a) => a.secret || a.suggested === undefined).map((a) => a.name);
+  if (needsHuman.length > 0) return { needsHuman };
+  const files = asks.length > 0 ? await writeValues(verifierDir, new Map(asks.map((a) => [a.name, a.suggested!]))) : [];
+  return { filled: asks.map((a) => a.name), files };
+}
+
 /**
  * The variables gate, after the design approval and before the seal: asks the human (`io.values`)
  * for every empty variable an approved test types, writes what they give into the variables file
@@ -186,13 +243,7 @@ export async function fillVariables(verifierDir: string, tests: { id: string; fi
     if (typeof v === "string" && v.trim() !== "") values.set(a.name, v);
   }
   if (values.size > 0) {
-    const byFile = new Map<string, Declared[]>();
-    for (const d of await readDeclared(verifierDir)) if (d.empty && values.has(d.name)) byFile.set(d.file, [...(byFile.get(d.file) ?? []), d]);
-    for (const [file, ds] of byFile) {
-      const doc = JSON.parse(await readFile(file, "utf8")) as Record<string, Record<string, unknown>>;
-      for (const d of ds) doc[d.name] = { ...doc[d.name], value: values.get(d.name)! };
-      await writeFile(file, JSON.stringify(doc, null, 2) + "\n", "utf8");
-    }
+    await writeValues(verifierDir, values);
     await emit({ t: "spec.variables", names: asks.map((a) => a.name).filter((n) => values.has(n)), filledBy: "human" });
   }
   const missing = asks.map((a) => a.name).filter((n) => !values.has(n));

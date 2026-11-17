@@ -45,7 +45,10 @@ function withUncovered(...uncovered: string[]) {
   writeFileSync(seq, readFileSync(seq, "utf8").replace(fx("context-view.json"), file));
 }
 
-function setup(prd: string) {
+/** The file Kane wrote for test `id` in the verifier (the graph's t-1 to t-3 each have one). */
+const testFileOf = (p: Awaited<ReturnType<typeof loadProject>>, id: string) => join(p.verifierDir, ".testmuai", "tests", `${id}_test.md`);
+
+async function setup(prd: string) {
   const appDir = join(root, "app");
   mkdirSync(appDir, { recursive: true });
   writeFileSync(join(appDir, "PRD.md"), prd);
@@ -54,6 +57,10 @@ function setup(prd: string) {
   const steps = ["01-ingest.ndjson", "02-extract.ndjson", "09-list-uc.ndjson", "-", "03-design.ndjson", "context-view.json", "10-list-derived.ndjson", "-"];
   writeFileSync(seq, steps.map((s) => (s === "-" ? "-" : fx(s))).join("\n"));
   process.env.FAKE_KANE_SEQUENCE = seq;
+  // the test files Kane's design leaves in the verifier: an id and a title, the criteria from the graph's edges
+  const p = await loadProject(appDir);
+  mkdirSync(join(p.verifierDir, ".testmuai", "tests"), { recursive: true });
+  for (const id of ["t-1", "t-2", "t-3"]) writeFileSync(testFileOf(p, id), `---\nassurance:\n  id: ${id}\n---\n# ${id}\n`);
   return appDir;
 }
 
@@ -93,7 +100,7 @@ describe("designNotes (rehearsal issue 7, wave-4 m-5)", () => {
 
 describe("runSpecStage", () => {
   it("runs ingest -> answers -> approvals -> design -> seal", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const asked: string[] = [];
     const approvals: string[][] = [];
@@ -138,7 +145,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("logs Kane's balance drop for the ingest and for each design, next to their per-run credits (R34)", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const balances = [100, 92.5, 92.5, 70];
     await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e), { balance: async () => balances.shift()! });
@@ -152,7 +159,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("commits its own Clarifications to the app repo before the seal, and nothing else (R34)", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const git = (...args: string[]) => execFileSync("git", args, { cwd: appDir, encoding: "utf8" }).trim();
     git("init", "-q");
     git("config", "user.name", "Test");
@@ -181,7 +188,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a Clarifications commit that fails is a warning: the paid spec stage still seals", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const git = (...args: string[]) => execFileSync("git", args, { cwd: appDir, encoding: "utf8" }).trim();
     git("init", "-q");
     git("config", "user.name", "Test");
@@ -201,7 +208,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("leaves an unborn HEAD alone: the build loop's first commit takes the whole tree", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     execFileSync("git", ["init", "-q"], { cwd: appDir });
     const p = await loadProject(appDir);
     await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
@@ -288,7 +295,7 @@ describe("runSpecStage", () => {
 
   it("rejects spec paths that escape the app dir", async () => {
     for (const bad of ["../x.md", join(root, "abs.md")]) {
-      const appDir = setup("# PRD\n");
+      const appDir = await setup("# PRD\n");
       writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: [bad] }));
       const p = await loadProject(appDir);
       await expect(runSpecStage(p, acceptAll, async () => {})).rejects.toThrow(/spec path/);
@@ -296,7 +303,7 @@ describe("runSpecStage", () => {
   });
 
   it("takes a spec in a folder whose name starts with two dots as inside the app dir", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     mkdirSync(join(appDir, "..docs"));
     writeFileSync(join(appDir, "..docs", "PRD.md"), "# PRD\n");
     writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: ["..docs/PRD.md"] }));
@@ -308,7 +315,7 @@ describe("runSpecStage", () => {
   });
 
   it("refuses to seal when the design approval is empty, and logs rejections", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     const p = await loadProject(appDir);
     const io: HumanIO = { ...acceptAll, approve: async (items) => (items[0]?.kind === "usecase" ? items.map((i) => i.ref) : []) };
     await expect(runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/refusing to seal/);
@@ -320,7 +327,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("honours the human's rejections in the design approval: rejected nodes are logged on the design, and never owed (I3)", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     const p = await loadProject(appDir);
     const io: HumanIO = { ...acceptAll, approve: async (items) => items.map((i) => i.ref).filter((r) => r !== "ac-1" && r !== "t-1") };
     await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
@@ -336,7 +343,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("refuses to run again once the criteria are sealed: a spec change goes through drift (I4)", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     const p = await loadProject(appDir);
     await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
     const calls = readFileSync(process.env.FAKE_KANE_ARGV_LOG!, "utf8");
@@ -347,7 +354,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("resumes a stage cut short after the design: no new ingest or design, the approval, then the seal (I4)", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     const p = await loadProject(appDir);
     const closing: HumanIO = {
       ...acceptAll,
@@ -398,7 +405,7 @@ describe("runSpecStage", () => {
   }
 
   it("a stage resumed after its design approval never offers a node the human rejected again, and keeps that rejection (N-m3)", async () => {
-    const p = await failAtSeal(setup("# PRD\n"));
+    const p = await failAtSeal(await setup("# PRD\n"));
     const approvals: string[][] = [];
     const io: HumanIO = { ...acceptAll, approve: async (items) => (approvals.push(items.map((i) => i.ref)), items.map((i) => i.ref)) };
     await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
@@ -410,7 +417,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a stage resumed after its design approval seals even when the human turns down everything offered again: the earlier approval stands (N-m3)", async () => {
-    const p = await failAtSeal(setup("# PRD\n"));
+    const p = await failAtSeal(await setup("# PRD\n"));
     const io: HumanIO = { ...acceptAll, approve: async () => [] };
     await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
     const events = await readEvents(p.ledgerFile);
@@ -420,7 +427,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a design re-emitted by a resumed stage carries its own timestamp, not the earlier attempt's (N-m4)", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     const p = await loadProject(appDir);
     const closing: HumanIO = {
       ...acceptAll,
@@ -446,7 +453,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("re-ingests on a resume when the spec changed since the extraction", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     const p = await loadProject(appDir);
     const closing: HumanIO = { ...acceptAll, approve: async () => Promise.reject(new Error("closed")) };
     await expect(runSpecStage(p, closing, (e) => appendEvent(p.ledgerFile, e))).rejects.toThrow(/closed/);
@@ -462,7 +469,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("seals app config + spec, collapses whitespace, and counts credits", async () => {
-    const appDir = setup("# PRD\n");
+    const appDir = await setup("# PRD\n");
     writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ spec: ["PRD.md"] }));
     const p = await loadProject(appDir);
     await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
@@ -479,7 +486,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a criterion left without a test because Kane's design hit kane.designMax says so: not the spec's fault, still not proved (rehearsal issue 7)", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     writeFileSync(join(appDir, "holdback.config.json"), JSON.stringify({ kane: { designMax: 3 } }));
     withUncovered("ac-2", "ac-3");
     const p = await loadProject(appDir);
@@ -495,7 +502,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("with room left under kane.designMax, a criterion without a test carries no design-cap reason", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     withUncovered("ac-2", "ac-3");
     const p = await loadProject(appDir); // designMax 5, and Kane designed 3 tests
     await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e));
@@ -506,7 +513,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a spec edited after the extraction is never sealed: the stage stops before the seal and says to run it again (n-3)", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const io: HumanIO = {
       async answer(qs) {
@@ -526,7 +533,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a spec edited while the human approves the use cases stops the stage before Kane is called again: the edit is never absorbed (n-3)", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const io: HumanIO = {
       async answer(qs) {
@@ -548,7 +555,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a spec edited while the human answers Kane's question stops the stage before the answer goes to Kane (n-3)", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const io: HumanIO = {
       async answer(qs) {
@@ -573,14 +580,14 @@ describe("runSpecStage", () => {
     const tests = join(p.verifierDir, ".testmuai", "tests");
     mkdirSync(tests, { recursive: true });
     mkdirSync(join(p.verifierDir, ".testmuai", "variables"), { recursive: true });
-    writeFileSync(join(tests, "snap_test.md"), `---\nassurance:\n  id: t-1\n---\n# Snap test\n\n${body}\n\n## Step 1 @verifies ac-1\n\nAt {{start_url}}, book with {{primary_phone}} for {{proxy_name}}.\n`);
+    writeFileSync(join(tests, "t-1_test.md"), `---\nassurance:\n  id: t-1\n---\n# Snap test\n\n${body}\n\n## Step 1 @verifies ac-1\n\nAt {{start_url}}, book with {{primary_phone}} for {{proxy_name}}.\n`);
     writeFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), JSON.stringify(vars, null, 2));
     return () => JSON.parse(readFileSync(join(p.verifierDir, ".testmuai", "variables", "assurance.json"), "utf8")) as Record<string, { value: string }>;
   }
   const empty = (description: string) => ({ value: "", secret: false, description });
 
   it("the variables gate: every empty variable an approved test types is asked with a suggestion, filled, and only then sealed", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const vars = kaneWrote(p, "", { primary_phone: empty("Unused ten-digit household test phone."), proxy_name: empty("Test proxy's name."), spare_phone: empty("Unused phone.") });
     let asked: VariableAsk[] = [];
@@ -600,7 +607,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a variable the human leaves empty stops the stage before the seal (exit 3 in the CLI), and the resumed stage asks only for it", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     const vars = kaneWrote(p, "", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
     const io: HumanIO = { ...acceptAll, values: async () => ({ primary_phone: "2155550101", proxy_name: "" }) };
@@ -622,7 +629,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a variable only a turned-down test types is never asked for", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     kaneWrote(p, "", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
     const io: HumanIO = { ...acceptAll, approve: async (items) => items.map((i) => i.ref).filter((r) => r !== "t-1"), values: async () => Promise.reject(new Error("must not ask")) };
@@ -633,18 +640,18 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("an @import Kane wrote with an absolute path is repaired before the test approval, logged, and shown on the test", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     kaneWrote(p, "@import ./C:\\Users\\dev\\.holdback\\x\\verifier\\.testmuai\\tests\\base_test.md", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
     writeFileSync(join(p.verifierDir, ".testmuai", "tests", "base_test.md"), "# Base\n\n## Step 1\n\nOpen {{start_url}}.\n");
     let offered: ApprovalItem[] = [];
     const io: HumanIO = { ...acceptAll, approve: async (items) => (items.some((i) => i.kind === "test") && (offered = items), items.map((i) => i.ref)) };
     await runSpecStage(p, io, (e) => appendEvent(p.ledgerFile, e));
-    expect(readFileSync(join(p.verifierDir, ".testmuai", "tests", "snap_test.md"), "utf8")).toContain("\n@import ./base_test.md\n");
+    expect(readFileSync(join(p.verifierDir, ".testmuai", "tests", "t-1_test.md"), "utf8")).toContain("\n@import ./base_test.md\n");
     const events = await readEvents(p.ledgerFile);
     const repaired = events.filter((e) => e.t === "spec.repaired");
     expect(repaired).toEqual([
-      { at: expect.any(String), t: "spec.repaired", file: ".testmuai/tests/snap_test.md", line: 7, from: "@import ./C:\\Users\\dev\\.holdback\\x\\verifier\\.testmuai\\tests\\base_test.md", to: "@import ./base_test.md" },
+      { at: expect.any(String), t: "spec.repaired", file: ".testmuai/tests/t-1_test.md", line: 7, from: "@import ./C:\\Users\\dev\\.holdback\\x\\verifier\\.testmuai\\tests\\base_test.md", to: "@import ./base_test.md" },
     ]);
     // logged before the human approves the tests, and shown on the test it repaired
     expect(events.findIndex((e) => e.t === "spec.repaired")).toBeLessThan(events.findLastIndex((e) => e.t === "spec.approved"));
@@ -653,7 +660,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("an @import that resolves to nothing is flagged on the test at its approval", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     kaneWrote(p, "@import ./C:\\nowhere\\gone_test.md", { primary_phone: empty("Unused ten-digit phone."), proxy_name: empty("Test proxy's name.") });
     let offered: ApprovalItem[] = [];
@@ -664,7 +671,7 @@ describe("runSpecStage", () => {
   }, 60_000);
 
   it("a design carries the gaps of its own use case, with Kane's kind and question", async () => {
-    const appDir = setup("# PRD\n\nSnap rules.\n");
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
     const p = await loadProject(appDir);
     mkdirSync(join(p.verifierDir, ".context"), { recursive: true });
     cpSync(fx("context-commits"), join(p.verifierDir, ".context", "commits"), { recursive: true });
@@ -676,5 +683,15 @@ describe("runSpecStage", () => {
       ["gap-3", "budget-evicted", "Below-limit household"],
       ["gap-4", "incomplete", "Pantry page URL"],
     ]);
+  }, 60_000);
+
+  it("an approved test Kane's graph names but whose file Holdback cannot find fails closed: its variables are unchecked, nothing is sealed (fix round 1)", async () => {
+    const appDir = await setup("# PRD\n\nSnap rules.\n");
+    const p = await loadProject(appDir);
+    rmSync(testFileOf(p, "t-3"));
+    const err = await runSpecStage(p, acceptAll, (e) => appendEvent(p.ledgerFile, e)).then(() => null, (e: unknown) => e as Error);
+    expect(err?.name).toBe("VariablesUnchecked");
+    expect(err?.message).toContain("t-3");
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "seal")).toBe(false);
   }, 60_000);
 });

@@ -467,7 +467,16 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         seg.items.push({ kind: "spec", at: e.at, title: "Holdback repaired a broken import Kane wrote", detail: `${e.file} line ${e.line}: ${e.from} -> ${e.to}` });
         break;
       case "spec.variables":
-        seg.items.push({ kind: "spec", at: e.at, title: `A human filled ${plural(e.names.length, "test variable")} Kane left empty`, detail: e.names.join(", ") });
+        seg.items.push({
+          kind: "spec",
+          at: e.at,
+          // R46: with no human there (Kane's evolve), Holdback's own suggestions
+          title:
+            e.filledBy === "suggested"
+              ? `Holdback filled ${plural(e.names.length, "test variable")} Kane's new tests left empty with its ${e.names.length === 1 ? "suggestion" : "suggestions"}`
+              : `A human filled ${plural(e.names.length, "test variable")} Kane left empty`,
+          detail: e.names.join(", "),
+        });
         break;
       case "seal":
         seg.items.push({ kind: "seal", at: e.at, files: Object.keys(e.manifest).length, reseal: tampered });

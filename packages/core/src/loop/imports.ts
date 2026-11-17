@@ -36,10 +36,12 @@ const isFile = (f: string) => stat(f).then((s) => s.isFile(), () => false);
 /**
  * Checks the `@import` line of every `*_test.md` in the verifier's tests folder. One whose target is
  * an absolute path after `./` is rewritten to `./<file name>` when that file is in the same folder
- * (the rest of the file byte for byte as it was, line endings too); any import that still resolves
- * to no file is reported as broken, its test left as Kane wrote it.
+ * (the rest of the file byte for byte as it was, line endings too); `onRepair` hears of each repair
+ * before its file is written, so its record comes first (a record that fails leaves the file as it
+ * was). One it cannot repair is broken, whatever that absolute path names (`testmd run` never
+ * resolves it), as is any other import that resolves to no file; its test is left as Kane wrote it.
  */
-export async function lintImports(verifierDir: string): Promise<ImportLint> {
+export async function lintImports(verifierDir: string, onRepair: (r: ImportRepair) => Promise<void> = async () => {}): Promise<ImportLint> {
   const dir = path.join(verifierDir, ".testmuai", "tests");
   let names: string[];
   try {
@@ -57,7 +59,7 @@ export async function lintImports(verifierDir: string): Promise<ImportLint> {
     const id = parseTestMd(text).id ?? undefined;
     const tag = id ? { test: id } : {};
     const lines = text.split("\n");
-    let changed = false;
+    const repairs: ImportRepair[] = [];
     for (let i = 0; i < lines.length; i++) {
       const cr = lines[i]!.endsWith("\r") ? "\r" : "";
       const line = cr ? lines[i]!.slice(0, -1) : lines[i]!;
@@ -69,15 +71,16 @@ export async function lintImports(verifierDir: string): Promise<ImportLint> {
         if (base !== "" && (await isFile(path.join(dir, base)))) {
           const fixed = `${m[1]}./${base}`;
           lines[i] = fixed + cr;
-          changed = true;
-          out.repaired.push({ file: rel, ...tag, line: i + 1, from: line.trim(), to: fixed.trim() });
-          continue;
-        }
+          repairs.push({ file: rel, ...tag, line: i + 1, from: line.trim(), to: fixed.trim() });
+        } else out.broken.push({ file: rel, ...tag, line: i + 1, target });
+        continue;
       }
-      const resolved = ABSOLUTE_AFTER_DOT.test(target) ? target.replace(/^\.[\\/]/, "") : path.resolve(dir, target);
-      if (!(await isFile(resolved))) out.broken.push({ file: rel, ...tag, line: i + 1, target });
+      if (!(await isFile(path.resolve(dir, target)))) out.broken.push({ file: rel, ...tag, line: i + 1, target });
     }
-    if (changed) await writeFile(file, lines.join("\n"), "utf8");
+    if (repairs.length === 0) continue;
+    for (const r of repairs) await onRepair(r);
+    await writeFile(file, lines.join("\n"), "utf8");
+    out.repaired.push(...repairs);
   }
   return out;
 }
