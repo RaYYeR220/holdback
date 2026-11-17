@@ -28,6 +28,24 @@ function msys(n: string): string | undefined {
   return m ? `/${m[1]}/${n.slice(3)}` : undefined;
 }
 
+/**
+ * True when `needle` occurs in `text` (both lowercased, `/` slashes) as a path segment or a whole
+ * key: with no identifier character (a letter, a digit, `_`) right before it or right after it. A
+ * path spells `.holdback` after a separator, a quote, a space, `=` or `~/`; app code that only
+ * contains the name (`process.env.HOLDBACK_TODAY`, `cfg.testmuai_id`) is no path to it. Live demo,
+ * 2026-11-17: a plain substring match denied the agent the env var its STACK.md asks the app to read.
+ */
+function hasSegment(text: string, needle: string): boolean {
+  const id = /[a-z0-9_]/;
+  for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1)) {
+    const before = i > 0 ? text[i - 1]! : "";
+    const after = text[i + needle.length] ?? "";
+    if (!id.test(before) && !id.test(after)) return true;
+  }
+  return false;
+}
+
+/** Holdback's and Kane's folders, by name and by Holdback's own paths: matched as path segments (`hasSegment`). */
 function needles(ctx: GuardContext): string[] {
   const out = new Set<string>([".holdback", ".testmuai"]);
   for (const p of [ctx.home, ctx.verifierDir]) {
@@ -83,7 +101,7 @@ const HOLDBACK_ENTRY = /(?:^|[/\\])(?:cli|holdback)[/\\]dist[/\\]index\.[cm]?js$
 /** Subcommands only the human runs. `status` and `owed` only read, and stay open to the agent. */
 const HUMAN_COMMANDS = new Set(["reseal", "spec", "run", "drift", "watch", "init", "clean", "serve", "hook"]);
 
-/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes). */
+/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes; matched as path segments or whole keys). */
 const GIT_INTERNALS = [".git/hooks", ".git/config", "core.hookspath"];
 
 // References to the user's home directory from a shell. A tilde must stand alone as a word.
@@ -333,14 +351,14 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
   const ns = needles(ctx);
   for (const s of strings(toolInput)) {
     const n = s.toLowerCase().replace(/\\/g, "/");
-    if (ns.some((x) => n.includes(x))) return { allow: false, reason: DENY_FILES };
+    if (ns.some((x) => hasSegment(n, x))) return { allow: false, reason: DENY_FILES };
     if (/\bkane-cli\b/i.test(s)) return { allow: false, reason: DENY_KANE };
   }
   if (ctx.specFiles && editsSpec(String(input.tool_name ?? ""), toolInput, ctx)) return { allow: false, reason: DENY_SPEC, spec: "edit" };
   for (const s of shellStrings(String(input.tool_name ?? ""), toolInput)) {
     if (HOME_REFS.some((re) => re.test(s))) return { allow: false, reason: DENY_HOME_REF };
     const n = s.toLowerCase().replace(/[\\/]+/g, "/"); // `.git\\hooks` (escaped) counts too
-    if (GIT_INTERNALS.some((x) => n.includes(x))) return { allow: false, reason: DENY_GIT_INTERNALS };
+    if (GIT_INTERNALS.some((x) => hasSegment(n, x))) return { allow: false, reason: DENY_GIT_INTERNALS };
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
     if (humanCommand(s)) return { allow: false, reason: DENY_HUMAN };
@@ -357,7 +375,7 @@ export function guardPayload(payload: unknown, ctx: GuardContext): GuardDecision
   const ns = needles(ctx);
   for (const s of strings(p)) {
     const n = s.toLowerCase().replace(/\\/g, "/");
-    if (ns.some((x) => n.includes(x))) return { allow: false, reason: DENY_FILES };
+    if (ns.some((x) => hasSegment(n, x))) return { allow: false, reason: DENY_FILES };
   }
   return guardDecision({ tool_name: p.tool_name, tool_input: p.tool_input as Record<string, unknown> }, ctx);
 }

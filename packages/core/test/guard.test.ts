@@ -46,6 +46,31 @@ describe("guardDecision", () => {
   });
 });
 
+describe("the guard's names match as path segments, never inside an identifier (live demo, 2026-11-17)", () => {
+  // the demo's turn 1 was denied `process.env.HOLDBACK_TODAY`, which STACK.md asks the app to read
+  const write = (content: string) => denied("Write", { file_path: "src/server.js", content });
+  it("still denies Holdback's and Kane's folders, however a path spells them", () => {
+    for (const s of ["cat ~/.holdback/x", "type C:\\Users\\u\\.holdback\\v", "cat .testmuai/tests/a.md", 'const dir = "$HOME/.holdback";', "x=.holdback", "ls ./.TestMuai", "p = '.holdback'"]) {
+      expect(write(s), s).toBe(true);
+      expect(denied("Bash", { command: s }), s).toBe(true);
+    }
+    expect(denied("Read", { file_path: "C:\\Users\\u\\.holdback\\v\\verifier\\a.md" })).toBe(true);
+    expect(guardPayload({ tool_name: "Write", tool_input: { file_path: "a.js", content: "require('fs').readFileSync('/home/u/.testmuai/x')" } }, ctx).allow).toBe(false);
+  });
+  it("allows an identifier that only contains the name: an env var or a property", () => {
+    for (const s of ["const today = process.env.HOLDBACK_TODAY;", "const now = env.holdback_now;", "id = myobj.testmuai_id;", "const t = cfg.holdback;"]) {
+      expect(write(s), s).toBe(false);
+      expect(guardPayload({ tool_name: "Write", tool_input: { file_path: "src/server.js", content: s } }, ctx), s).toEqual({ allow: true });
+    }
+    expect(denied("Bash", { command: 'node -e "console.log(process.env.HOLDBACK_TODAY, process.env.HOLDBACK_NOW)"' })).toBe(false);
+  });
+  it("the git internals match the same way: another repo's .git or a longer key is not this repo's", () => {
+    for (const c of ["cat .git/config", "cat ./.git/hooks/pre-commit", "git -c core.hooksPath=/x status", "cat .git/config.worktree", "GIT_CONFIG_KEY_0=core.hooksPath git status"])
+      expect(denied("Bash", { command: c }), c).toBe(true);
+    for (const c of ["cat vendor/repo.git/config", "grep mycore.hooksPath notes.txt", "ls .git/hooksbackup"]) expect(denied("Bash", { command: c }), c).toBe(false);
+  });
+});
+
 describe("guardDecision hardening", () => {
   const sh = (command: string, tool = "Bash") => denied(tool, { command });
   it("rejects a tool_input that is not a plain object", () => {
