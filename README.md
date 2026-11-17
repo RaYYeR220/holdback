@@ -173,7 +173,7 @@ When a planted bug survives every test of a criterion, Holdback runs `kane-cli m
 
 ## Honest limits
 
-- The verifier is sealed, guarded and hashed, not sandboxed. Holdback does not isolate it at the OS level.
+- The verifier is sealed, guarded and hashed, not sandboxed. Holdback does not isolate it at the OS level. The deny rules and the guard stop the reads of it they recognise; a shell read through a path built at run time gets past them, so the agent could read the hidden tests. The hashes detect a change after the fact; they never stop a read.
 - Human-only commands are refused by an env check (`CLAUDECODE`) plus the guard hook's command rule. Both are best-effort against an agent that disguises its shell commands, and so is the guard's rule against shell writes onto the spec.
 - Holdback cannot tell who changed the spec. It treats a change as yours only when no agent turn has run since you last approved a spec change in the terminal or on the dashboard (Kane's seals and re-seals after a tamper do not count), and asks you otherwise.
 - In interactive mode, Bash edits to git-ignored files are not noticed until the agent's next Edit or Write.
