@@ -174,6 +174,52 @@ const loopEvents = async () =>
   (await readEvents(p.ledgerFile)).filter((e) => ["turn.start", "turn.end", "run", "regression", "tamper"].includes(e.t));
 
 // every test spawns git a dozen times; Windows process spawns are slow under a parallel suite
+describe("the agent disputes Kane's report (live demo, 2026-11-17)", { timeout: 60_000 }, () => {
+  it("two turns that change nothing while every owed criterion stands on Kane's report against the app stop the loop as disputed; Kane never re-checks unchanged code", async () => {
+    await setup();
+    const { deps, calls } = fakes({
+      edit: (turn) => void (turn === 1 && writeFileSync(join(appDir, "app.js"), "// turn 1\n")),
+      kane: (_turn, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))),
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({
+      allowStop: false,
+      turns: 3,
+      reason: "disputed",
+      disputed: { acs: ["ac-3"], tests: ["t-3"], titles: { "ac-3": "Eligibility check approves income above displayed limit" } },
+    });
+    // turns 2 and 3 changed nothing: Kane's report on the same code stands, no new run (turn 3 skips its regression replay too)
+    expect(calls.tests.map((t) => t.turn)).toEqual([1]);
+    expect(calls.claude).toHaveLength(3);
+    const events = await readEvents(p.ledgerFile);
+    expect(events.find((e) => e.t === "build.disputed")).toEqual({ at: expect.any(String), t: "build.disputed", acs: ["ac-3"], tests: ["t-3"], turns: [2, 3], titles: { "ac-3": "Eligibility check approves income above displayed limit" } });
+    const s = reduce(events);
+    expect(s.acs["ac-3"]!.status).toBe("owed");
+    expect(s.disputed).toEqual({ acs: ["ac-3"], tests: ["t-3"], turns: [2, 3], titles: { "ac-3": "Eligibility check approves income above displayed limit" } });
+  });
+
+  it("one turn that changes nothing is no dispute: Kane skips it, and checks the next turn's change", async () => {
+    await setup();
+    const { deps, calls } = fakes({
+      edit: (turn) => void (turn !== 2 && writeFileSync(join(appDir, "app.js"), `// turn ${turn}\n`)),
+      kane: (turn, files) => files.map((f) => (turn === 1 && idOf(f) === "t-3" ? fail(f) : pass(f))),
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toEqual({ allowStop: true, turns: 3, reason: "gate-open" });
+    // turn 3 also replays the passing criteria (every third turn)
+    expect([...new Set(calls.tests.map((t) => t.turn))]).toEqual([1, 3]);
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "build.disputed")).toBe(false);
+  });
+
+  it("turns that change nothing while a criterion has no report from Kane (the app is down) are no dispute: the turn limit stops them", async () => {
+    await setup({ config: { loop: { maxTurns: 3 } } });
+    const { deps } = fakes({ edit: () => {}, appUp: () => false, kane: (_t, files) => files.map(pass) });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, reason: "max-turns" });
+    expect((await readEvents(p.ledgerFile)).some((e) => e.t === "build.disputed")).toBe(false);
+  });
+});
+
 describe("runBuildLoop", { timeout: 60_000 }, () => {
   it("fails ac-3 on turn 1, briefs it with Kane's verdict on turn 2, then opens the gate", async () => {
     await setup();

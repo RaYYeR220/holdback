@@ -14,7 +14,7 @@ export type RunKind = "build" | "falsify" | "exam" | "bisect" | "replay";
  * record on its own): the Kane credit cap, a spec change, Kane runs that proved nothing, the turn
  * limit, an interrupt or an error.
  */
-export type RunStop = "kane-budget" | "drift" | "inconclusive" | "max-turns" | "aborted" | "error";
+export type RunStop = "kane-budget" | "drift" | "inconclusive" | "max-turns" | "aborted" | "error" | "disputed";
 
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }
@@ -127,6 +127,13 @@ export type LedgerEvent = { at: string } & (
    * that exit code, until a run ends without one.
    */
   | { t: "run.end"; stop?: RunStop; exit?: number; detail?: string }
+  /**
+   * The coding agent disputes Kane's report: two agent turns in a row (`turns`) changed no file while
+   * every criterion still owed (`acs`) stood on Kane's report of an app failure (`tests`: the failing
+   * test of each, in the same order; `titles`: Kane's bug title by criterion). The build loop stops
+   * for a human to review the report.
+   */
+  | { t: "build.disputed"; acs: string[]; tests: string[]; turns: number[]; titles?: Record<string, string> }
 );
 
 /** `rejected`: a human turned the criterion down when approving the design: never owed, never run. */
@@ -176,4 +183,9 @@ export type LedgerState = {
   tampered: boolean;
   /** How the latest `holdback run` stopped, when it did not finish clean (its `run.end`); absent otherwise. */
   stopped?: { reason: RunStop; exit: number; detail?: string };
+  /**
+   * The latest dispute of Kane's report by the coding agent (`build.disputed`), until a turn changes
+   * code again or a seal re-plans the tests.
+   */
+  disputed?: { acs: string[]; tests: string[]; turns: number[]; titles: Record<string, string> };
 };

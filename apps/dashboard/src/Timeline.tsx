@@ -16,6 +16,7 @@ function Glyph({ item }: { item: Item }) {
     case "tamper":
     case "regression":
     case "stopped":
+    case "disputed":
       return <i className="g g-alarm" aria-hidden="true" />;
     default:
       return <Ring status="needs-spec" />;
@@ -140,6 +141,10 @@ function Row({ item, live }: { item: Item; live: boolean }) {
     case "stopped":
       title = `The run stopped (exit ${item.exit}): held back`;
       detail = item.detail ?? item.reason;
+      break;
+    case "disputed":
+      title = `The agent disputes Kane's report on ${item.acs.join(", ")}: review it`;
+      detail = `${item.acs.map((ac, i) => `${ac}${item.tests[i] ? ` (${item.tests[i]})` : ""}: “${item.titles[ac] ?? "failed"}”`).join(" · ")} · turns ${item.turns.join(" and ")} changed nothing, and Kane did not check the same code again`;
       break;
     case "dropped":
       title = `Kane's change rolled back (${item.useCases.join(", ")})`;

@@ -54,6 +54,14 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           }
         }
         state.tampered = false;
+        delete state.disputed; // the tests a dispute was about may be re-planned
+        break;
+      case "build.disputed":
+        state.disputed = { acs: [...e.acs], tests: [...e.tests], turns: [...e.turns], titles: { ...e.titles } };
+        break;
+      case "turn.end":
+        // the agent changed code: whatever it disputed is Kane's to check again
+        if (e.filesChanged.length > 0) delete state.disputed;
         break;
       case "design": {
         for (const t of e.tests) unsure.delete(t.id); // a re-designed test starts over

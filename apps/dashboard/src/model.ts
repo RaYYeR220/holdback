@@ -380,7 +380,9 @@ export type Item =
   /** N-1: a `holdback run` that stopped short of a clean finish, and its exit code. */
   | { kind: "stopped"; at: string; reason: string; exit: number; detail?: string }
   /** R40: a planted bug got past every test of `uc`, and Kane evolved it: what it was told, what it minted and retired. */
-  | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean };
+  | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean }
+  /** The coding agent disputes Kane's report: `turns` changed nothing while Kane's report on `acs` stood (their `tests`, Kane's bug titles). */
+  | { kind: "disputed"; at: string; acs: string[]; tests: string[]; turns: number[]; titles: Record<string, string> };
 
 export type Segment = {
   key: string;
@@ -554,6 +556,9 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         break;
       case "falsify.evolved":
         seg.items.push({ kind: "evolved", at: e.at, uc: e.uc, because: e.because, minted: e.minted, retired: e.retired, credits: e.credits, followUp: e.followUp === true });
+        break;
+      case "build.disputed":
+        seg.items.push({ kind: "disputed", at: e.at, acs: e.acs, tests: e.tests, turns: e.turns, titles: e.titles ?? {} });
         break;
       default:
         break; // recordings: Holdback's own baseline, nothing to show

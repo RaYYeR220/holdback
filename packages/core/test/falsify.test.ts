@@ -527,6 +527,20 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
   const survives3 = (ac: string, files: string[]) => files.map(ac === "ac-1" ? failOn("ac-1") : pass);
 
+  it("with the gate shut (`holdback run` stopped on Kane's own runs or a dispute), falsifies the passing criteria and replays only their tests: code the agent did not change is not checked again (live demo)", async () => {
+    // ac-3's test failed on the app in turn 2: it regressed, and stays so
+    await setup({ before: async () => void (await log({ at, t: "run", kind: "build", turn: 2, result: failOn("ac-3")(T3) })) });
+    expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("regressed");
+    const { deps, io, calls } = fakes({ mutantRun: (_ac, files) => files.map(failOn("ac-1")) });
+    const r = await runFalsify(p, deps, io, log, { gateShut: true });
+    expect(r).toMatchObject({ killed: ["ac-1"], survived: [], reason: "done" });
+    // the closing replay ran ac-1's test only, never ac-3's
+    expect(calls.tests.filter((t) => !t.opts.noHeal).map((t) => t.files)).toEqual([[T1]]);
+    const s = reduce(await readEvents(p.ledgerFile));
+    expect(s.acs["ac-1"]!.status).toBe("proved");
+    expect(s.acs["ac-3"]!.status).toBe("regressed");
+  });
+
   it("a surviving AC sends its use case to Kane's maintain evolve: told what slipped through, its new set replaces the old tests, sealed by Kane, every criterion owed again and the new tests replayed (R40)", async () => {
     await setup();
     const sealedBefore = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;

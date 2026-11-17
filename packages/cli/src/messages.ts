@@ -82,6 +82,22 @@ export function inconclusiveLine(list: LedgerState["inconclusive"], countOnly = 
   return `Inconclusive Kane runs (not counted; their criteria kept their status): ${runs.join("; ")}`;
 }
 
+/** One line per criterion the coding agent disputes: `ac-2 (t-2): "Kane's bug title"`. */
+export function disputedLines(d: { acs: string[]; tests: string[]; titles?: Record<string, string> }): string[] {
+  return d.acs.map((ac, i) => `${ac}${d.tests[i] ? ` (${d.tests[i]})` : ""}: "${d.titles?.[ac] ?? "failed"}"`);
+}
+
+/** Why `holdback run` stopped when the coding agent disputes Kane's report (`build.disputed`). */
+export function disputedStop(d: { acs: string[]; tests: string[]; titles?: Record<string, string> } | undefined): string {
+  const lines = d ? disputedLines(d) : [];
+  return [
+    "The coding agent changed nothing for two turns while Kane's report of an app failure on these criteria stood: it disputes the report.",
+    ...lines.map((l) => `  ${l}`),
+    "Kane does not check the same code again. Review the report (`holdback status`, the dashboard): if Kane's test is wrong,",
+    "edit the spec so Kane re-plans it (`holdback drift`); if the app is wrong, run `holdback run` again and the agent is briefed again.",
+  ].join("\n");
+}
+
 /** Why `holdback run` stopped when only Kane runs that proved nothing, even re-checked, keep the gate shut. */
 export function inconclusiveStop(list: LedgerState["inconclusive"]): string {
   const runs = list.map((u) => `${u.test}${u.turn !== undefined ? ` (turn ${u.turn})` : ""}: ${u.reason}`).join("; ");

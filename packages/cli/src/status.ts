@@ -1,6 +1,6 @@
 import { loadProject, retiredTests } from "@holdback/core";
 import { EXIT, explainFailure, humanView, jsonForTerminal, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
-import { inconclusiveLine, kaneCreditsText } from "./messages.js";
+import { disputedLines, inconclusiveLine, kaneCreditsText } from "./messages.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -83,6 +83,8 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   // the agent's count is what keeps the gate shut
   const unsure = agent ? inconclusiveLine(s.gate.inconclusive, true) : inconclusiveLine(s.state.inconclusive);
   if (unsure) ctx.out(unsure);
+  // the agent disputes Kane's report: which criteria, and Kane's own words on them (what its brief carried)
+  if (s.state.disputed && s.state.stopped?.reason === "disputed") ctx.out(`Disputed by the agent: ${disputedLines(s.state.disputed).join("; ")}`);
   const tests = (n: number) => `${n} test${n === 1 ? "" : "s"}`;
   for (const e of evolved) {
     ctx.out(`${e.uc} evolved${e.followUp ? " again, to cover criteria its tests had lost" : ""}: ${tests(e.minted.length)} minted, ${e.retired.length} retired (${e.credits} credits)`);

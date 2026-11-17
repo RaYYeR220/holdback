@@ -495,6 +495,12 @@ export type FalsifyOptions = {
    * `holdback run` passes one map to each of its falsify passes. Default: this pass's own.
    */
   evolves?: Map<string, number>;
+  /**
+   * The build loop's gate is shut (Kane's own inconclusive runs, or the agent disputes Kane's report):
+   * the passing criteria are falsified all the same, but the closing replay runs only the tests of
+   * the criteria this pass attacked, never the owed ones: the agent did not change that code.
+   */
+  gateShut?: boolean;
 };
 
 /**
@@ -524,6 +530,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   let kaneWindow = false;
   /** A Kane batch ran against a mutant in this pass (its coverage now sits in Kane's project store). */
   let attacked = false;
+  /** The criteria whose tests ran against a mutant in this pass. */
+  const attackedAcs = new Set<string>();
   let running: RunningApp | undefined;
   /** This pass's surviving mutants, for Kane's evolve (R40). */
   const survivors: Survivor[] = [];
@@ -793,6 +801,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       return await meter.batch("falsify", async () => {
         kaneWindow = true;
         attacked = true;
+        attackedAcs.add(ac.id);
         const fileId = testIdsByFile();
         const attribute = (r: TestRunResult, file: string): TestRunResult => (r.testId == null ? { ...r, testId: fileId.get(file) ?? null } : r);
         let results: TestRunResult[];
@@ -1148,7 +1157,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   const replayRealBuild = async (): Promise<"tamper" | "done"> => {
     const state = reduce(events);
     const acs = Object.values(state.acs)
-      .filter((a) => a.tests.length > 0)
+      .filter((a) => a.tests.length > 0 && (!opts.gateShut || attackedAcs.has(a.id)))
       .sort(byAcId);
     const files = filesOf(acs, testFileMap(events, p.verifierDir));
     if (files.length === 0) return "done";

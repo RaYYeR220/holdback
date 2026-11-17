@@ -54,8 +54,10 @@ export type BuildOptions = {
  * `inconclusive`: only Kane runs that proved nothing keep the gate shut, and a re-check proved nothing again.
  * `drift`: a spec file (and nothing else sealed) changed since the seal: a human re-plans it with `holdback drift`.
  * `budget`: the project's measured Kane spend reached its credit cap (`kane.capCredits`, `--kane-cap`).
+ * `disputed`: the coding agent disputes Kane's report: two turns in a row changed no file while every
+ * criterion still owed stood on Kane's report of an app failure (`DISPUTE_TURNS`).
  */
-export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift" | "budget";
+export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift" | "budget" | "disputed";
 /**
  * `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on
  * record); `inconclusive` the tests that keep the gate shut, for an `inconclusive` stop.
@@ -68,7 +70,34 @@ export type BuildResult = {
   inconclusive?: LedgerState["inconclusive"];
   /** For a `drift` stop: the spec files that changed, and whether the coding agent may have made the change (R37). */
   specChange?: { files: string[]; duringAgentTurn: boolean };
+  /** For a `disputed` stop: the criteria whose report the agent disputes, the failing test of each (same order), and Kane's bug title by criterion. */
+  disputed?: { acs: string[]; tests: string[]; titles: Record<string, string> };
 };
+
+/** How many agent turns in a row that change no file, with nothing owed but Kane's reports of app failures, are a dispute. */
+export const DISPUTE_TURNS = 2;
+
+/**
+ * The dispute an agent turn that changed no file makes, when every criterion still owed (the same
+ * ones as the turn before) stands on Kane's report of an app failure, or undefined: none when one has
+ * no report from Kane yet, or one of its tests' latest run proved nothing (Kane's to redo).
+ */
+function disputeOf(state: LedgerState, owed: AcState[]): { acs: string[]; tests: string[]; titles: Record<string, string> } | undefined {
+  if (owed.length === 0) return undefined;
+  const unsure = new Set(gate(state).inconclusive.map((u) => u.test));
+  if (owed.some((a) => a.tests.some((t) => unsure.has(t)))) return undefined;
+  const acs: string[] = [];
+  const tests: string[] = [];
+  const titles: Record<string, string> = {};
+  for (const a of owed) {
+    const f = state.acs[a.id]?.lastFailure;
+    if (!f) return undefined; // Kane has not reported on it: nothing to dispute
+    acs.push(a.id);
+    tests.push(f.test);
+    titles[a.id] = f.verdict?.bugTitle ?? f.reason ?? `${f.test} failed`;
+  }
+  return { acs, tests, titles };
+}
 
 /**
  * What a session's Kane batches did. `tampered`: a sealed file changed meanwhile, and nothing but
@@ -606,6 +635,11 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
 
     let startError: string | undefined;
     let lastTurn = 0;
+    /** The commit Kane last checked the owed tests on, in this loop: a turn that leaves it unchanged is not checked again. */
+    let checkedAt: string | undefined;
+    /** Agent turns in a row that changed no file, and the criteria owed at the first of them. */
+    let unchanged = 0;
+    let unchangedOwed = "";
     /** Kane re-checked the tests whose latest run proved nothing, without an agent turn (once per call). */
     let rechecked = false;
     /** The last replay's app did not start: the green criteria were not replayed, so the gate waits for a turn that does (m-8). */
@@ -684,6 +718,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       // 2. commit the turn (never the spec files: they are the human's), restart the app
       const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, s.gitOpts, p.config.spec);
       const filesChanged = commit && before ? await changedFiles(p.appDir, before, commit, s.gitOpts) : [];
+      const head = commit ?? (await headSha(p.appDir, s.gitOpts)) ?? "";
       // another program on the port is the human's to fix: the run stops, but the committed turn goes on record first (M11)
       let portInUse: PortInUse | undefined;
       try {
@@ -695,7 +730,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       await s.emit({
         t: "turn.end",
         n,
-        commit: commit ?? (await headSha(p.appDir, s.gitOpts)) ?? "",
+        commit: head,
         filesChanged,
         durationMs: agent.durationMs,
         appUp: s.app !== undefined,
@@ -706,10 +741,36 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       if (portInUse) throw portInUse;
       if (opts.signal?.aborted) return done(false, "aborted"); // the turn is committed and on record; the app stops in `finally`
       if (drifted) return drift();
+      // the agent disputes Kane's report: turns in a row that change nothing while every owed criterion
+      // stands on Kane's report of an app failure. A human reviews the report; Kane does not check the
+      // same code again (live demo, 2026-11-17)
+      const owedKey = owed.map((a) => a.id).join(",");
+      if (filesChanged.length === 0) {
+        unchanged = unchanged > 0 && owedKey === unchangedOwed ? unchanged + 1 : 1;
+        unchangedOwed = owedKey;
+      } else unchanged = 0;
+      if (unchanged >= DISPUTE_TURNS) {
+        const d = disputeOf(state, owed);
+        if (d) {
+          await s.emit({ t: "build.disputed", acs: d.acs, tests: d.tests, turns: Array.from({ length: unchanged }, (_, i) => n - unchanged + 1 + i), titles: d.titles });
+          return { ...done(false, "disputed"), disputed: d };
+        }
+      }
       if (!s.app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top
+      // the code Kane last checked, unchanged: its report on it stands. Only an owed test whose latest
+      // run proved nothing (Kane's own trouble) runs again; no regression replay
+      let files = owedFiles;
+      const same = filesChanged.length === 0 && checkedAt !== undefined && checkedAt === head;
+      if (same) {
+        const owedTests = new Set(owed.flatMap((a) => a.tests));
+        const again = gate(reduce(s.events)).inconclusive.filter((u) => owedTests.has(u.test));
+        files = [...new Set(again.flatMap((u) => fileOf.get(u.test) ?? []))];
+        if (files.length === 0) continue;
+      }
 
       // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then
-      const v = await s.verify(n, owedFiles, fileOf, n % REPLAY_EVERY === 0);
+      const v = await s.verify(n, files, fileOf, !same && n % REPLAY_EVERY === 0);
+      if (v.startError === undefined) checkedAt = head;
       replayMissed = v.startError !== undefined;
       if (v.startError !== undefined) startError = v.startError;
       // a drift stops the run below: no bisect (its credits) for criteria a human is about to re-plan

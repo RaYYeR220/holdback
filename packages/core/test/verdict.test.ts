@@ -32,6 +32,43 @@ describe("verdict", () => {
     });
   });
 
+  it("a run stopped because the agent disputes Kane's report says so, names the criteria, and holds back with its exit code; a later turn that changes code ends the dispute (live demo)", () => {
+    const at = "2026-11-17T10:00:00.000Z";
+    const design: LedgerEvent = {
+      at,
+      t: "design",
+      useCase: "uc-1",
+      acs: ["ac-1", "ac-2"].map((id) => ({ id, text: id, useCase: "uc-1", cites: [], trust: "derived" })),
+      tests: [
+        { id: "t-1", title: "one", file: "t1.md", verifies: ["ac-1"] },
+        { id: "t-2", title: "two", file: "t2.md", verifies: ["ac-2"] },
+      ],
+      gaps: [],
+      credits: 0,
+    };
+    const run = (test: string, status: "passed" | "failed"): LedgerEvent => ({
+      at,
+      t: "run",
+      kind: "build",
+      turn: 1,
+      result: { testFile: `${test}.md`, testId: test, status, steps: [], criteriaPassed: [], criteriaFailed: [], credits: 0, replayDecisions: 0, authorDecisions: 0, healTriggered: false, durationS: 1, ...(status === "failed" ? { verdict: { bugTitle: "No volunteer link" } } : {}) },
+    });
+    const events: LedgerEvent[] = [
+      design,
+      { at, t: "seal", manifest: {} },
+      run("t-1", "passed"),
+      run("t-2", "failed"),
+      { at, t: "build.disputed", acs: ["ac-2"], tests: ["t-2"], turns: [2, 3], titles: { "ac-2": "No volunteer link" } },
+      { at, t: "run.end", stop: "disputed", exit: 3, detail: "Falsified the 1 passing criterion; the gate stays shut: the agent disputes Kane's report on ac-2" },
+    ];
+    const v = verdict(reduce(events));
+    expect(v).toMatchObject({ released: false, exit: 3, headline: "Held back — 1/2 green, 1 owed, the agent disputes Kane's report on ac-2: review it" });
+    expect(v.stops).toEqual(["the agent disputes Kane's report on ac-2: review it"]);
+    // the next turn changes code: no dispute any more
+    const after = reduce([...events, { at, t: "turn.start", n: 4, owed: ["ac-2"] }, { at, t: "turn.end", n: 4, commit: "def", filesChanged: ["src/app.js"], durationMs: 1, appUp: true, agentExit: 0 }]);
+    expect(after.disputed).toBeUndefined();
+  });
+
   it("is released only when every criterion not turned down is proved or passing and the gate is open", () => {
     const v = verdict(state([ac("ac-1", "proved"), ac("ac-2", "passing"), ac("ac-3", "rejected", [])]));
     expect(v).toMatchObject({ state: "released", released: true, word: "Released", headline: "Released — 2/2 green, 1/2 proved", exit: 0 });

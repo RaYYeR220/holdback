@@ -841,6 +841,75 @@ describe("run", () => {
     expect(r.out).toContain("Gate: ");
   });
 
+  describe("the gate stays shut, the passing criteria are falsified anyway (live demo, 2026-11-17)", () => {
+    const inconclusive = [{ test: "t-9", turn: 3, reason: "timeout" }];
+    const stuck: BuildResult = { allowStop: false, turns: 3, reason: "inconclusive", inconclusive };
+
+    it("a build loop stopped on Kane's own inconclusive runs: falsify runs over the passing criteria, with its replay kept to them, then the run stops held back (exit 3)", async () => {
+      await greenFixture();
+      const s = stages({ build: [stuck] });
+      s.deps.runFalsify = async (_p, _d, _io, _log, opts) => {
+        s.calls.push("falsify");
+        s.seen.falsify.push(opts);
+        await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "killed" });
+        return { ...falsifyOk, killed: ["ac-1"] };
+      };
+      const r = await cli(["run"], s.deps);
+      expect(r.code).toBe(3);
+      expect(s.calls).toEqual(["build", "falsify"]);
+      expect(s.seen.falsify[0]).toMatchObject({ gateShut: true });
+      expect(r.out).toContain("The gate is shut (1 Kane run inconclusive): falsifying the 2 passing criteria anyway");
+      expect(r.err).toContain("Falsified the 2 passing criteria; the gate stays shut: 1 Kane run inconclusive");
+      expect(r.err).toContain("t-9 (turn 3): timeout");
+      expect(r.out).toMatch(/Verdict: Held back — 2\/2 green, .*the last run stopped: Kane could not finish checking a test/);
+      expect(r.out).toContain("1 proved");
+      const end = (await readEventsOf()).findLast((e) => e.t === "run.end") as Extract<LedgerEvent, { t: "run.end" }>;
+      expect(end).toMatchObject({ stop: "inconclusive", exit: 3, detail: expect.stringMatching(/^Falsified the 2 passing criteria; the gate stays shut: 1 Kane run inconclusive/) });
+      // --no-falsify: nothing is attacked
+      const plain = stages({ build: [stuck] });
+      expect((await cli(["run", "--no-falsify"], plain.deps)).code).toBe(3);
+      expect(plain.calls).toEqual(["build"]);
+    });
+
+    it("a falsify pass that evolves a use case with the gate shut builds nothing more: the next `holdback run` does; a falsify stop still wins", async () => {
+      await greenFixture();
+      const evolved = stages({ build: [stuck], falsify: [{ ...falsifyOk, survived: ["ac-1"], redesigned: ["uc-1"], evolved: [{ uc: "uc-1", because: "b" }] }] });
+      const r = await cli(["run"], evolved.deps);
+      expect(evolved.calls).toEqual(["build", "falsify"]);
+      expect(r.code).toBe(3);
+      expect(r.out).toContain("Kane evolved the tests of uc-1 after a planted bug got past them: the next `holdback run` builds them");
+      const tamper = stages({ build: [stuck], falsify: [{ ...falsifyOk, reason: "tamper", error: "sealed files changed" }] });
+      expect((await cli(["run"], tamper.deps)).code).toBe(2);
+    });
+
+    it("the agent disputes Kane's report: the run stops (exit 3) naming the criteria and Kane's bug titles, falsifies what passes, and status says to review it", async () => {
+      await fixture(); // ac-1 passing, ac-2 owed: t-2 failed, "Limit off by one"
+      const s = stages();
+      s.deps.runBuildLoop = async (_p, _d, logFn) => {
+        s.calls.push("build");
+        await logFn({ at, t: "turn.start", n: 2, owed: ["ac-2"] });
+        await logFn({ at, t: "turn.end", n: 2, commit: "abc", filesChanged: [], durationMs: 1, appUp: true, agentExit: 0 });
+        await logFn({ at, t: "turn.start", n: 3, owed: ["ac-2"] });
+        await logFn({ at, t: "turn.end", n: 3, commit: "abc", filesChanged: [], durationMs: 1, appUp: true, agentExit: 0 });
+        await logFn({ at, t: "build.disputed", acs: ["ac-2"], tests: ["t-2"], turns: [2, 3], titles: { "ac-2": "Limit off by one" } });
+        return { allowStop: false, turns: 2, reason: "disputed", disputed: { acs: ["ac-2"], tests: ["t-2"], titles: { "ac-2": "Limit off by one" } } };
+      };
+      const r = await cli(["run"], s.deps);
+      expect(r.code).toBe(3);
+      expect(s.calls).toEqual(["build", "falsify"]);
+      expect(r.err).toContain("Falsified the 1 passing criterion; the gate stays shut: the agent disputes Kane's report on ac-2");
+      expect(r.err).toContain('ac-2 (t-2): "Limit off by one"');
+      expect(r.err).toContain("holdback drift");
+      const headline = /Verdict: (.*)/.exec(r.out)?.[1];
+      expect(headline).toContain("Held back");
+      expect(headline).toContain("the agent disputes Kane's report on ac-2: review it");
+      const status = await cli(["status"]);
+      expect(status.out).toContain(`Verdict: ${headline}`);
+      expect(status.out).toContain('Disputed by the agent: ac-2 (t-2): "Limit off by one"');
+      expect(JSON.parse((await cli(["status", "--json"])).out).verdict).toMatchObject({ exit: 3, headline });
+    });
+  });
+
   it("builds, falsifies, and prints the one-screen summary", async () => {
     await greenFixture();
     const s = stages();

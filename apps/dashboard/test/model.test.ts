@@ -198,6 +198,16 @@ describe("timeline", () => {
     ]);
   });
 
+  it("shows a dispute: the agent changed nothing for two turns while Kane's report on the app stood (live demo)", () => {
+    const events = [
+      ev({ t: "turn.start", n: 2, owed: ["ac-5"] }),
+      ev({ t: "build.disputed", acs: ["ac-5"], tests: ["t-7"], turns: [2, 3], titles: { "ac-5": "Volunteer list link missing" } }),
+    ];
+    expect(timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "disputed")).toEqual([
+      { kind: "disputed", at, acs: ["ac-5"], tests: ["t-7"], turns: [2, 3], titles: { "ac-5": "Volunteer list link missing" } },
+    ]);
+  });
+
   it("shows Kane's evolve after a surviving planted bug as a loop event: minted, retired, the because and its credits (R40)", () => {
     const because = "A planted bug got past every test of this use case. ac-3: a household of 9 is held to the 8-person limit.";
     const events = [
