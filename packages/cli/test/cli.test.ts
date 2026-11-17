@@ -920,6 +920,16 @@ describe("run", () => {
       const agent = await cli(["status"], { env: { CLAUDECODE: "1" } });
       expect(agent.out).toContain('Stalled: disputed, review them: ac-2 (t-2): "Limit off by one"; inconclusive: 1 test');
       expect(agent.out).not.toContain("t-1: timeout");
+      // its `status --json`: the stall reduced to counts, like `state.inconclusive`; no stop detail either
+      const agentJson = JSON.parse((await cli(["status", "--json"], { env: { CLAUDECODE: "1" } })).out);
+      expect(agentJson.state.stalled).toEqual({ turns: [2, 3], disputed: 1, inconclusive: 1 });
+      expect(agentJson.state.stopped).toMatchObject({ reason: "stalled", exit: 3 });
+      expect(agentJson.state.stopped.detail).toBeUndefined();
+      expect(JSON.stringify(agentJson)).not.toContain("timeout"); // why Kane's runs proved nothing
+      expect(JSON.stringify([agentJson.state.stalled, agentJson.state.stopped])).not.toContain("Limit off by one"); // (its brief carried the report itself)
+      // the human's keeps every detail
+      const humanJson = JSON.parse((await cli(["status", "--json"])).out);
+      expect(humanJson.state.stalled).toEqual(stalled);
     });
   });
 

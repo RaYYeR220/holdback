@@ -283,6 +283,26 @@ describe("a stalled build loop: the agent changes nothing on code Kane checked (
     expect(calls.stops).toBe(calls.starts);
   });
 
+  it("an Edit the guard recorded counts only for a git-ignored file in the app: a tracked file left as it was, a path outside it, .git, the config or the spec still stall the loop", async () => {
+    await setup();
+    writeFileSync(join(appDir, ".gitignore"), ".env\n");
+    const record = (...paths: string[]) => {
+      for (const f of paths) appendFileSync(join(p.home, "agent-edits.log"), JSON.stringify({ tool: "Write", path: f }) + "\n");
+    };
+    const { deps, calls } = fakes({
+      edit: (turn) => {
+        if (turn === 1) writeFileSync(join(appDir, "app.js"), "// turn 1\n");
+        // the agent rewrote app.js with what it held, and tried paths the guard records but that are no change of the app's
+        else record(join(appDir, "app.js"), join(root, "outside.txt"), join(appDir, ".git", "config"), "holdback.config.json", "PRD.md", join(p.verifierDir, "x.md"));
+      },
+      kane: (_t, files) => files.map((f) => (idOf(f) === "t-3" ? fail(f) : pass(f))),
+    });
+    const r = await runBuildLoop(p, deps, log);
+    expect(r).toMatchObject({ allowStop: false, reason: "stalled", turns: 3 });
+    expect(calls.tests.map((t) => t.turn)).toEqual([1]);
+    expect(calls.stops).toBe(calls.starts);
+  });
+
   it("an Edit the guard recorded counts as a change though git sees none (a git-ignored file), and so does a commit the agent made itself", async () => {
     await setup({ config: { loop: { maxTurns: 3 } } });
     writeFileSync(join(appDir, ".gitignore"), ".env\n");

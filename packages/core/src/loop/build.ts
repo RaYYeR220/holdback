@@ -6,7 +6,7 @@ import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
 import { guardHookCommand, writeAgentSettings } from "../agent/guard.js";
 import { AppStartError, PortInUse, startApp, type RunningApp } from "../app.js";
 import { appEnv, DATA_DIR_ENV, freshDataDir } from "../datadir.js";
-import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, headSha, isRepoRoot, type GitOptions } from "../git.js";
+import { changedFiles, commitAll, EMPTY_HOOKS_DIR, ensureHead, excludeFromGit, git, headSha, isRepoRoot, type GitOptions } from "../git.js";
 import { balance } from "../kane/assurance.js";
 import { notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 import { KaneCapReached, KaneMeter, type BalanceReader, type KaneCap } from "../ledger/credits.js";
@@ -90,12 +90,41 @@ function stallOf(state: LedgerState, turns: number[]): Stall {
   return { turns, disputed, inconclusive: gate(state).inconclusive.map((u) => ({ test: u.test, reason: u.reason })) };
 }
 
-/** True when the guard recorded an Edit or Write of the agent's in this turn. */
-const agentEdited = (home: string): Promise<boolean> =>
-  readFile(path.join(home, AGENT_EDITS), "utf8").then(
-    (t) => t.trim() !== "",
-    () => false,
-  );
+/**
+ * True when the guard recorded an Edit or Write of the agent's in this turn to a git-ignored file of
+ * the app: a change git does not see (a tracked file's change shows in the turn's commit). A path
+ * outside the app, under `.git`, the config or a spec file never counts. (The hook runs before the
+ * call, so an edit that then failed still counts: a stall waits a turn longer, never a change missed.)
+ */
+async function agentEdited(p: Project, gitOpts: GitOptions): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(path.join(p.home, AGENT_EDITS), "utf8");
+  } catch {
+    return false;
+  }
+  const inApp = (f: string) => path.relative(p.appDir, path.resolve(p.appDir, f)).split(path.sep).join("/");
+  const own = new Set(["holdback.config.json", ...p.config.spec].map(inApp));
+  const rels: string[] = [];
+  for (const line of text.split("\n")) {
+    let rec: unknown;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const f = rec && typeof rec === "object" ? (rec as { path?: unknown }).path : undefined;
+    if (typeof f !== "string" || f === "") continue;
+    const slashed = inApp(f);
+    if (slashed === "" || slashed === ".." || slashed.startsWith("../") || path.isAbsolute(slashed)) continue;
+    if (slashed === ".git" || slashed.startsWith(".git/") || own.has(slashed)) continue;
+    rels.push(slashed);
+  }
+  if (rels.length === 0) return false;
+  // `git check-ignore` exits 0 when at least one of them is ignored
+  const r = await git(p.appDir, ["check-ignore", "-q", "--", ...new Set(rels)], gitOpts);
+  return r.code === 0;
+}
 
 /**
  * What a session's Kane batches did. `tampered`: a sealed file changed meanwhile, and nothing but
@@ -720,7 +749,7 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       // what the turn changed, from the commit before it: a commit the agent made itself counts too (M4)
       const filesChanged = before && head && head !== before ? await changedFiles(p.appDir, before, head, s.gitOpts) : [];
       // the same code Kane last checked: no file changed, no Edit or Write on the guard's record (a git-ignored file)
-      const sameCode = filesChanged.length === 0 && checkedAt !== undefined && checkedAt === head && !(await agentEdited(p.home));
+      const sameCode = filesChanged.length === 0 && checkedAt !== undefined && checkedAt === head && !(await agentEdited(p, s.gitOpts));
       // another program on the port is the human's to fix: the run stops, but the committed turn goes on record first (M11)
       let portInUse: PortInUse | undefined;
       try {

@@ -1,6 +1,20 @@
-import { loadProject, retiredTests } from "@holdback/core";
+import { loadProject, retiredTests, type LedgerState } from "@holdback/core";
 import { EXIT, explainFailure, humanView, jsonForTerminal, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
 import { disputedLines, inconclusiveLine, kaneCreditsText, unsureLines } from "./messages.js";
+
+/**
+ * The ledger state as the coding agent may read it (`status --json` inside Claude Code): which tests
+ * proved nothing, and why, reduced to counts, a stall's groups too, and no stop detail (it names them).
+ */
+function agentState(state: LedgerState): Record<string, unknown> {
+  const { detail: _detail, ...stopped } = state.stopped ?? ({} as NonNullable<LedgerState["stopped"]>);
+  return {
+    ...state,
+    inconclusive: state.inconclusive.length,
+    ...(state.stopped ? { stopped } : {}),
+    ...(state.stalled ? { stalled: { turns: state.stalled.turns, disputed: state.stalled.disputed.length, inconclusive: state.stalled.inconclusive.length } } : {}),
+  };
+}
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -35,7 +49,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
       jsonForTerminal(
         JSON.stringify(
         {
-          state: agent ? { ...s.state, inconclusive: s.state.inconclusive.length } : s.state,
+          state: agent ? agentState(s.state) : s.state,
           gate: {
             open,
             tampered: s.gate.tampered,
