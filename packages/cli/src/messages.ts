@@ -1,4 +1,4 @@
-import type { LedgerState } from "@holdback/core";
+import { STALL_TURNS, type LedgerState, type Stall } from "@holdback/core";
 
 /** What a tamper means to the human, and what to do about it. */
 export function tamperMessage(detail: string): string {
@@ -82,20 +82,28 @@ export function inconclusiveLine(list: LedgerState["inconclusive"], countOnly = 
   return `Inconclusive Kane runs (not counted; their criteria kept their status): ${runs.join("; ")}`;
 }
 
-/** One line per criterion the coding agent disputes: `ac-2 (t-2): "Kane's bug title"`. */
-export function disputedLines(d: { acs: string[]; tests: string[]; titles?: Record<string, string> }): string[] {
-  return d.acs.map((ac, i) => `${ac}${d.tests[i] ? ` (${d.tests[i]})` : ""}: "${d.titles?.[ac] ?? "failed"}"`);
-}
+/** One line per Kane report a stall lists as disputed: `ac-2 (t-2): "Kane's bug title"`. */
+export const disputedLines = (st: Stall): string[] => st.disputed.map((d) => `${d.ac} (${d.test}): "${d.title}"`);
 
-/** Why `holdback run` stopped when the coding agent disputes Kane's report (`build.disputed`). */
-export function disputedStop(d: { acs: string[]; tests: string[]; titles?: Record<string, string> } | undefined): string {
-  const lines = d ? disputedLines(d) : [];
-  return [
-    "The coding agent changed nothing for two turns while Kane's report of an app failure on these criteria stood: it disputes the report.",
-    ...lines.map((l) => `  ${l}`),
-    "Kane does not check the same code again. Review the report (`holdback status`, the dashboard): if Kane's test is wrong,",
-    "edit the spec so Kane re-plans it (`holdback drift`); if the app is wrong, run `holdback run` again and the agent is briefed again.",
-  ].join("\n");
+/** One line per test a stall lists as inconclusive: `t-3: timeout`. */
+export const unsureLines = (st: Stall): string[] => st.inconclusive.map((u) => `${u.test}: ${u.reason}`);
+
+const turnsWord = (k: number) => `${k} turn${k === 1 ? "" : "s"}`;
+
+/** A stall in a few words, for the line that says why the gate stays shut. */
+export const stallShort = (st: Stall | undefined): string => `the agent changed nothing for ${turnsWord(st?.turns.length ?? STALL_TURNS)} on code Kane had checked`;
+
+/** Why `holdback run` stopped when the build loop stalled (R48, `build.stalled`): the two groups a human reviews. */
+export function stalledStop(st: Stall | undefined): string {
+  const k = st?.turns.length ?? STALL_TURNS;
+  const lines = [`The coding agent changed nothing for ${turnsWord(k)} in a row on code Kane had checked: more turns would change nothing, so the build loop stopped.`];
+  if (st && st.disputed.length > 0) lines.push("Disputed, review them: Kane's reports on the app the agent did not act on:", ...disputedLines(st).map((l) => `  ${l}`));
+  if (st && st.inconclusive.length > 0) lines.push("Inconclusive: Kane's own runs that proved nothing:", ...unsureLines(st).map((l) => `  ${l}`));
+  lines.push(
+    "Kane does not check the same code again. If a report is wrong, edit the spec so Kane re-plans its test (`holdback drift`);",
+    "if it is right, run `holdback run` again and the agent is briefed again.",
+  );
+  return lines.join("\n");
 }
 
 /** Why `holdback run` stopped when only Kane runs that proved nothing, even re-checked, keep the gate shut. */

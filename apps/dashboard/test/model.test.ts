@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
+import { board, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline, turnsText } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -198,14 +198,12 @@ describe("timeline", () => {
     ]);
   });
 
-  it("shows a dispute: the agent changed nothing for two turns while Kane's report on the app stood (live demo)", () => {
-    const events = [
-      ev({ t: "turn.start", n: 2, owed: ["ac-5"] }),
-      ev({ t: "build.disputed", acs: ["ac-5"], tests: ["t-7"], turns: [2, 3], titles: { "ac-5": "Volunteer list link missing" } }),
-    ];
-    expect(timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "disputed")).toEqual([
-      { kind: "disputed", at, acs: ["ac-5"], tests: ["t-7"], turns: [2, 3], titles: { "ac-5": "Volunteer list link missing" } },
-    ]);
+  it("shows a stall: the agent changed nothing on code Kane checked, with Kane's disputed reports and the runs that proved nothing (R48, live demo)", () => {
+    const stalled = { turns: [2, 3, 4], disputed: [{ ac: "ac-5", test: "t-7", title: "Volunteer list link missing" }], inconclusive: [{ test: "t-3", reason: "timeout" }] };
+    const events = [ev({ t: "turn.start", n: 2, owed: ["ac-5"] }), ev({ t: "build.stalled", ...stalled })];
+    expect(timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "stalled")).toEqual([{ kind: "stalled", at, ...stalled }]);
+    expect(turnsText([2, 3, 4])).toBe("turns 2, 3 and 4");
+    expect(turnsText([2, 3])).toBe("turns 2 and 3");
   });
 
   it("shows Kane's evolve after a surviving planted bug as a loop event: minted, retired, the because and its credits (R40)", () => {

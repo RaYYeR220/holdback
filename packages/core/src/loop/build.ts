@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { contractPath, guardMainPath, runClaudeTurn } from "../agent/claude.js";
@@ -13,7 +13,7 @@ import { KaneCapReached, KaneMeter, type BalanceReader, type KaneCap } from "../
 import { gate } from "../ledger/gate.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
-import type { AcState, LedgerEvent, LedgerState } from "../ledger/types.js";
+import type { AcState, LedgerEvent, LedgerState, Stall } from "../ledger/types.js";
 import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type EventBody, type LedgerMark } from "../ledger/vouched.js";
 import { kaneCapCredits, type Project } from "../project.js";
 import { checkRecordings, checkSeal } from "../seal.js";
@@ -54,10 +54,10 @@ export type BuildOptions = {
  * `inconclusive`: only Kane runs that proved nothing keep the gate shut, and a re-check proved nothing again.
  * `drift`: a spec file (and nothing else sealed) changed since the seal: a human re-plans it with `holdback drift`.
  * `budget`: the project's measured Kane spend reached its credit cap (`kane.capCredits`, `--kane-cap`).
- * `disputed`: the coding agent disputes Kane's report: two turns in a row changed no file while every
- * criterion still owed stood on Kane's report of an app failure (`DISPUTE_TURNS`).
+ * `stalled` (R48): `STALL_TURNS` agent turns in a row, each ended normally, changed nothing on code Kane
+ * had checked with the app up: more turns would change nothing. A human reviews Kane's reports.
  */
-export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift" | "budget" | "disputed";
+export type BuildStopReason = "gate-open" | "max-turns" | "tamper" | "error" | "aborted" | "inconclusive" | "drift" | "budget" | "stalled";
 /**
  * `error` carries the detail for an `error` stop (and for a `tamper` stop on a tamper already on
  * record); `inconclusive` the tests that keep the gate shut, for an `inconclusive` stop.
@@ -70,34 +70,32 @@ export type BuildResult = {
   inconclusive?: LedgerState["inconclusive"];
   /** For a `drift` stop: the spec files that changed, and whether the coding agent may have made the change (R37). */
   specChange?: { files: string[]; duringAgentTurn: boolean };
-  /** For a `disputed` stop: the criteria whose report the agent disputes, the failing test of each (same order), and Kane's bug title by criterion. */
-  disputed?: { acs: string[]; tests: string[]; titles: Record<string, string> };
+  /** For a `stalled` stop: the unchanged turns, Kane's reports the agent did not act on, and the runs that proved nothing. */
+  stalled?: Stall;
 };
 
-/** How many agent turns in a row that change no file, with nothing owed but Kane's reports of app failures, are a dispute. */
-export const DISPUTE_TURNS = 2;
+/** How many agent turns in a row that change nothing on code Kane checked stall the build loop (R48). */
+export const STALL_TURNS = 2;
 
-/**
- * The dispute an agent turn that changed no file makes, when every criterion still owed (the same
- * ones as the turn before) stands on Kane's report of an app failure, or undefined: none when one has
- * no report from Kane yet, or one of its tests' latest run proved nothing (Kane's to redo).
- */
-function disputeOf(state: LedgerState, owed: AcState[]): { acs: string[]; tests: string[]; titles: Record<string, string> } | undefined {
-  if (owed.length === 0) return undefined;
-  const unsure = new Set(gate(state).inconclusive.map((u) => u.test));
-  if (owed.some((a) => a.tests.some((t) => unsure.has(t)))) return undefined;
-  const acs: string[] = [];
-  const tests: string[] = [];
-  const titles: Record<string, string> = {};
-  for (const a of owed) {
-    const f = state.acs[a.id]?.lastFailure;
-    if (!f) return undefined; // Kane has not reported on it: nothing to dispute
-    acs.push(a.id);
-    tests.push(f.test);
-    titles[a.id] = f.verdict?.bugTitle ?? f.reason ?? `${f.test} failed`;
-  }
-  return { acs, tests, titles };
+/** Where the guard records the agent's Edit and Write calls during a turn (`guard-main --edits`): a git-ignored change counts too. */
+export const AGENT_EDITS = "agent-edits.log";
+
+/** What a stalled loop stands on: every owed criterion's report from Kane on the app, and every test whose latest run proved nothing. */
+function stallOf(state: LedgerState, turns: number[]): Stall {
+  const owed = [...gate(state).regressed, ...gate(state).owed].sort(byAcId);
+  const disputed = owed.flatMap((a) => {
+    const f = a.lastFailure;
+    return f ? [{ ac: a.id, test: f.test, title: f.verdict?.bugTitle ?? f.reason ?? `${f.test} failed` }] : [];
+  });
+  return { turns, disputed, inconclusive: gate(state).inconclusive.map((u) => ({ test: u.test, reason: u.reason })) };
 }
+
+/** True when the guard recorded an Edit or Write of the agent's in this turn. */
+const agentEdited = (home: string): Promise<boolean> =>
+  readFile(path.join(home, AGENT_EDITS), "utf8").then(
+    (t) => t.trim() !== "",
+    () => false,
+  );
 
 /**
  * What a session's Kane batches did. `tampered`: a sealed file changed meanwhile, and nothing but
@@ -123,7 +121,7 @@ function defaultGuardCommand(p: Project): string {
   if (!existsSync(main)) throw new Error(`guard entry not found at ${main}: build @holdback/core first`);
   // the agent's environment carries no HOLDBACK_* variable: a guard log path goes on the command line
   const ctx = { home: p.home, verifierDir: p.verifierDir, appDir: p.appDir, specFiles: p.config.spec };
-  return guardHookCommand(ctx, main, process.execPath, process.env.HOLDBACK_GUARD_LOG || undefined);
+  return guardHookCommand(ctx, main, process.execPath, process.env.HOLDBACK_GUARD_LOG || undefined, path.join(p.home, AGENT_EDITS));
 }
 
 function lastIndex(events: LedgerEvent[], t: LedgerEvent["t"]): number {
@@ -635,11 +633,10 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
 
     let startError: string | undefined;
     let lastTurn = 0;
-    /** The commit Kane last checked the owed tests on, in this loop: a turn that leaves it unchanged is not checked again. */
+    /** The commit Kane last checked the owed tests on with the app up, in this loop: a turn that leaves it unchanged is not checked again. */
     let checkedAt: string | undefined;
-    /** Agent turns in a row that changed no file, and the criteria owed at the first of them. */
+    /** Agent turns in a row, each ended normally, that changed nothing on code Kane had checked (R48). */
     let unchanged = 0;
-    let unchangedOwed = "";
     /** Kane re-checked the tests whose latest run proved nothing, without an agent turn (once per call). */
     let rechecked = false;
     /** The last replay's app did not start: the green criteria were not replayed, so the gate waits for a turn that does (m-8). */
@@ -686,6 +683,8 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       // 1. agent turn. Its own boot check keeps the app's data in a scratch folder outside the repo,
       //    never `./data`, which the turn's commit would carry (N-m6)
       const before = await headSha(p.appDir, s.gitOpts);
+      // the guard records this turn's Edit and Write calls afresh
+      await rm(path.join(p.home, AGENT_EDITS), { force: true });
       const agentData = await mkdtemp(path.join(os.tmpdir(), "holdback-agent-data-"));
       let agent: Awaited<ReturnType<typeof deps.claude>>;
       try {
@@ -717,8 +716,11 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
 
       // 2. commit the turn (never the spec files: they are the human's), restart the app
       const commit = await commitAll(p.appDir, `holdback turn ${n}: ${owed.length} owed`, s.gitOpts, p.config.spec);
-      const filesChanged = commit && before ? await changedFiles(p.appDir, before, commit, s.gitOpts) : [];
       const head = commit ?? (await headSha(p.appDir, s.gitOpts)) ?? "";
+      // what the turn changed, from the commit before it: a commit the agent made itself counts too (M4)
+      const filesChanged = before && head && head !== before ? await changedFiles(p.appDir, before, head, s.gitOpts) : [];
+      // the same code Kane last checked: no file changed, no Edit or Write on the guard's record (a git-ignored file)
+      const sameCode = filesChanged.length === 0 && checkedAt !== undefined && checkedAt === head && !(await agentEdited(p.home));
       // another program on the port is the human's to fix: the run stops, but the committed turn goes on record first (M11)
       let portInUse: PortInUse | undefined;
       try {
@@ -741,35 +743,33 @@ export async function runBuildLoop(p: Project, deps: BuildDeps, log: Log, opts: 
       if (portInUse) throw portInUse;
       if (opts.signal?.aborted) return done(false, "aborted"); // the turn is committed and on record; the app stops in `finally`
       if (drifted) return drift();
-      // the agent disputes Kane's report: turns in a row that change nothing while every owed criterion
-      // stands on Kane's report of an app failure. A human reviews the report; Kane does not check the
-      // same code again (live demo, 2026-11-17)
-      const owedKey = owed.map((a) => a.id).join(",");
-      if (filesChanged.length === 0) {
-        unchanged = unchanged > 0 && owedKey === unchangedOwed ? unchanged + 1 : 1;
-        unchangedOwed = owedKey;
-      } else unchanged = 0;
-      if (unchanged >= DISPUTE_TURNS) {
-        const d = disputeOf(state, owed);
-        if (d) {
-          await s.emit({ t: "build.disputed", acs: d.acs, tests: d.tests, turns: Array.from({ length: unchanged }, (_, i) => n - unchanged + 1 + i), titles: d.titles });
-          return { ...done(false, "disputed"), disputed: d };
-        }
+      // R48: a turn the agent ended normally (not out of time or tool turns) that changed nothing on code
+      // Kane checked with the app up; this many in a row stall the loop, whatever is owed: a human
+      // reviews Kane's reports (live demo, 2026-11-17)
+      const finished = agent.subtype === "success" && !agent.timedOut;
+      unchanged = sameCode && finished && s.app !== undefined ? unchanged + 1 : 0;
+      if (unchanged >= STALL_TURNS) {
+        const st = stallOf(reduce(s.events), Array.from({ length: unchanged }, (_, i) => n - unchanged + 1 + i));
+        await s.emit({ t: "build.stalled", ...st });
+        return { ...done(false, "stalled"), stalled: st };
       }
       if (!s.app) continue; // nothing to test; the next brief is the start failure, the next check runs at the top
       // the code Kane last checked, unchanged: its report on it stands. Only an owed test whose latest
       // run proved nothing (Kane's own trouble) runs again; no regression replay
       let files = owedFiles;
-      const same = filesChanged.length === 0 && checkedAt !== undefined && checkedAt === head;
-      if (same) {
+      if (sameCode) {
         const owedTests = new Set(owed.flatMap((a) => a.tests));
         const again = gate(reduce(s.events)).inconclusive.filter((u) => owedTests.has(u.test));
         files = [...new Set(again.flatMap((u) => fileOf.get(u.test) ?? []))];
-        if (files.length === 0) continue;
+        if (files.length === 0) {
+          // nothing to run: the app started for this turn stops now, so the next turn's start finds the port free (C1)
+          await s.stopApp();
+          continue;
+        }
       }
 
       // 3. Kane: tests of the owed ACs, plus a regression replay of the passing ones now and then
-      const v = await s.verify(n, files, fileOf, !same && n % REPLAY_EVERY === 0);
+      const v = await s.verify(n, files, fileOf, !sameCode && n % REPLAY_EVERY === 0);
       if (v.startError === undefined) checkedAt = head;
       replayMissed = v.startError !== undefined;
       if (v.startError !== undefined) startError = v.startError;

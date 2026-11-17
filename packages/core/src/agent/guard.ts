@@ -406,9 +406,11 @@ function protectRules(p: { appDir: string; files: string[] }): string[] {
 
 /**
  * `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>" [--spec "<file>"]…
- * [--log "<file>"]`: every path quoted. `log`: where the guard appends its decisions (debugging).
+ * [--log "<file>"] [--edits "<file>"]`: every path quoted. `log`: where the guard appends its
+ * decisions (debugging). `edits`: where it records each Edit and Write it allows (the build loop's
+ * record of a change git may not see, R48).
  */
-export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath, log?: string): string {
+export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath, log?: string, edits?: string): string {
   const q = (s: string) => `"${s}"`;
   return [
     q(nodeBin),
@@ -420,6 +422,7 @@ export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: 
     ...(ctx.appDir !== undefined ? ["--app", q(ctx.appDir)] : []),
     ...(ctx.specFiles ?? []).flatMap((f) => ["--spec", q(f)]),
     ...(log ? ["--log", q(log)] : []),
+    ...(edits ? ["--edits", q(edits)] : []),
   ].join(" ");
 }
 

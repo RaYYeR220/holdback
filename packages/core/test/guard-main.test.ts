@@ -23,6 +23,20 @@ describe("guard-main", () => {
   it("allows with exit 0", () => {
     expect(run(call("Bash", { command: "npm test" })).status).toBe(0);
   });
+  it("records every Edit and Write it allows in the file named by --edits, a git-ignored one too; nothing it denies, no other tool (R48)", () => {
+    const home = mkdtempSync(join(tmpdir(), "hb-guard-edits-"));
+    const edits = join(home, "agent-edits.log");
+    const args = ["--home", "/h/p1", "--verifier", "/h/p1/verifier", "--edits", edits];
+    expect(run(call("Edit", { file_path: "src/.env", old_string: "a", new_string: "b" }), args).status).toBe(0);
+    expect(run(call("Write", { file_path: "src/app.js", content: "x" }), args).status).toBe(0);
+    expect(run(call("Bash", { command: "npm test" }), args).status).toBe(0);
+    expect(run(call("Read", { file_path: "src/app.js" }), args).status).toBe(0);
+    expect(run(call("Write", { file_path: "/h/p1/verifier/a.md", content: "x" }), args).status).toBe(2);
+    expect(readFileSync(edits, "utf8").trim().split("\n").map((l) => JSON.parse(l))).toEqual([
+      { tool: "Edit", path: "src/.env" },
+      { tool: "Write", path: "src/app.js" },
+    ]);
+  });
   it("denies with exit 2 and a reason on stderr", () => {
     const r = run(call("Read", { file_path: "/h/p1/verifier/a.md" }));
     expect(r.status).toBe(2);

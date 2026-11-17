@@ -330,6 +330,10 @@ describe("guardHookCommand", () => {
     const c = { home: "/h/p", verifierDir: "/h/p/verifier", appDir: "/w/my app", specFiles: ["PRD.md", "docs/My Rules.md"] };
     expect(guardHookCommand(c, "g.js", "node")).toBe('"node" "g.js" --home "/h/p" --verifier "/h/p/verifier" --app "/w/my app" --spec "PRD.md" --spec "docs/My Rules.md"');
   });
+  it("passes the file it records the agent's edits in, quoted (R48)", () => {
+    const c = { home: "/h/p", verifierDir: "/h/p/verifier" };
+    expect(guardHookCommand(c, "g.js", "node", undefined, "/h/p/agent edits.log")).toBe('"node" "g.js" --home "/h/p" --verifier "/h/p/verifier" --edits "/h/p/agent edits.log"');
+  });
 });
 
 describe("guardPayload", () => {

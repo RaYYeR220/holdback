@@ -1,6 +1,6 @@
 import { loadProject, retiredTests } from "@holdback/core";
 import { EXIT, explainFailure, humanView, jsonForTerminal, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
-import { disputedLines, inconclusiveLine, kaneCreditsText } from "./messages.js";
+import { disputedLines, inconclusiveLine, kaneCreditsText, unsureLines } from "./messages.js";
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -83,8 +83,15 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   // the agent's count is what keeps the gate shut
   const unsure = agent ? inconclusiveLine(s.gate.inconclusive, true) : inconclusiveLine(s.state.inconclusive);
   if (unsure) ctx.out(unsure);
-  // the agent disputes Kane's report: which criteria, and Kane's own words on them (what its brief carried)
-  if (s.state.disputed && s.state.stopped?.reason === "disputed") ctx.out(`Disputed by the agent: ${disputedLines(s.state.disputed).join("; ")}`);
+  // a stalled loop (R48): Kane's reports the agent did not act on (what its brief carried) and the runs that
+  // proved nothing (for the agent, how many: never which or why)
+  const st = s.state.stalled;
+  if (st && s.state.stopped?.reason === "stalled") {
+    const groups: string[] = [];
+    if (st.disputed.length > 0) groups.push(`disputed, review them: ${disputedLines(st).join("; ")}`);
+    if (st.inconclusive.length > 0) groups.push(`inconclusive: ${agent ? `${st.inconclusive.length} test${st.inconclusive.length === 1 ? "" : "s"}` : unsureLines(st).join("; ")}`);
+    ctx.out(`Stalled: ${groups.join("; ") || `the agent changed nothing for ${st.turns.length} turns`}`);
+  }
   const tests = (n: number) => `${n} test${n === 1 ? "" : "s"}`;
   for (const e of evolved) {
     ctx.out(`${e.uc} evolved${e.followUp ? " again, to cover criteria its tests had lost" : ""}: ${tests(e.minted.length)} minted, ${e.retired.length} retired (${e.credits} credits)`);
