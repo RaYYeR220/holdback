@@ -25,6 +25,7 @@ import {
   KANE_ARG_MAX,
   TOO_LONG,
   UNJUDGED,
+  REJUDGE_PENDING,
   killsAc,
   pendingRecheck,
   rejudgedEvent,
@@ -741,7 +742,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     });
 
     it("a re-checked survivor the referee confirmed before, planted as it was, is not asked about again: it stays vacuous", async () => {
-      const confirmed = { confirmed: true, input: SLIP["ac-3"]!.inputs, expected: SLIP["ac-3"]!.expected, observed: SLIP["ac-3"]!.observed, reason: "r", usd: 0.0001 };
+      const confirmed = { confirmed: true, input: SLIP["ac-3"]!.inputs, expected: SLIP["ac-3"]!.expected, observed: SLIP["ac-3"]!.observed, reason: "r", usd: 0.0001, model: REFEREE_MODEL };
       await setup({ before: () => evolvedEarlier({ referee: confirmed }) });
       const b = fakes({ mutantRun: survives3 });
       const r = await runFalsify(p, b.deps, b.io, log);
@@ -765,7 +766,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => off("it breaks another rule"), refereeUsage });
       const r = await runFalsify(p, deps, io, log);
       expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], survived: [], vacuous: [], redesigned: [], reason: "done" });
-      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule" }]);
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule", model: REFEREE_MODEL }]);
       expect(r.survivors).toBeUndefined();
       expect(calls.evolve).toEqual([]);
       // the prompt, caps and model of a pass's referee: the criterion and its spec quote from the design, the patch from the `mutant` event
@@ -783,7 +784,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
         mutant: "m-ac-3-1",
         ac: "ac-3",
         usd: expect.closeTo(REF_USD, 12),
-        referee: { confirmed: false, input: "", expected: "", observed: "", reason: "it breaks another rule", usd: expect.closeTo(REF_USD, 12) },
+        model: REFEREE_MODEL,
+        referee: { confirmed: false, input: "", expected: "", observed: "", reason: "it breaks another rule", usd: expect.closeTo(REF_USD, 12), model: REFEREE_MODEL },
         note: "off target: it breaks another rule",
       });
       const all = await readEvents(p.ledgerFile);
@@ -796,7 +798,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(r.usd).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
       expect(reduce(all).breakerUsd - reduce(all.slice(0, since)).breakerUsd).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
       // judged once: no later pass asks about it again
-      expect(unjudgedSurvivors(all)).toEqual([]);
+      expect(unjudgedSurvivors(all, REFEREE_MODEL)).toEqual([]);
     });
 
     it("confirmed: on record, and it goes on as before: to Kane, told the referee's account", async () => {
@@ -805,7 +807,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => said });
       const r = await runFalsify(p, deps, io, log);
       expect(r).toMatchObject({ killed: ["ac-1"], redesigned: ["uc-1"], reason: "done" });
-      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: said.reason }]);
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: said.reason, model: REFEREE_MODEL }]);
       expect(r.survivors).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", slip: SLIP["ac-3"]!.behaviour, earlier: true }]);
       expect(calls.referee).toHaveLength(1);
       expect(calls.evolve).toHaveLength(1);
@@ -821,7 +823,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const a = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => off("it breaks another rule") });
       const r = await runFalsify(p, a.deps, a.io, log);
       expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], vacuous: [], redesigned: [] });
-      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule" }]);
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule", model: REFEREE_MODEL }]);
       expect(a.calls.chat.map((c) => c.ac)).toEqual(["ac-1", "ac-3"]);
       const m = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3");
       expect(m).toMatchObject({ verdict: "killed" });
@@ -834,10 +836,79 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const b = fakes({ mutantRun: survives3 });
       const r2 = await runFalsify(p, b.deps, b.io, log);
       expect(r2).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], vacuous: ["ac-3"], redesigned: [] });
-      expect(r2.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: "the change breaks ac-3" }]);
+      expect(r2.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: "the change breaks ac-3", model: REFEREE_MODEL }]);
       expect(b.calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
       expect(b.calls.referee).toHaveLength(1);
       expect((await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({ recheck: "m-ac-3-1", verdict: "survived" });
+    });
+
+    describe("a survivor another model confirmed is judged again by `breaker.refereeModel` (live: deepseek-v4-flash confirmed 5 of the pantry's 8, none of them recording its model)", () => {
+      const said = { verdict: "violates", input: "household size 1, monthly income $2,461.50, SNAP unchecked", expected: "Not eligible.", observed: "Eligible.", reason: "LIMITS[size] + 1 lets $2,461.50 through." };
+      const OLD = { confirmed: true, input: "household size 1, monthly income $2,000", expected: "Eligible.", observed: "Not eligible.", reason: "an account of the breaker's model", usd: 0.0001 };
+      /** A survivor of ac-3 confirmed in its own pass, the record on its `mutant` event (live: m-ac-24-2, m-ac-31-2). */
+      const confirmedInPass = (model?: string) => () => log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"], referee: { ...OLD, ...(model ? { model } : {}) } });
+      /** A survivor from before the referee, confirmed in a later pass (`mutant.referee`; live: m-ac-26-1, m-ac-27-1, m-ac-36-1). */
+      const confirmedLater = (model?: string) => async () => {
+        await unjudged();
+        await log({ at, t: "mutant.referee", mutant: "m-ac-3-1", ac: "ac-3", usd: 0.0001, referee: { ...OLD, ...(model ? { model } : {}) } });
+      };
+
+      it("rejected: on record with the model that judged it, set aside, never sent to Kane", async () => {
+        for (const before of [confirmedInPass(), confirmedLater(), confirmedInPass(MODEL)]) {
+          rmSync(root, { recursive: true, force: true });
+          root = mkdtempSync(join(tmpdir(), "hb-falsify-"));
+          process.env.HOLDBACK_HOME = join(root, "home");
+          await setup({ before });
+          expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("vacuous");
+          const since = (await readEvents(p.ledgerFile)).length;
+          const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => off("it breaks another rule"), refereeUsage });
+          const r = await runFalsify(p, deps, io, log);
+          expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule", model: REFEREE_MODEL }]);
+          expect(calls.referee.map((c) => c.o.model)).toEqual([REFEREE_MODEL]);
+          expect(calls.evolve).toEqual([]);
+          const ev = await after(since);
+          expect(ev.find((e) => e.t === "mutant.referee")).toMatchObject({ mutant: "m-ac-3-1", model: REFEREE_MODEL, referee: { confirmed: false, model: REFEREE_MODEL } });
+          const all = await readEvents(p.ledgerFile);
+          expect(reduce(all.slice(0, since + 2)).acs["ac-3"]!.status).toBe("passing");
+          expect(unjudgedSurvivors(all, REFEREE_MODEL)).toEqual([]);
+        }
+      });
+
+      it("confirmed: to Kane, told the new account; the latest record wins", async () => {
+        await setup({ before: confirmedLater() });
+        const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => said });
+        const r = await runFalsify(p, deps, io, log);
+        expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: said.reason, model: REFEREE_MODEL }]);
+        expect(calls.evolve).toHaveLength(1);
+        expect(calls.evolve[0]!.because).toContain(said.input);
+        expect(calls.evolve[0]!.because).not.toContain(OLD.input);
+        expect(unjudgedSurvivors(await readEvents(p.ledgerFile), REFEREE_MODEL)).toEqual([]);
+      });
+
+      it("one the configured model judged is not asked again, and one any model rejected stays set aside", async () => {
+        await setup({ before: confirmedInPass(REFEREE_MODEL) });
+        const events = await readEvents(p.ledgerFile);
+        expect(unjudgedSurvivors(events, REFEREE_MODEL)).toEqual([]);
+        expect(unjudgedSurvivors(events, "claude-haiku-5-5").map((m) => m.id)).toEqual(["m-ac-3-1"]);
+        // rejected by another model: set aside for good, never asked again
+        await log({ at, t: "mutant.referee", mutant: "m-ac-3-1", ac: "ac-3", usd: 0, model: MODEL, referee: { ...OLD, confirmed: false, model: MODEL }, note: "off target: x" });
+        const all = await readEvents(p.ledgerFile);
+        expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
+        expect(unjudgedSurvivors(all, REFEREE_MODEL)).toEqual([]);
+        expect(unevolvedSurvivors(all)).toEqual([]);
+      });
+
+      it("no usable answer: it waits, never sent to Kane on the other model's account", async () => {
+        await setup({ before: confirmedInPass() });
+        const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => new VeniceUnreachable("Venice unreachable: timeout") });
+        const r = await runFalsify(p, deps, io, log);
+        expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "unanswered", why: "the referee gave no usable answer: Venice unreachable: timeout", model: REFEREE_MODEL }]);
+        expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-3"], why: REJUDGE_PENDING }]);
+        expect(calls.evolve).toEqual([]);
+        const all = await readEvents(p.ledgerFile);
+        expect(all.find((e) => e.t === "mutant.referee")).toMatchObject({ mutant: "m-ac-3-1", model: REFEREE_MODEL });
+        expect(unjudgedSurvivors(all, REFEREE_MODEL).map((m) => m.id)).toEqual(["m-ac-3-1"]);
+      });
     });
 
     it("no usable answer: on record with its cost; the survivor stands as logged, is not sent to Kane in this pass, and the next pass asks again", async () => {
@@ -846,7 +917,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const r = await runFalsify(p, deps, io, log);
       const why = "the referee gave no usable answer: Venice unreachable: timeout";
       expect(r).toMatchObject({ killed: ["ac-1"], redesigned: [], reason: "done" });
-      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "unanswered", why }]);
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "unanswered", why, model: REFEREE_MODEL }]);
       expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-3"], why: UNJUDGED }]);
       expect(calls.evolve).toEqual([]);
       const all = await readEvents(p.ledgerFile);
@@ -856,7 +927,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       // an outage is charged at the worst case, as the breaker's is
       expect((rec as { usd: number }).usd).toBeGreaterThan(0);
       expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
-      expect(unjudgedSurvivors(all).map((m) => m.id)).toEqual(["m-ac-3-1"]);
+      expect(unjudgedSurvivors(all, REFEREE_MODEL).map((m) => m.id)).toEqual(["m-ac-3-1"]);
     });
 
     it("the USD cap refuses the referee's call: nothing is spent, attacked or sent to Kane, and the survivor waits", async () => {
@@ -1649,7 +1720,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
   it("a survivor whose account is too long to hand Kane whole is never cut: its evolve is skipped with the reason, and it stays vacuous", async () => {
     const giant: Slip = { ...SLIP["ac-3"]!, inputs: "household size 1 ".repeat(3000) };
-    const referee = { confirmed: true, input: giant.inputs, expected: giant.expected, observed: giant.observed, reason: "r", usd: 0.0001 };
+    const referee = { confirmed: true, input: giant.inputs, expected: giant.expected, observed: giant.observed, reason: "r", usd: 0.0001, model: REFEREE_MODEL };
     // a survivor an earlier pass logged but never got to Kane
     await setup({ before: async () => void (await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: giant, referee })) });
     const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
@@ -2522,7 +2593,7 @@ describe("the pantry run's six survivors, from before the referee, judged by it 
     expect(Object.values(before.acs).filter((a) => a.status === "vacuous").map((a) => a.id)).toEqual(UC1);
     expect(before.mutants).toEqual({ killed: 4, survived: 6, invalid: 16 });
     // uc-1's four stay vacuous (its evolve added no test); ac-20's and ac-53's use cases were evolved, so they wait for a re-check
-    const todo = unjudgedSurvivors(events);
+    const todo = unjudgedSurvivors(events, REFEREE_MODEL);
     expect(todo.map((m) => m.id)).toEqual(["m-ac-20-1", "m-ac-26-1", "m-ac-27-1", "m-ac-36-1", "m-ac-37-1", "m-ac-53-1"]);
     expect(pendingRecheck(events, before.acs["ac-20"]!)?.id).toBe("m-ac-20-1");
     expect(pendingRecheck(events, before.acs["ac-53"]!)?.id).toBe("m-ac-53-1");
@@ -2558,12 +2629,42 @@ describe("the pantry run's six survivors, from before the referee, judged by it 
     // every other criterion reduces as it did
     for (const [id, a] of Object.entries(before.acs)) if (!UC1.includes(id)) expect(s.acs[id], id).toEqual(a);
     // judged once: nothing to judge, re-check or send to Kane again
-    expect(unjudgedSurvivors(all)).toEqual([]);
+    expect(unjudgedSurvivors(all, REFEREE_MODEL)).toEqual([]);
     expect(unevolvedSurvivors(all)).toEqual([]);
     expect(pendingRecheck(all, s.acs["ac-20"]!)).toBeUndefined();
     expect(pendingRecheck(all, s.acs["ac-53"]!)).toBeUndefined();
     // each is set aside on its criterion, by the referee, with its reason (for the human: `status` prints the ids only)
     expect(setAside(all).filter((a) => a.rejudged).map((a) => [a.ac, a.mutant, a.by])).toEqual(todo.map((m) => [m.ac, m.id, "referee"]));
     expect(setAside(all).find((a) => a.mutant === "m-ac-27-1")!.why).toBe("off target: A zero income is never above the limit, so no input this criterion covers gets a different result.");
+  });
+
+  it("live, judged on the breaker's model with no model on record: the 3 it confirmed are judged again by `breaker.refereeModel`; the 3 it rejected stay set aside", async () => {
+    const events = parseEvents(readFileSync(PANTRY, "utf8"));
+    // what the live referee said on 2026-11-18 (eval/referee/cases.json `live`), as that pass logged it: no model
+    const CASES: { id: string; ac: { id: string }; live?: { confirmed: boolean; input: string; reason: string } }[] = JSON.parse(
+      readFileSync(join(here, "..", "..", "..", "eval", "referee", "cases.json"), "utf8"),
+    ).cases;
+    const judged = CASES.filter((c) => c.live && events.some((e) => e.t === "mutant" && e.id === c.id));
+    expect(judged.map((c) => c.id).sort()).toEqual(["m-ac-20-1", "m-ac-26-1", "m-ac-27-1", "m-ac-36-1", "m-ac-37-1", "m-ac-53-1"]);
+    const all = [
+      ...events,
+      ...judged.map(
+        (c) =>
+          ({
+            at: "2026-11-18T16:22:30.000Z",
+            t: "mutant.referee",
+            mutant: c.id,
+            ac: c.ac.id,
+            usd: 0.00014,
+            referee: { confirmed: c.live!.confirmed, input: c.live!.input, expected: "", observed: "", reason: c.live!.reason, usd: 0.00014 },
+            ...(c.live!.confirmed ? {} : { note: `no observable change: ${c.live!.reason}` }),
+          }) as LedgerEvent,
+      ),
+    ];
+    expect(unjudgedSurvivors(all, REFEREE_MODEL).map((m) => m.id)).toEqual(["m-ac-26-1", "m-ac-27-1", "m-ac-36-1"]);
+    // whatever the configured model: a record without one is from an unknown model
+    expect(unjudgedSurvivors(all, MODEL).map((m) => m.id)).toEqual(["m-ac-26-1", "m-ac-27-1", "m-ac-36-1"]);
+    const s = reduce(all);
+    for (const id of ["ac-20", "ac-37", "ac-53"]) expect(s.acs[id]!.status, id).not.toBe("vacuous");
   });
 });

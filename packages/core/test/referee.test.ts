@@ -43,7 +43,7 @@ describe("refereeMutant", () => {
       s.patch,
       opts(answer({ verdict: "violates", input: "Household size 1, monthly income $2,000, SNAP unchecked", expected: "Monthly limit: $2,461", observed: "Monthly limit: $2,460", reason: "BASE[0] is the size-1 limit." }), budget),
     );
-    expect(f).toEqual({ confirmed: true, call: "violates", input: "Household size 1, monthly income $2,000, SNAP unchecked", expected: "Monthly limit: $2,461", observed: "Monthly limit: $2,460", reason: "BASE[0] is the size-1 limit.", usd: expect.closeTo(USD, 12) });
+    expect(f).toEqual({ confirmed: true, call: "violates", input: "Household size 1, monthly income $2,000, SNAP unchecked", expected: "Monthly limit: $2,461", observed: "Monthly limit: $2,460", reason: "BASE[0] is the size-1 limit.", usd: expect.closeTo(USD, 12), model: MODEL });
     expect(budget.spent).toBeCloseTo(USD, 12);
     expect(refereeNote(f)).toBeUndefined();
   });

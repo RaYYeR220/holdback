@@ -32,9 +32,10 @@ export type GateShutFalsify = { criteria: number; proved: number; vacuous: numbe
 /**
  * The referee's judgment of a planted bug that got past the tests: `input` what a user enters or
  * does, `expected` what the page must show for it by the criterion, `observed` what the mutant shows,
- * `reason` why, in its words (one line each, capped); `usd` the call's cost.
+ * `reason` why, in its words (one line each, capped); `usd` the call's cost; `model` the Venice model that
+ * judged it (missing on records from before Holdback kept it: an unknown model).
  */
-export type RefereeRecord = { confirmed: boolean; input: string; expected: string; observed: string; reason: string; usd: number };
+export type RefereeRecord = { confirmed: boolean; input: string; expected: string; observed: string; reason: string; usd: number; model?: string };
 
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }
@@ -123,9 +124,11 @@ export type LedgerEvent = { at: string } & (
    * survivor from before the referee existed, judged at the start of a later falsify pass. `referee`
    * as on a `mutant` event; a rejected one (`confirmed: false`, why in `note`) is set aside exactly as
    * one the referee rejected in its own pass. No `referee`: it gave no usable answer (`note`), and the
-   * survivor stands as logged. `usd`: the call's cost.
+   * survivor stands as logged. `usd`: the call's cost; `model`: the model asked (missing on events from
+   * before Holdback kept it). A survivor another model confirmed is judged again by `breaker.refereeModel`:
+   * the latest record wins.
    */
-  | { t: "mutant.referee"; mutant: string; ac: string; usd: number; referee?: RefereeRecord; note?: string }
+  | { t: "mutant.referee"; mutant: string; ac: string; usd: number; model?: string; referee?: RefereeRecord; note?: string }
   /**
    * A planted bug survived every test of use case `uc`, and Kane evolved it (`maintain evolve`, R40):
    * `because` is what Kane was told slipped through, `minted` and `retired` the test ids its new set

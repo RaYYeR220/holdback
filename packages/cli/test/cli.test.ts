@@ -1258,7 +1258,7 @@ describe("run", () => {
     expect(r.out).toContain("Kane disputed the planted bug of ac-3 (m-ac-3-1, uc-1), so its tests were not evolved: Is $568 a week for one person Eligible. as the published rule says?");
   });
 
-  it("names each survivor from before the referee that the referee re-judged, with its short reason, in the human's own output", async () => {
+  it("names each survivor the referee re-judged, the model that judged it and its short reason, in the human's own output", async () => {
     await greenFixture();
     const s = stages();
     s.deps.runFalsify = async () => {
@@ -1266,16 +1266,16 @@ describe("run", () => {
       return {
         ...falsifyOk,
         rejudged: [
-          { ac: "ac-26", mutant: "m-ac-26-1", outcome: "rejected", why: "off target: the change is in the branch for a checked benefit" },
-          { ac: "ac-27", mutant: "m-ac-27-1", outcome: "confirmed", why: "a zero income is let through" },
-          { ac: "ac-36", mutant: "m-ac-36-1", outcome: "unanswered", why: "the referee gave no usable answer: Venice unreachable: timeout" },
+          { ac: "ac-26", mutant: "m-ac-26-1", outcome: "rejected", why: "off target: the change is in the branch for a checked benefit", model: "z-ai-glm-5-3-flash" },
+          { ac: "ac-27", mutant: "m-ac-27-1", outcome: "confirmed", why: "a zero income is let through", model: "z-ai-glm-5-3-flash" },
+          { ac: "ac-36", mutant: "m-ac-36-1", outcome: "unanswered", why: "the referee gave no usable answer: Venice unreachable: timeout", model: "z-ai-glm-5-3-flash" },
         ],
       };
     };
     const r = await cli(["run"], s.deps);
-    expect(r.out).toContain("Referee re-judged m-ac-26-1 (ac-26): rejected — off target: the change is in the branch for a checked benefit");
-    expect(r.out).toContain("Referee re-judged m-ac-27-1 (ac-27): confirmed — a zero income is let through");
-    expect(r.out).toContain("Referee could not re-judge m-ac-36-1 (ac-36): the referee gave no usable answer: Venice unreachable: timeout; the next run asks it again");
+    expect(r.out).toContain("Referee: m-ac-26-1 (ac-26) re-judged by z-ai-glm-5-3-flash: rejected — off target: the change is in the branch for a checked benefit");
+    expect(r.out).toContain("Referee: m-ac-27-1 (ac-27) re-judged by z-ai-glm-5-3-flash: confirmed — a zero income is let through");
+    expect(r.out).toContain("Referee: m-ac-36-1 (ac-36) could not be re-judged by z-ai-glm-5-3-flash: the referee gave no usable answer: Venice unreachable: timeout; the next run asks it again");
   });
 
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {

@@ -109,9 +109,13 @@ function reportFalsify(ctx: Ctx, f: FalsifyResult): void {
   }
   for (const n of f.notEvolved ?? []) ctx.out(`Not sent to Kane: ${n.acs.join(", ")} (${n.uc}): ${n.why}`);
   for (const r of f.refuted ?? []) ctx.out(`${r.by === "referee" ? "Rejected by the referee" : "Set aside"}: ${r.ac} (${r.mutant}): ${r.why}`);
-  // survivors from before the referee, judged at the start of the pass
+  // survivors from before the referee, or confirmed by another model, judged at the start of the pass
   for (const j of f.rejudged ?? []) {
-    ctx.out(j.outcome === "unanswered" ? `Referee could not re-judge ${j.mutant} (${j.ac}): ${j.why}; the next run asks it again` : `Referee re-judged ${j.mutant} (${j.ac}): ${j.outcome} — ${j.why}`);
+    ctx.out(
+      j.outcome === "unanswered"
+        ? `Referee: ${j.mutant} (${j.ac}) could not be re-judged by ${j.model}: ${j.why}; the next run asks it again`
+        : `Referee: ${j.mutant} (${j.ac}) re-judged by ${j.model}: ${j.outcome} — ${j.why}`,
+    );
   }
   for (const d of f.disputed ?? []) {
     const bugs = d.acs.length === 1 ? "bug" : "bugs";

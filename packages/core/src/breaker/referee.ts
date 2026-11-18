@@ -31,8 +31,9 @@ export type RefereeCall = "violates" | "off-target" | "no-change";
  * The referee's judgment of one survivor: `confirmed` only when it named a concrete input whose
  * expected result (by the criterion) and observed result (the mutant's) visibly differ. An LLM's
  * judgment, not a proof. Every string is the referee's own, one line, capped, control characters escaped.
+ * `model`: the Venice model that judged it.
  */
-export type RefereeFinding = { confirmed: boolean; call: RefereeCall; input: string; expected: string; observed: string; reason: string; usd: number };
+export type RefereeFinding = { confirmed: boolean; call: RefereeCall; input: string; expected: string; observed: string; reason: string; usd: number; model: string };
 
 export const REFEREE_SYSTEM = [
   "You are the referee in a mutation test of a web app.",
@@ -118,7 +119,7 @@ export async function refereeMutant(ac: AcState, patch: string, opts: RefereeOpt
     text[k] = field(j[k] as string);
   }
   const confirmed = call === "violates" && text.input !== "" && text.expected !== "" && text.observed !== "" && !sameResult(text.expected, text.observed);
-  return { confirmed, call, ...text, usd };
+  return { confirmed, call, ...text, usd, model: opts.model };
 }
 
 /** Why the referee did not confirm a survivor, in its own words where it gave them; undefined when it did. */
