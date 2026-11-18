@@ -208,28 +208,90 @@ function questionText(qs: { text: string }[]): string {
   return t.length <= MAX_QUESTION ? t : `${t.slice(0, MAX_QUESTION - 1)}…`;
 }
 
+/** What Kane is told about one survivor. */
+type Told = Pick<Survivor, "ac" | "patch" | "rationale" | "slip" | "referee">;
+
+/** At most `max` characters, cut at a word boundary and marked with an ellipsis when longer. */
+function shortened(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, Math.max(1, max - 1));
+  const at = cut.lastIndexOf(" ");
+  return `${(at > max / 2 ? cut.slice(0, at) : cut).trimEnd()}…`;
+}
+
+/**
+ * One survivor as Kane is told it: in full (the criterion's text, what a user sees go wrong), or
+ * short (the criterion by id, the inputs and the two results); `fieldMax` shortens each field a model
+ * wrote, the last resort when one short account alone is over the limit.
+ */
+function account(s: Told, short: boolean, fieldMax?: number): string {
+  const head = short ? s.ac.id : `${s.ac.id} ("${s.ac.text}")`;
+  const f = (x: string) => (fieldMax === undefined ? x : shortened(oneLine(x), fieldMax));
+  const r = s.referee?.confirmed ? { inputs: s.referee.input, expected: s.referee.expected, observed: s.referee.observed } : s.slip;
+  if (r) {
+    const behaviour = !short && s.slip?.behaviour ? `${s.slip.behaviour} ` : "";
+    return oneLine(`${head}: ${behaviour}With ${f(r.inputs)}, the page should show ${f(r.expected)}, but it showed ${f(r.observed)}.`);
+  }
+  const changed = s.patch
+    .split("\n")
+    .filter((l) => /^[-+]/.test(l) && !/^(---|\+\+\+) /.test(l))
+    .slice(0, 8)
+    .join(" | ");
+  return oneLine(`${head}: ${f(s.rationale || "a planted change")}. The planted change: ${f(changed)}.`);
+}
+
 /**
  * What Kane is told slipped through (R40): each surviving bug in a user's terms, the inputs that show
  * it, and what the page should show against what it showed: the referee's confirmed account (checked
  * against the criterion and its spec quotes), else the breaker's own (else its rationale and the lines
- * it changed). Kane is the verifier and may see it; the builder never does.
+ * it changed). Kane is the verifier and may see it; the builder never does. Never cut mid-text (live,
+ * Kane asked what the cut-off end meant): over `limit`, fewer whole accounts, and it says how many
+ * were left out; then the short form of each; only when one short account alone is over the limit
+ * are its fields shortened, each marked with an ellipsis.
  */
-export function becauseText(list: Pick<Survivor, "ac" | "patch" | "rationale" | "slip" | "referee">[]): string {
-  const one = (s: (typeof list)[number]) => {
-    const head = `${s.ac.id} ("${s.ac.text}")`;
-    const r = s.referee?.confirmed ? s.referee : undefined;
-    if (r) return `${head}: ${s.slip?.behaviour ? `${s.slip.behaviour} ` : ""}With ${r.input}, the page should show ${r.expected}, but it showed ${r.observed}.`;
-    if (s.slip) return `${head}: ${s.slip.behaviour} With ${s.slip.inputs}, the page should show ${s.slip.expected}, but it showed ${s.slip.observed}.`;
-    const changed = s.patch
-      .split("\n")
-      .filter((l) => /^[-+]/.test(l) && !/^(---|\+\+\+) /.test(l))
-      .slice(0, 8)
-      .join(" | ");
-    return `${head}: ${s.rationale || "a planted change"}. The planted change: ${changed}.`;
+export function becauseText(list: Told[], limit = MAX_BECAUSE): string {
+  const n = list.length;
+  if (n === 0) return "";
+  const intro = n === 1 ? "A planted bug got past every test of this use case." : `${n} planted bugs got past every test of this use case.`;
+  const compose = (parts: string[]) => {
+    const k = parts.length;
+    const left = n - k;
+    const note = left === 0 ? "" : ` ${k === 1 ? "Here is one of them" : `Here are ${k} of them`}; the other ${left} ${left === 1 ? "is" : "are"} left out of this message on purpose.`;
+    return oneLine(`${intro}${note} ${parts.join(" ")} Add a test that catches ${k === 1 ? "it" : "each"}.`);
   };
-  const intro = list.length === 1 ? "A planted bug got past every test of this use case." : `${list.length} planted bugs got past every test of this use case.`;
-  const text = oneLine(`${intro} ${list.map(one).join(" ")} Add a test that catches ${list.length === 1 ? "it" : "each"}.`);
-  return text.length > MAX_BECAUSE ? `${text.slice(0, MAX_BECAUSE - 1)}…` : text;
+  for (const short of [false, true]) {
+    const parts = list.map((s) => account(s, short));
+    for (let k = n; k >= 1; k--) {
+      const t = compose(parts.slice(0, k));
+      if (t.length <= limit) return t;
+    }
+  }
+  for (let max = 400; max >= 20; max -= 20) {
+    const t = compose([account(list[0]!, true, max)]);
+    if (t.length <= limit) return t;
+  }
+  return shortened(compose([account(list[0]!, true, 20)]), limit);
+}
+
+/** The least room the account of what slipped through gets in a follow-up's reason. */
+const MIN_ROOM = 500;
+
+/**
+ * The follow-up evolve's reason (R40): the criteria the first evolve left without a test, to cover
+ * again, and the account of what slipped through, both whole, within `limit`: the criteria with their
+ * text, else by id, else the first ones by id and how many more; the account gets the rest
+ * (`becauseText`).
+ */
+export function coverText(left: { id: string; text: string }[], list: Told[], limit = MAX_BECAUSE): string {
+  const glue = ", and keep a test that catches what slipped through before: ";
+  const heads = [`cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again`, `cover ${left.map((a) => a.id).join(", ")} again (criteria of this use case, by id)`];
+  for (let k = left.length - 1; k >= 1; k--) heads.push(`cover ${left.slice(0, k).map((a) => a.id).join(", ")} and the other ${left.length - k} criteria of this use case without a test again`);
+  for (const head of heads) {
+    const h = oneLine(head);
+    const room = limit - h.length - glue.length;
+    if (room >= MIN_ROOM) return `${h}${glue}${becauseText(list, room)}`;
+  }
+  return shortened(`cover this use case's criteria without a test again${glue}${becauseText(list, limit - 120)}`, limit);
 }
 
 /**
@@ -985,11 +1047,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       const capped = capCredits !== undefined && reduce([...events, ...(out_ as LedgerEvent[])]).kaneCredits >= capCredits;
       if (capped) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
       else {
-        const cover = `cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again, and keep a test that catches what slipped through before: ${because}`;
+        const cover = coverText(left, list);
         // the follow-up may retire what the first evolve minted, as it may the sealed tests
         const minted1 = g.tests.filter((t) => first.minted.includes(t.id));
         // at the cap the follow-up never starts (m-1): the first evolve stands
-        const again = await evolveOnce(uc, oneLine(cover).slice(0, MAX_BECAUSE), list, minted1, first.retired).catch((e: unknown) => {
+        const again = await evolveOnce(uc, cover, list, minted1, first.retired).catch((e: unknown) => {
           if (e instanceof KaneCapReached) return { capped: e.message } as const;
           throw e;
         });
@@ -1002,7 +1064,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           out_.push({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${why_}`, credits: again.credits });
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         } else {
-          out_.push({ t: "falsify.evolved", uc, because: oneLine(cover).slice(0, MAX_BECAUSE), minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
+          out_.push({ t: "falsify.evolved", uc, because: cover, minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
           mintedAll.push(...again.minted);
           g = again.graph;
           left = uncoveredIn(g, uc);

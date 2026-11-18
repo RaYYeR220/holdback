@@ -14,7 +14,7 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
-import { falsifyVerdict, killsAc, pendingRecheck, runFalsify, unevolvedSurvivors, type FalsifyDeps } from "../src/loop/falsify.js";
+import { becauseText, coverText, falsifyVerdict, killsAc, pendingRecheck, runFalsify, unevolvedSurvivors, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -2188,5 +2188,66 @@ describe("falsifyVerdict", () => {
     expect(falsifyVerdict("ac-3", [r({}), r({ testId: "t-4", status: "error", reason: "timeout" })])).toEqual({ verdict: "invalid", note: "inconclusive: t-4: timeout" });
     // a kill by one test stands next to an inconclusive one
     expect(falsifyVerdict("ac-3", [app, r({ testId: "t-4", status: "error", reason: "timeout" })])).toEqual({ verdict: "killed" });
+  });
+});
+
+describe("what Kane is told (--because): never cut mid-text", () => {
+  type Live = { mutant: string; ac: { id: string; text: string; useCase: string; cites: AcNode["cites"] }; patch: string; slip: Slip | null };
+  const LIVE: Live[] = JSON.parse(readFileSync(join(here, "fixtures", "breaker", "survivors.json"), "utf8"));
+  const acState = (a: Live["ac"]) => ({ ...a, tests: ["t-1"], status: "vacuous" as const });
+  const survivor = (l: Live) => ({ ac: acState(l.ac), patch: l.patch, rationale: "", ...(l.slip ? { slip: l.slip } : {}) });
+  const long = (id: string, n: number) => ({
+    ac: { id, text: `Criterion ${id} holds for every household.`, useCase: "uc-1", cites: [], tests: ["t-1"], status: "vacuous" as const },
+    patch: "",
+    rationale: "",
+    slip: { behaviour: `${id}: ${"the page goes wrong in a way a user sees ".repeat(n)}.`, inputs: `household size 1 for ${id}`, expected: "Eligible.", observed: "Not eligible." },
+  });
+
+  it("the demo's four uc-1 survivors, cut at 1,500 characters mid-sentence live, now go as whole accounts with the count of those left out", () => {
+    const uc1 = ["m-ac-26-1", "m-ac-27-1", "m-ac-36-1", "m-ac-37-1"].map((id) => survivor(LIVE.find((l) => l.mutant === id)!));
+    const t = becauseText(uc1);
+    expect(t.length).toBeLessThanOrEqual(1500);
+    expect(t).not.toMatch(/…/);
+    expect(t.startsWith("4 planted bugs got past every test of this use case.")).toBe(true);
+    const kept = uc1.filter((s) => t.includes(`${s.ac.id} ("`));
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(4);
+    expect(t).toContain(`; the other ${4 - kept.length} ${4 - kept.length === 1 ? "is" : "are"} left out of this message on purpose.`);
+    // each one sent is whole: its inputs, expected and observed results, in order, then the next
+    for (const s of kept) expect(t).toContain(`With ${s.slip!.inputs}, the page should show ${s.slip!.expected}, but it showed ${s.slip!.observed}.`);
+    for (const s of uc1.filter((x) => !kept.includes(x))) expect(t).not.toContain(s.ac.id);
+    expect(t.endsWith("Add a test that catches each.")).toBe(true);
+  });
+
+  it("all of them when they fit, with no note", () => {
+    const t = becauseText([long("ac-1", 1), long("ac-2", 1)]);
+    expect(t).toContain('ac-1 ("');
+    expect(t).toContain('ac-2 ("');
+    expect(t).not.toContain("left out");
+  });
+
+  it("an account too long on its own goes in its short form, the criterion by id; shortened fields only as a last resort, marked", () => {
+    const one = long("ac-7", 60);
+    const t = becauseText([one]);
+    expect(t.length).toBeLessThanOrEqual(1500);
+    expect(t).toBe(`A planted bug got past every test of this use case. ac-7: With ${one.slip.inputs}, the page should show Eligible., but it showed Not eligible.. Add a test that catches it.`);
+    const huge = { ...one, slip: { ...one.slip, inputs: "x ".repeat(2000) } };
+    const h = becauseText([huge]);
+    expect(h.length).toBeLessThanOrEqual(1500);
+    expect(h).toMatch(/…/);
+    expect(h.endsWith("Add a test that catches it.")).toBe(true);
+  });
+
+  it("the follow-up names every criterion it must cover again, and the account of what slipped through stays whole (live demo uc-3: it ended on an unfinished “ac”)", () => {
+    const left = Array.from({ length: 21 }, (_, i) => ({ id: `ac-${i + 1}`, text: `A visit time with six visits remains listed with the suffix ' — Full' (${i + 1}).` }));
+    const s20 = survivor(LIVE.find((l) => l.mutant === "m-ac-20-1")!);
+    const t = coverText(left, [s20]);
+    expect(t.length).toBeLessThanOrEqual(1500);
+    for (const a of left) expect(t).toMatch(new RegExp(`${a.id}(?!\\d)`));
+    expect(t).toContain(`With ${s20.slip!.inputs}, the page should show ${s20.slip!.expected}, but it showed ${s20.slip!.observed}.`);
+    expect(t.endsWith("Add a test that catches it.")).toBe(true);
+    // short enough, the criteria keep their text
+    const few = coverText(left.slice(0, 2), [s20]);
+    expect(few.startsWith(`cover ac-1 ("${left[0]!.text}"), ac-2 ("${left[1]!.text}") again`)).toBe(true);
   });
 });
