@@ -393,6 +393,8 @@ export type Item =
   | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean }
   /** Kane's evolve of `uc` paused on its question about planted bug `mutant`: disputed, never answered, nothing sealed. */
   | { kind: "disputed"; at: string; uc: string; ac: string; mutant: string; question: string; credits: number }
+  /** The referee judged survivor `mutant`, logged before it existed, in a later pass: rejected (set aside), confirmed, or no usable answer; `why` its reason. */
+  | { kind: "rejudged"; at: string; ac: string; mutant: string; outcome: "rejected" | "confirmed" | "unanswered"; why: string; usd: number }
   /** R48: the build loop stalled: `turns` changed nothing on code Kane checked; Kane's reports the agent did not act on, and the runs that proved nothing. */
   | ({ kind: "stalled"; at: string } & Stall);
 
@@ -584,6 +586,11 @@ export function timeline(events: LedgerEvent[]): Segment[] {
       case "falsify.disputed":
         seg.items.push({ kind: "disputed", at: e.at, uc: e.uc, ac: e.ac, mutant: e.mutant, question: e.question, credits: e.credits });
         break;
+      case "mutant.referee": {
+        const outcome = !e.referee ? "unanswered" : e.referee.confirmed ? "confirmed" : "rejected";
+        seg.items.push({ kind: "rejudged", at: e.at, ac: e.ac, mutant: e.mutant, outcome, why: (outcome === "confirmed" ? e.referee?.reason : e.note) ?? "", usd: e.usd });
+        break;
+      }
       case "falsify.evolved":
         seg.items.push({ kind: "evolved", at: e.at, uc: e.uc, because: e.because, minted: e.minted, retired: e.retired, credits: e.credits, followUp: e.followUp === true });
         break;

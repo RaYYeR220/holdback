@@ -118,6 +118,38 @@ describe("board", () => {
     expect(meters(stateFromLedger(events, null), events).mutants).toEqual({ killed: 0, survived: 0, invalid: 3 });
   });
 
+  it("a survivor from before the referee that it rejected in a later pass leaves the vacuous column for its tests' status, set aside with the reason; the timeline has the re-judge as its own event", () => {
+    const patch = "--- a/server.js\n+++ b/server.js\n@@ -1 +1 @@\n-  eligible: true,\n+  eligible: false,\n";
+    const passed = (t: string, ac: string) => run(1, result(t, "passed", { criteriaPassed: [ac] }));
+    const old = [
+      design(["ac-1", "ac-2"], [["t-1", ["ac-1"]], ["t-2", ["ac-2"]]]),
+      passed("t-1", "ac-1"),
+      passed("t-2", "ac-2"),
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch, model: "m", usd: 0.0004, verdict: "survived" }),
+      ev({ t: "mutant", id: "m-ac-2-1", ac: "ac-2", patch, model: "m", usd: 0.0004, verdict: "survived" }),
+    ];
+    expect(board(stateFromLedger(old, null), old).vacuous.map((c) => c.ac.id)).toEqual(["ac-1", "ac-2"]);
+    const why = "off target: the change is in the branch for a checked benefit.";
+    const events = [
+      ...old,
+      ev({ t: "mutant.referee", mutant: "m-ac-1-1", ac: "ac-1", usd: 0.0002, referee: { confirmed: false, input: "", expected: "", observed: "", reason: "r", usd: 0.0002 }, note: why }),
+      ev({ t: "mutant.referee", mutant: "m-ac-2-1", ac: "ac-2", usd: 0.0002, referee: { confirmed: true, input: "size 1", expected: "Eligible.", observed: "Not eligible.", reason: "it breaks ac-2", usd: 0.0002 } }),
+    ];
+    const cols = board(stateFromLedger(events, null), events);
+    expect(cols.vacuous.map((c) => c.ac.id)).toEqual(["ac-2"]);
+    expect(cols.passing.map((c) => [c.ac.id, c.mutant?.setAside])).toEqual([["ac-1", { by: "referee", why }]]);
+    expect(breakerWord(cols.passing[0]!.mutant!)).toBe("Rejected by the referee");
+    expect(cols.vacuous[0]!.mutant?.setAside).toBeUndefined();
+    const items = timeline(events).flatMap((s) => s.items);
+    expect(items.filter((i) => i.kind === "rejudged")).toEqual([
+      { kind: "rejudged", at, ac: "ac-1", mutant: "m-ac-1-1", outcome: "rejected", why, usd: 0.0002 },
+      { kind: "rejudged", at, ac: "ac-2", mutant: "m-ac-2-1", outcome: "confirmed", why: "it breaks ac-2", usd: 0.0002 },
+    ]);
+    const m = meters(stateFromLedger(events, null), events);
+    expect(m.mutants).toEqual({ killed: 0, survived: 1, invalid: 1 });
+    expect(m.breakerUsd).toBeCloseTo(0.0012, 12);
+  });
+
   it("a proved criterion shows the second replay that confirmed the kill (R44)", () => {
     const failed = result("t-1", "failed", { failedStep: 2, criteriaFailed: ["ac-1"], verdict: { bugTitle: "Eligible above limit", family: "application_issue" } });
     const events = [

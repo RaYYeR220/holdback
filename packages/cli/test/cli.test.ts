@@ -238,6 +238,30 @@ describe("status and owed", () => {
     }
   });
 
+  it("status names a survivor from before the referee that the referee rejected in a later pass by id only, and the verdict no longer counts it vacuous; one it confirmed stays vacuous (I-4)", async () => {
+    await greenFixture();
+    await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "p", model: "m", usd: 0.0003, verdict: "survived" });
+    await log({ at, t: "mutant", id: "m-ac-2-1", ac: "ac-2", patch: "p", model: "m", usd: 0.0003, verdict: "survived" });
+    expect((await cli(["status"])).out).toContain("Verdict: Held back — 0/2 green, 2 criteria unproved: a planted bug survived");
+    const reason = "A zero income is never above the limit.";
+    await log({ at, t: "mutant.referee", mutant: "m-ac-1-1", ac: "ac-1", usd: 0.0002, referee: { confirmed: false, input: "", expected: "", observed: "", reason, usd: 0.0002 }, note: `off target: ${reason}` });
+    await log({ at, t: "mutant.referee", mutant: "m-ac-2-1", ac: "ac-2", usd: 0.0002, referee: { confirmed: true, input: "size 1, $568 a week", expected: "Eligible.", observed: "Not eligible.", reason: "r", usd: 0.0002 } });
+    for (const env of [{}, { CLAUDECODE: "1" }]) {
+      const r = await cli(["status"], { env });
+      expect(r.out).toContain("Referee re-judged m-ac-1-1 (ac-1): rejected");
+      expect(r.out).not.toContain("m-ac-2-1 (ac-2)");
+      expect(r.out).toContain("Verdict: Held back — 1/2 green, 1 criterion unproved: a planted bug survived");
+      expect(r.out).toMatch(/ac-1\s+passing/);
+      for (const hidden of ["zero income", "off target", "$568", "size 1"]) expect(r.out, hidden).not.toContain(hidden);
+      const json = (await cli(["status", "--json"], { env })).out;
+      const doc = JSON.parse(json);
+      expect(doc.setAside).toEqual([{ ac: "ac-1", mutant: "m-ac-1-1", by: "referee", rejudged: true }]);
+      expect(doc.verdict.counts.vacuous).toBe(1);
+      expect(doc.state.mutants).toEqual({ killed: 0, survived: 1, invalid: 1 });
+      for (const hidden of ["zero income", "off target", "$568", "size 1"]) expect(json, hidden).not.toContain(hidden);
+    }
+  });
+
   it("status shows Kane's evolve as a loop event (tests minted and retired) and why a criterion is vacuous or needs the spec, never the because, with or without CLAUDECODE (R40, I-4)", async () => {
     await greenFixture();
     const because = "A planted bug got past every test of this use case. ac-2 (\"criterion ac-2\"): a household of 9 is held to the 8-person limit.";
@@ -1232,6 +1256,26 @@ describe("run", () => {
     expect(r.out).toContain("Rejected by the referee: ac-1 (m-ac-1-1): off target: a zero income is never above the limit");
     expect(r.out).toContain("Set aside: ac-2 (m-ac-2-1): changes no code: every line it changes is the same line once whitespace is normalised");
     expect(r.out).toContain("Kane disputed the planted bug of ac-3 (m-ac-3-1, uc-1), so its tests were not evolved: Is $568 a week for one person Eligible. as the published rule says?");
+  });
+
+  it("names each survivor from before the referee that the referee re-judged, with its short reason, in the human's own output", async () => {
+    await greenFixture();
+    const s = stages();
+    s.deps.runFalsify = async () => {
+      s.calls.push("falsify");
+      return {
+        ...falsifyOk,
+        rejudged: [
+          { ac: "ac-26", mutant: "m-ac-26-1", outcome: "rejected", why: "off target: the change is in the branch for a checked benefit" },
+          { ac: "ac-27", mutant: "m-ac-27-1", outcome: "confirmed", why: "a zero income is let through" },
+          { ac: "ac-36", mutant: "m-ac-36-1", outcome: "unanswered", why: "the referee gave no usable answer: Venice unreachable: timeout" },
+        ],
+      };
+    };
+    const r = await cli(["run"], s.deps);
+    expect(r.out).toContain("Referee re-judged m-ac-26-1 (ac-26): rejected — off target: the change is in the branch for a checked benefit");
+    expect(r.out).toContain("Referee re-judged m-ac-27-1 (ac-27): confirmed — a zero income is let through");
+    expect(r.out).toContain("Referee could not re-judge m-ac-36-1 (ac-36): the referee gave no usable answer: Venice unreachable: timeout; the next run asks it again");
   });
 
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {

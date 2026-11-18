@@ -11,6 +11,7 @@ function Glyph({ item }: { item: Item }) {
     }
     case "mutant":
     case "disputed":
+    case "rejudged":
       return <i className="g g-mutant" aria-hidden="true" />;
     case "seal":
       return <i className="g g-seal" aria-hidden="true" />;
@@ -134,6 +135,17 @@ function Row({ item, live }: { item: Item; live: boolean }) {
       );
       detail = <>Kane asked: {item.question}</>;
       meta = item.credits ? `${fmtCredits(item.credits)} cr` : null;
+      break;
+    case "rejudged":
+      tone = item.outcome === "confirmed" ? "" : "t-unsure";
+      title = (
+        <>
+          The referee re-judged <span className="mono">{item.mutant}</span> of <span className="mono">{item.ac}</span>, a planted bug from before it existed:{" "}
+          {item.outcome === "unanswered" ? "no usable answer, asked again next run" : item.outcome}
+        </>
+      );
+      detail = item.why;
+      meta = fmtUsd(item.usd);
       break;
     case "regression":
       tone = "t-fail";

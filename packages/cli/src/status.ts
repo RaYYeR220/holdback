@@ -25,6 +25,8 @@ const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
  * token-gated dashboard and the human's `holdback run`.
  */
 export function setAsideLine(a: SetAside): string {
+  // a survivor from before the referee, rejected by it in a later pass
+  if (a.rejudged) return `Referee re-judged ${a.mutant} (${a.ac}): rejected`;
   const label = a.by === "kane" ? "Kane disputed" : a.by === "referee" ? "Rejected by the referee" : "Set aside, changes no code";
   return `${label}: ${a.ac} (${a.mutant})`;
 }
@@ -78,7 +80,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
           specChanged: s.specChanged,
           evolved,
           retired,
-          setAside: aside.map(({ ac, mutant, by }) => ({ ac, mutant, by })),
+          setAside: aside.map(({ ac, mutant, by, rejudged }) => ({ ac, mutant, by, ...(rejudged ? { rejudged } : {}) })),
         },
         null,
         2,
