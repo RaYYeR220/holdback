@@ -1,4 +1,4 @@
-import { loadProject, retiredTests, type LedgerState } from "@holdback/core";
+import { loadProject, retiredTests, setAside, type LedgerState, type SetAside } from "@holdback/core";
 import { EXIT, explainFailure, humanView, jsonForTerminal, insideClaudeCode, readerView, snapshot, type Ctx } from "./context.js";
 import { disputedLines, inconclusiveLine, kaneCreditsText, unsureLines } from "./messages.js";
 
@@ -17,6 +17,12 @@ function agentState(state: LedgerState): Record<string, unknown> {
 }
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
+
+/** A planted bug set aside, in one line: the referee's reason, or Kane's question (never what a confirmed survivor slipped past, I-4). */
+export function setAsideLine(a: SetAside): string {
+  if (a.by === "kane") return `Kane disputed: ${a.ac} (${a.mutant}${a.uc ? `, ${a.uc}` : ""}): ${a.why}`;
+  return `${a.by === "referee" ? "Rejected by the referee" : "Set aside"}: ${a.ac} (${a.mutant}): ${a.why}`;
+}
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 
 export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<number> {
@@ -40,6 +46,8 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
   // token-gated dashboard (I-4)
   // the tests an evolve retired stay sealed (Holdback never deletes Kane's files): ids only, never run again
   const retired = retiredTests(s.events).map((t) => t.id);
+  // planted bugs set aside: no code changed, the referee did not confirm them, or Kane disputed them
+  const aside = setAside(s.events).filter((a) => a.ac in s.state.acs);
   const evolved = s.events.flatMap((e) =>
     e.t === "falsify.evolved" ? [{ uc: e.uc, minted: e.minted, retired: e.retired, credits: e.credits, ...(e.followUp ? { followUp: true } : {}) }] : [],
   );
@@ -65,6 +73,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
           specChanged: s.specChanged,
           evolved,
           retired,
+          setAside: aside,
         },
         null,
         2,
@@ -111,6 +120,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
     ctx.out(`${e.uc} evolved${e.followUp ? " again, to cover criteria its tests had lost" : ""}: ${tests(e.minted.length)} minted, ${e.retired.length} retired (${e.credits} credits)`);
   }
   if (retired.length > 0) ctx.out(`Retired by Kane's evolve (still sealed, never run): ${retired.join(", ")}`);
+  for (const a of aside) ctx.out(oneLine(setAsideLine(a)));
   if (s.specChanged.length > 0) ctx.out(`The spec changed since the last seal (${s.specChanged.join(", ")}): \`holdback run\` runs drift first.`);
   if (s.tamper !== null) {
     ctx.err(s.tamper);

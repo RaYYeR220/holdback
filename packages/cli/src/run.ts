@@ -96,7 +96,11 @@ function shutBy(b: BuildResult): string | undefined {
   return undefined;
 }
 
-/** What a falsify pass found that the human hears about (R44): the planted bugs that got through, and why Kane did not evolve their use case. */
+/**
+ * What a falsify pass found that the human hears about (R44): the planted bugs that got through, why
+ * Kane did not evolve their use case, and the ones set aside (no code changed, the referee did not
+ * confirm them, Kane disputed them).
+ */
 function reportFalsify(ctx: Ctx, f: FalsifyResult): void {
   // the human's own output, never `status` (I-4)
   for (const v of f.survivors ?? []) {
@@ -104,6 +108,11 @@ function reportFalsify(ctx: Ctx, f: FalsifyResult): void {
     ctx.out(`A planted bug got past the tests: ${v.ac} (${v.mutant}${tag}): ${v.slip}`);
   }
   for (const n of f.notEvolved ?? []) ctx.out(`Not sent to Kane: ${n.acs.join(", ")} (${n.uc}): ${n.why}`);
+  for (const r of f.refuted ?? []) ctx.out(`${r.by === "referee" ? "Rejected by the referee" : "Set aside"}: ${r.ac} (${r.mutant}): ${r.why}`);
+  for (const d of f.disputed ?? []) {
+    const bugs = d.acs.length === 1 ? "bug" : "bugs";
+    ctx.out(`Kane disputed the planted ${bugs} of ${d.acs.join(", ")} (${d.mutants.join(", ")}, ${d.uc}), so its tests were not evolved: ${d.question}`);
+  }
 }
 
 /**

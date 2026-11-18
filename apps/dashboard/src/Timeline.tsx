@@ -10,6 +10,7 @@ function Glyph({ item }: { item: Item }) {
       return t === "pass" ? <Ring status="passing" /> : t === "caught" ? <Ring status="proved" /> : t === "unsure" ? <Ring status="inconclusive" /> : t === "missed" ? <Ring status="vacuous" /> : <Ring status="regressed" />;
     }
     case "mutant":
+    case "disputed":
       return <i className="g g-mutant" aria-hidden="true" />;
     case "seal":
       return <i className="g g-seal" aria-hidden="true" />;
@@ -113,9 +114,27 @@ function Row({ item, live }: { item: Item; live: boolean }) {
         ) : (
           m.verdict
         );
+      if (m.setAside) {
+        detail = (
+          <>
+            {detail}
+            <span className="r-ctx"> {m.setAside.by === "referee" ? "rejected by the referee" : "set aside"}: {m.setAside.why}</span>
+          </>
+        );
+      }
       meta = `${fmtUsd(m.usd)} · ${m.model}`;
       break;
     }
+    case "disputed":
+      tone = "t-unsure";
+      title = (
+        <>
+          Kane disputed the planted bug <span className="mono">{item.mutant}</span> of <span className="mono">{item.ac}</span>: {item.uc}'s tests were not evolved
+        </>
+      );
+      detail = <>Kane asked: {item.question}</>;
+      meta = item.credits ? `${fmtCredits(item.credits)} cr` : null;
+      break;
     case "regression":
       tone = "t-fail";
       title = (

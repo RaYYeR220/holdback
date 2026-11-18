@@ -215,6 +215,27 @@ describe("status and owed", () => {
     expect(r.out).toContain("Gate: open");
   });
 
+  it("status shows each criterion's planted bug that was set aside, with the referee's reason or Kane's question; the verdict counts only a confirmed survivor as vacuous", async () => {
+    await greenFixture();
+    await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "p", model: "m", usd: 0.0002, verdict: "invalid", note: "off target: a zero income is never above the limit", refuted: "referee", referee: { confirmed: false, input: "", expected: "", observed: "", reason: "a zero income is never above the limit", usd: 0.0001 } });
+    await log({ at, t: "mutant", id: "m-ac-2-1", ac: "ac-2", patch: "p", model: "m", usd: 0.0002, verdict: "survived", referee: { confirmed: true, input: "size 1, $568 a week", expected: "Eligible.", observed: "Not eligible.", reason: "r", usd: 0.0001 } });
+    await log({ at, t: "falsify.disputed", uc: "uc-1", ac: "ac-2", mutant: "m-ac-2-1", question: "Is $568 a week for one person Eligible. as the published rule says?", credits: 11.25 });
+    for (const env of [{}, { CLAUDECODE: "1" }]) {
+      const r = await cli(["status"], { env });
+      expect(r.out).toContain("Rejected by the referee: ac-1 (m-ac-1-1): off target: a zero income is never above the limit");
+      expect(r.out).toContain("Kane disputed: ac-2 (m-ac-2-1, uc-1): Is $568 a week for one person Eligible. as the published rule says?");
+      expect(r.out).toContain("Verdict: Released"); // neither counts as vacuous
+      // what the referee confirmed is the target of a hidden test: never printed
+      expect(r.out).not.toContain("size 1, $568 a week");
+      const doc = JSON.parse((await cli(["status", "--json"], { env })).out);
+      expect(doc.setAside).toEqual([
+        { ac: "ac-1", mutant: "m-ac-1-1", by: "referee", why: "off target: a zero income is never above the limit" },
+        { ac: "ac-2", mutant: "m-ac-2-1", by: "kane", why: "Is $568 a week for one person Eligible. as the published rule says?", uc: "uc-1" },
+      ]);
+      expect(doc.verdict.counts.vacuous).toBe(0);
+    }
+  });
+
   it("status shows Kane's evolve as a loop event (tests minted and retired) and why a criterion is vacuous or needs the spec, never the because, with or without CLAUDECODE (R40, I-4)", async () => {
     await greenFixture();
     const because = "A planted bug got past every test of this use case. ac-2 (\"criterion ac-2\"): a household of 9 is held to the 8-person limit.";
@@ -1188,6 +1209,27 @@ describe("run", () => {
     expect(r.code).toBe(3);
     expect(r.out).toContain("A planted bug got past the tests: ac-1 (m-ac-1-1): A one-person household at exactly $2,461 is told it is not eligible\\x1b[31m.");
     expect(r.out).toContain("Not sent to Kane: ac-1 (uc-1): Kane already evolved this use case twice in this run: the next `holdback run` tries again");
+  });
+
+  it("says which planted bugs were set aside, and why: rejected by the referee, changing no code, or disputed by Kane", async () => {
+    await greenFixture();
+    const s = stages();
+    s.deps.runFalsify = async () => {
+      s.calls.push("falsify");
+      return {
+        ...falsifyOk,
+        invalid: ["ac-1", "ac-2"],
+        refuted: [
+          { ac: "ac-1", mutant: "m-ac-1-1", by: "referee", why: "off target: a zero income is never above the limit" },
+          { ac: "ac-2", mutant: "m-ac-2-1", by: "no-op", why: "changes no code: every line it changes is the same line once whitespace is normalised" },
+        ],
+        disputed: [{ uc: "uc-1", acs: ["ac-3"], mutants: ["m-ac-3-1"], question: "Is $568 a week for one person Eligible. as the published rule says?" }],
+      };
+    };
+    const r = await cli(["run"], s.deps);
+    expect(r.out).toContain("Rejected by the referee: ac-1 (m-ac-1-1): off target: a zero income is never above the limit");
+    expect(r.out).toContain("Set aside: ac-2 (m-ac-2-1): changes no code: every line it changes is the same line once whitespace is normalised");
+    expect(r.out).toContain("Kane disputed the planted bug of ac-3 (m-ac-3-1, uc-1), so its tests were not evolved: Is $568 a week for one person Eligible. as the published rule says?");
   });
 
   it("runs drift before the build loop when the spec changed since the seal (R32)", async () => {

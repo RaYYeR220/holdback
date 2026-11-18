@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline, turnsText } from "../src/model";
+import { board, breakerWord, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline, turnsText } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -86,6 +86,36 @@ describe("board", () => {
     const c = cols.proved[0]!;
     expect(c.mutant).toMatchObject({ id: "m-ac-1-1", verdict: "killed", file: "server.js", removed: "if (income <= limit) ok();", added: "if (income >= limit) ok();" });
     expect(c.observation).toMatchObject({ kind: "falsify", mutantId: "m-ac-1-1", step: 2, observed: "Eligible." });
+  });
+
+  it("a planted bug set aside stays on its passing criterion's card with why: rejected by the referee, changing no code, or disputed by Kane", () => {
+    const patch = "--- a/server.js\n+++ b/server.js\n@@ -1 +1 @@\n-  eligible: true,\n+  eligible: false,\n";
+    const passed = (t: string, ac: string) => run(1, result(t, "passed", { criteriaPassed: [ac] }));
+    const events = [
+      design(["ac-1", "ac-2", "ac-3"], [["t-1", ["ac-1"]], ["t-2", ["ac-2"]], ["t-3", ["ac-3"]]]),
+      passed("t-1", "ac-1"),
+      passed("t-2", "ac-2"),
+      passed("t-3", "ac-3"),
+      ev({ t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch, model: "m", usd: 0.0004, verdict: "invalid", refuted: "referee", note: "off target: the page still says Eligible." }),
+      ev({ t: "mutant", id: "m-ac-2-1", ac: "ac-2", patch, model: "m", usd: 0.0002, verdict: "invalid", refuted: "no-op", note: "changes no code: every line it changes is the same line once whitespace is normalised" }),
+      ev({ t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch, model: "m", usd: 0.0004, verdict: "survived" }),
+      ev({ t: "falsify.disputed", uc: "uc-1", ac: "ac-3", mutant: "m-ac-3-1", question: "Is $568 a week for one person Eligible.?", credits: 11.25 }),
+    ];
+    const cols = board(stateFromLedger(events, null), events);
+    expect(cols.vacuous).toEqual([]);
+    expect(cols.passing.map((c) => [c.ac.id, c.mutant?.setAside])).toEqual([
+      ["ac-1", { by: "referee", why: "off target: the page still says Eligible." }],
+      ["ac-2", { by: "no-op", why: "changes no code: every line it changes is the same line once whitespace is normalised" }],
+      ["ac-3", { by: "kane", why: "Is $568 a week for one person Eligible.?" }],
+    ]);
+    expect(breakerWord(cols.passing[0]!.mutant!)).toBe("Rejected by the referee");
+    expect(breakerWord(cols.passing[1]!.mutant!)).toBe("Changes no code");
+    expect(breakerWord(cols.passing[2]!.mutant!)).toBe("Kane disputed");
+    // the timeline has the dispute as its own event, after the planted bug, with Kane's question and credits
+    const items = timeline(events).flatMap((s) => s.items);
+    expect(items.find((i) => i.kind === "mutant" && i.mutant.id === "m-ac-1-1")).toMatchObject({ mutant: { setAside: { by: "referee", why: "off target: the page still says Eligible." } } });
+    expect(items.find((i) => i.kind === "disputed")).toEqual({ kind: "disputed", at, uc: "uc-1", ac: "ac-3", mutant: "m-ac-3-1", question: "Is $568 a week for one person Eligible.?", credits: 11.25 });
+    expect(meters(stateFromLedger(events, null), events).mutants).toEqual({ killed: 0, survived: 0, invalid: 3 });
   });
 
   it("a proved criterion shows the second replay that confirmed the kill (R44)", () => {

@@ -1,4 +1,4 @@
-import { anchorLabel, COLUMNS, fmtUsd, type Card, type ColumnKey, type MutantView } from "./model";
+import { anchorLabel, breakerWord, COLUMNS, fmtUsd, type Card, type ColumnKey, type MutantView } from "./model";
 import { Ring, Thumb, runVerdict } from "./ui";
 
 const MARK_LABEL = { pass: "passed", fail: "failed", inconclusive: "inconclusive", none: "not run yet" } as const;
@@ -33,7 +33,9 @@ function Observed({ card }: { card: Card }) {
 }
 
 function Breaker({ m }: { m: MutantView }) {
-  const word = m.verdict === "killed" ? "Caught" : m.verdict === "invalid" ? "Invalid patch" : m.verdict === "survived-by-heal" ? "Survived by a heal" : "Survived";
+  const word = breakerWord(m);
+  // set aside: its reason (the referee's words, or Kane's question) in place of the ledger's note
+  const why = m.setAside ? (m.setAside.by === "kane" ? `Kane disputes the planted bug: ${m.setAside.why}` : m.setAside.why) : m.note;
   return (
     <div className="c-block">
       <p className="c-k">
@@ -42,7 +44,7 @@ function Breaker({ m }: { m: MutantView }) {
           {m.id} · {fmtUsd(m.usd)}
         </span>
       </p>
-      <p className={`c-verdict t-${m.verdict === "killed" ? "caught" : m.verdict === "invalid" ? "unsure" : "missed"}`}>{word}</p>
+      <p className={`c-verdict t-${m.verdict === "killed" ? "caught" : m.verdict === "invalid" || m.setAside ? "unsure" : "missed"}`}>{word}</p>
       {(m.removed || m.added) && (
         <div className="diff" aria-label={`Planted in ${m.file ?? "the app"}`}>
           {m.removed && (
@@ -59,7 +61,7 @@ function Breaker({ m }: { m: MutantView }) {
           )}
         </div>
       )}
-      {m.note && <p className="c-why">{m.note}</p>}
+      {why && <p className="c-why">{why}</p>}
     </div>
   );
 }

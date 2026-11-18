@@ -51,6 +51,7 @@ export type {
   AcStatus,
   AcState,
   LedgerState,
+  RefereeRecord,
 } from "./ledger/types.js";
 export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { decidesStatus, reduce } from "./ledger/reduce.js";
@@ -58,6 +59,7 @@ export { KaneMeter, KaneCapReached, eventCredits, type BalanceReader, type KaneC
 export { gate } from "./ledger/gate.js";
 export { verdict, stallText, falsifiedText, type Verdict, type VerdictState } from "./ledger/verdict.js";
 export { retiredTests, type RetiredTest } from "./ledger/retired.js";
+export { setAside, type SetAside } from "./ledger/setaside.js";
 export { snapshot, type Snapshot } from "./snapshot.js";
 export { serve, DashboardHumanIO, DEFAULT_PORT, PromptRejected, type ServeOptions, type Served, type PendingPrompt } from "./server.js";
 export { loadProject, kaneCapCredits, type Project, type HoldbackConfig } from "./project.js";

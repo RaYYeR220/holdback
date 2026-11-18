@@ -6,6 +6,7 @@ import { parseEvents } from "../src/ledger/parse.js";
 import { reduce } from "../src/ledger/reduce.js";
 import type { AcState, LedgerEvent, LedgerState } from "../src/ledger/types.js";
 import { verdict } from "../src/ledger/verdict.js";
+import { setAside } from "../src/ledger/setaside.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** The live rehearsal's ledger (2026-11-16), sanitized: 10 criteria, 5 proved, 3 passing, 2 vacuous, exit 3. */
@@ -125,5 +126,45 @@ describe("verdict", () => {
     expect(verdict(state(green, { tampered: true }))).toMatchObject({ state: "tampered", released: false, gateOpen: false, exit: 2, headline: "Held back — tampered: nothing counts until a human re-seals" });
     expect(verdict(state(green), { tampered: true })).toMatchObject({ state: "tampered", exit: 2 });
     expect(verdict(state([]))).toMatchObject({ state: "empty", released: false, exit: 3, headline: "Held back — no criteria yet" });
+  });
+});
+
+describe("planted bugs set aside (the referee, the no-op filter, Kane's dispute)", () => {
+  const at = "2026-11-18T10:00:00.000Z";
+  const crit = (id: string) => ({ id, text: id, useCase: "uc-1", cites: [], trust: "derived" });
+  const events = (): LedgerEvent[] => {
+    const ids = ["ac-1", "ac-2", "ac-3", "ac-4"];
+    const out: LedgerEvent[] = [{ at, t: "design", useCase: "uc-1", acs: ids.map(crit), tests: ids.map((id, i) => ({ id: `t-${i + 1}`, title: id, file: `t${i + 1}.md`, verifies: [id] })), gaps: [], credits: 0 }];
+    for (const [i, id] of ids.entries()) {
+      const r = { testFile: `t${i + 1}.md`, testId: `t-${i + 1}`, status: "passed" as const, steps: [], criteriaPassed: [id], criteriaFailed: [], credits: 0, replayDecisions: 0, authorDecisions: 0, healTriggered: false, durationS: 1 };
+      out.push({ at, t: "run", kind: "build", turn: 1, result: r });
+    }
+    const m = (id: string, ac: string, extra: object) => ({ at, t: "mutant", id, ac, patch: "p", model: "m", usd: 0.0003, ...extra }) as LedgerEvent;
+    const referee = (confirmed: boolean) => ({ confirmed, input: confirmed ? "size 1" : "", expected: confirmed ? "Eligible." : "", observed: confirmed ? "Not eligible." : "", reason: "r", usd: 0.0001 });
+    out.push(m("m-ac-1-1", "ac-1", { verdict: "invalid", refuted: "no-op", note: "changes no code: every line it changes is the same line once whitespace is normalised" }));
+    out.push(m("m-ac-2-1", "ac-2", { verdict: "invalid", refuted: "referee", note: "off target: it breaks another rule", referee: referee(false) }));
+    out.push(m("m-ac-3-1", "ac-3", { verdict: "survived", referee: referee(true) }));
+    out.push(m("m-ac-4-1", "ac-4", { verdict: "survived", referee: referee(true) }));
+    out.push({ at, t: "falsify.disputed", uc: "uc-1", ac: "ac-4", mutant: "m-ac-4-1", question: "Is size 1 at the limit Eligible.?", credits: 11.25 });
+    return out;
+  };
+
+  it("the verdict counts only the confirmed survivor Kane did not dispute as vacuous", () => {
+    const s = reduce(events());
+    expect(Object.fromEntries(Object.values(s.acs).map((a) => [a.id, a.status]))).toEqual({ "ac-1": "passing", "ac-2": "passing", "ac-3": "vacuous", "ac-4": "passing" });
+    expect(s.mutants).toEqual({ killed: 0, survived: 1, invalid: 3 });
+    expect(s.credits).toBe(11.25);
+    expect(verdict(s)).toMatchObject({ headline: "Held back — 3/4 green, 1 criterion unproved: a planted bug survived", counts: { vacuous: 1, green: 3 } });
+  });
+
+  it("lists each criterion's latest planted bug that was set aside, with its reason or Kane's question", () => {
+    expect(setAside(events())).toEqual([
+      { ac: "ac-1", mutant: "m-ac-1-1", by: "no-op", why: "changes no code: every line it changes is the same line once whitespace is normalised" },
+      { ac: "ac-2", mutant: "m-ac-2-1", by: "referee", why: "off target: it breaks another rule" },
+      { ac: "ac-4", mutant: "m-ac-4-1", by: "kane", why: "Is size 1 at the limit Eligible.?", uc: "uc-1" },
+    ]);
+    // a later planted bug of the criterion that counts replaces it
+    const later = [...events(), { at, t: "mutant", id: "m-ac-2-2", ac: "ac-2", patch: "p", model: "m", usd: 0, verdict: "killed" } as LedgerEvent];
+    expect(setAside(later).map((a) => a.ac)).toEqual(["ac-1", "ac-4"]);
   });
 });

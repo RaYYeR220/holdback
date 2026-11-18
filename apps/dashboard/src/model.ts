@@ -1,4 +1,4 @@
-import { decidesStatus, eventCredits, gate as coreGate, killsAc, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
+import { decidesStatus, eventCredits, gate as coreGate, killsAc, notAnAppFailure, reduce, retiredTests, setAside, verdict as coreVerdict } from "@holdback/core/browser";
 import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, Stall, TestRunResult, Verdict } from "@holdback/core/browser";
 
 /* ------------------------------------------------------------------ the wire: GET /api/state */
@@ -146,7 +146,15 @@ export type MutantView = {
   added?: string;
   /** The replay that caught it (or let it through). */
   run?: Observation;
+  /** Set aside before it could count: its patch changes no code, the referee did not confirm it, or Kane disputed it (`why`: the reason, or Kane's question). */
+  setAside?: { by: "no-op" | "referee" | "kane"; why: string };
 };
+
+/** How the board words a planted bug's verdict. */
+export function breakerWord(m: MutantView): string {
+  if (m.setAside) return m.setAside.by === "referee" ? "Rejected by the referee" : m.setAside.by === "kane" ? "Kane disputed" : "Changes no code";
+  return m.verdict === "killed" ? "Caught" : m.verdict === "invalid" ? "Invalid patch" : m.verdict === "survived-by-heal" ? "Survived by a heal" : "Survived";
+}
 
 export type TestMark = "pass" | "fail" | "inconclusive" | "none";
 
@@ -279,6 +287,7 @@ export function board(api: ApiState, events: LedgerEvent[]): Record<ColumnKey, C
   const runs = events.filter(isRun);
   const mutants = events.filter((e): e is MutantEvent & { at: string } => e.t === "mutant");
   const inconclusiveByTest = new Map(api.gate.inconclusive.map((u) => [u.test, u]));
+  const aside = new Map(setAside(events).map((a) => [a.mutant, { by: a.by, why: a.why }]));
 
   const cols: Record<ColumnKey, Card[]> = { owed: [], passing: [], proved: [], vacuous: [], "needs-spec": [], rejected: [] };
   for (const ac of Object.values(api.state.acs)) {
@@ -304,6 +313,7 @@ export function board(api: ApiState, events: LedgerEvent[]): Record<ColumnKey, C
         ...(mut.note ? { note: mut.note } : {}),
         ...patchOneLiner(mut.patch),
         ...(run ? { run: observe(run, run.at, { ac: mut.ac, verdict: mut.verdict }) } : {}),
+        ...(aside.has(mut.id) ? { setAside: aside.get(mut.id)! } : {}),
       };
     }
 
@@ -381,6 +391,8 @@ export type Item =
   | { kind: "stopped"; at: string; reason: string; exit: number; detail?: string }
   /** R40: a planted bug got past every test of `uc`, and Kane evolved it: what it was told, what it minted and retired. */
   | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean }
+  /** Kane's evolve of `uc` paused on its question about planted bug `mutant`: disputed, never answered, nothing sealed. */
+  | { kind: "disputed"; at: string; uc: string; ac: string; mutant: string; question: string; credits: number }
   /** R48: the build loop stalled: `turns` changed nothing on code Kane checked; Kane's reports the agent did not act on, and the runs that proved nothing. */
   | ({ kind: "stalled"; at: string } & Stall);
 
@@ -525,7 +537,16 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         seg.items.push({
           kind: "mutant",
           at: e.at,
-          mutant: { id: e.id, ac: e.ac, verdict: e.verdict, model: e.model, usd: e.usd, ...(e.note ? { note: e.note } : {}), ...patchOneLiner(e.patch) },
+          mutant: {
+            id: e.id,
+            ac: e.ac,
+            verdict: e.verdict,
+            model: e.model,
+            usd: e.usd,
+            ...(e.note ? { note: e.note } : {}),
+            ...patchOneLiner(e.patch),
+            ...(e.refuted ? { setAside: { by: e.refuted, why: e.note ?? "" } } : {}),
+          },
         });
         break;
       }
@@ -559,6 +580,9 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         break;
       case "run.end":
         if (e.stop) seg.items.push({ kind: "stopped", at: e.at, reason: e.stop, exit: e.exit ?? 1, ...(e.detail ? { detail: e.detail } : {}) });
+        break;
+      case "falsify.disputed":
+        seg.items.push({ kind: "disputed", at: e.at, uc: e.uc, ac: e.ac, mutant: e.mutant, question: e.question, credits: e.credits });
         break;
       case "falsify.evolved":
         seg.items.push({ kind: "evolved", at: e.at, uc: e.uc, because: e.because, minted: e.minted, retired: e.retired, credits: e.credits, followUp: e.followUp === true });
