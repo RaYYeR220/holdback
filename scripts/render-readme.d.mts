@@ -1,18 +1,22 @@
 export const START: string;
 export const END: string;
 export const DOCS: string[];
+type N = number | null;
 export type DemoRun = {
   links: { landing: string | null; video: string | null; replay: string | null };
   recorded: { ledger: string | null };
-  spec: { questions: number | null; criteria: number | null; tests: number | null };
-  build: { turns: number | null; bugReports: number | null; gateOpen: boolean | null };
-  falsify: { planted: number | null; caught: number | null; breakerUsd: number | null };
-  drift: { reopened: number | null };
-  spend: { kaneCredits: number | null; agentUsd: number | null; wallMin: number | null };
+  spec: { questions: N; criteria: N; tests: N; noTest: N };
+  build: { turns: N; bugReports: N; greenFirst: N; greenLast: N; gateOpen: boolean | null };
+  falsify: { planted: N; caught: N; survived: N; survivedNoChange: N; survivedOtherRule: N; invalid: N; breakerUsd: N };
+  evolve: { evolved: N; paused: N; minted: N; retired: N };
+  drift: { reopened: N };
+  spend: { kaneCredits: N; agentUsd: N; agentMin: N; kaneRunMin: N };
 };
 export type DocInputs = { summary: unknown; demo: DemoRun };
 export function renderResults(summary: unknown): string;
-export function renderHeadline(summary: unknown): string;
+export function renderExam(summary: unknown): string;
+export function renderFalsified(demo: DemoRun | null): string | null;
+export function renderHeadline(summary: unknown, demo?: DemoRun | null): string;
 export function renderExamStatus(summary: unknown): string;
 export function emptyDemo(): DemoRun;
 export function checkDemo(demo: unknown): DemoRun;

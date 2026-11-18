@@ -12,7 +12,9 @@ import {
   renderDemo,
   renderDemoStatus,
   renderDocs,
+  renderExam,
   renderExamStatus,
+  renderFalsified,
   renderHeadline,
   renderReadme,
 } from "../scripts/render-readme.mjs";
@@ -86,7 +88,9 @@ describe("render-readme footnotes", () => {
     expect(out).toContain("- A: the app could not be installed or started, so it scores 0 of 22 (app did not boot: exited).");
     expect(out).toContain("- A: the build stopped after repeated API errors");
     expect(out).toContain("- B: the agent ran 2 Kane assurance commands");
-    expect(out).toContain("- C: build credits and wall minutes count from its first build turn; its spec stage is not in them (40.0 credits, 5.0 minutes).");
+    expect(out).toContain(
+      "- C: build credits and wall minutes count from its first build turn to its last ledger event, planted bugs included and stops between runs included; its spec stage is not in them (40.0 credits, 5.0 minutes).",
+    );
     expect(out).toContain("- C: 1 Kane batch had no balance reading");
     expect(out).toContain("- C: 2 loop turns did not report agent cost");
     expect(renderReadme(readme, summary)).toBe(out);
@@ -103,11 +107,12 @@ describe("render-readme parts", () => {
     _readme: "x",
     links: { landing: "https://example.test/", video: null, replay: "https://example.test/replay/" },
     recorded: { ledger: "examples/recorded-run/ledger.jsonl" },
-    spec: { questions: 3, criteria: 14, tests: 5 },
-    build: { turns: 4, bugReports: 2, gateOpen: true },
-    falsify: { planted: 6, caught: 5, breakerUsd: 0.0123 },
+    spec: { questions: 3, criteria: 14, tests: 5, noTest: 2 },
+    build: { turns: 4, bugReports: 2, greenFirst: 9, greenLast: 12, gateOpen: true },
+    falsify: { planted: 6, caught: 5, survived: 1, survivedNoChange: 1, survivedOtherRule: 0, invalid: 0, breakerUsd: 0.0123 },
+    evolve: { evolved: 1, paused: 0, minted: 1, retired: 2 },
     drift: { reopened: 2 },
-    spend: { kaneCredits: 812.25, agentUsd: null, wallMin: 48 },
+    spend: { kaneCredits: 812.25, agentUsd: null, agentMin: 12.5, kaneRunMin: 48 },
   };
   const DOC = [
     "<!-- headline:start -->old<!-- headline:end -->",
@@ -136,14 +141,32 @@ describe("render-readme parts", () => {
     expect(out).not.toMatch(/>old<|\nold\n/);
   });
 
-  it("fills the headline only once both compared arms are scored, B when it is", () => {
-    expect(renderHeadline({ C: SUMMARY.C })).toMatch(/^Exam pending/);
-    expect(renderHeadline(SUMMARY)).toBe("On a held-out 22-case exam, Holdback's build passed 21/22; Claude Code alone passed 17/22.");
-    expect(renderHeadline({ ...SUMMARY, B: { ...SUMMARY.A, examPassed: 18 } })).toBe(
+  it("fills the exam sentence only once both compared arms are scored, B when it is, and says a tie is one", () => {
+    expect(renderExam({ C: SUMMARY.C })).toMatch(/^Exam pending/);
+    expect(renderExam(SUMMARY)).toBe("On a held-out 22-case exam, Holdback's build passed 21/22; Claude Code alone passed 17/22.");
+    expect(renderExam({ ...SUMMARY, B: { ...SUMMARY.A, examPassed: 18 } })).toBe(
       "On a held-out 22-case exam, Holdback's build passed 21/22; Claude Code alone passed 17/22, and with its own Kane checks 18/22.",
+    );
+    const tie = { A: { ...SUMMARY.A, examPassed: 22 }, B: { ...SUMMARY.A, examPassed: 22 }, C: { ...SUMMARY.C, examPassed: 22 } };
+    expect(renderExam(tie)).toBe(
+      "On the held-out 22-case exam the builds tied: Holdback's build, Claude Code alone and Claude Code with its own Kane checks each passed 22/22.",
     );
     expect(renderExamStatus(SUMMARY)).toBe("VERIFIED-LIVE");
     expect(renderExamStatus({ A: SUMMARY.A })).toBe("NOT-CLAIMED (pending)");
+  });
+
+  it("leads the headline with what the planted bugs found once the demo run is recorded, the exam after it", () => {
+    const demo = checkDemo(DEMO);
+    expect(renderFalsified(emptyDemo())).toBeNull();
+    expect(renderFalsified(demo)).toBe(
+      "Holdback planted a bug against each of the 6 criteria Kane's tests passed on a real app. Kane's replays could judge 6 of them and caught 5, each on two replays; none of the 1 that got past them broke the criterion it was planted against (1 changed no behaviour, 0 broke a different rule).",
+    );
+    expect(renderHeadline(SUMMARY, demo)).toBe(`${renderFalsified(demo)} ${renderExam(SUMMARY)}`);
+    expect(renderHeadline({}, demo)).toBe(renderFalsified(demo));
+    expect(renderHeadline(SUMMARY, emptyDemo())).toBe(renderExam(SUMMARY));
+    // without the split of the survivors, it only counts them
+    const plain = checkDemo({ ...DEMO, falsify: { ...DEMO.falsify, survivedNoChange: null } });
+    expect(renderFalsified(plain)?.endsWith("caught 5, each on two replays; 1 got past them.")).toBe(true);
   });
 
   it("fills links, the demo table and its tag from the demo record", () => {
@@ -154,10 +177,14 @@ describe("render-readme parts", () => {
     expect(out).toContain("| Demo | <!-- demo-status:start -->VERIFIED-LIVE<!-- demo-status:end --> |");
     expect(out).toContain("| Recorded demo run ([ledger](examples/recorded-run/ledger.jsonl)) | |");
     expect(out).toContain("| Planted bugs Kane caught | 5 of 6 |");
+    expect(out).toContain("| Planted bugs that got past their criterion's tests | 1 (1 changed no behaviour, 0 broke a different rule) |");
+    expect(out).toContain("| Criteria green when the build stopped | 12 of 14 |");
     expect(out).toContain("| Gate at the end | open |");
     expect(out).toContain("| Kane credits, by balance | 812.3 |");
-    expect(out).toContain("| Agent cost | not recorded |");
+    expect(out).toContain("| Kane test-run minutes | 48.0 |");
     expect(out).toContain("| Breaker cost | $0.0123 |");
+    // a figure not recorded leaves its row out
+    expect(out).not.toContain("| Agent cost |");
   });
 
   it("keeps the demo pending while its ledger is not in the repo, whatever else is filled", () => {
@@ -198,8 +225,13 @@ describe("render-readme parts", () => {
     expect(existsSync(path.join(tmp, "CLAIMS.md"))).toBe(false);
   });
 
-  it("checks the committed demo record and keeps it all null until the demo is recorded", () => {
-    const committed = JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "docs", "demo-run.json"), "utf8"));
-    expect(checkDemo(committed)).toEqual(emptyDemo());
+  it("checks the committed demo record: every figure of its form, its ledger in the repo", () => {
+    const root = path.join(import.meta.dirname, "..");
+    const committed = checkDemo(JSON.parse(readFileSync(path.join(root, "docs", "demo-run.json"), "utf8")));
+    expect(committed.recorded.ledger).not.toBeNull();
+    expect(existsSync(path.join(root, committed.recorded.ledger!))).toBe(true);
+    const f = committed.falsify;
+    expect(f.caught! + f.survived! + f.invalid!).toBe(f.planted);
+    expect(f.survivedNoChange! + f.survivedOtherRule!).toBe(f.survived);
   });
 });

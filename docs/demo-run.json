@@ -1,34 +1,48 @@
 {
-  "_readme": "Figures of the recorded demo run. Each one is copied from the run's ledger (recorded.ledger, committed under examples/recorded-run/) or from `holdback status --json` on it; links are https only. null means not recorded yet, and the docs show it as pending. `pnpm render-readme` refuses unknown keys and values of the wrong form. Never put an estimate here.",
+  "_readme": "Figures of the recorded demo run (the pantry spec, 2026-11-16 to 2026-11-18). Each one is copied from the run's sanitized ledger (recorded.ledger) or from `holdback status --json` on it: spec from `spec.paused`, `design` and the first `seal`; build from `turn.start`/`turn.end` and the state before each turn; bugReports counts the distinct Kane reports (test, turn, diagnosis) the briefs carried; falsify from `mutant` events (survivedNoChange and survivedOtherRule read from each surviving mutant's `patch`, see CLAIMS.md); evolve from `falsify.evolved` and `redesign.dropped` (paused: an evolve whose child design session stopped on Kane's questions); spend from `credits` (balance), `turn.end` (agentUsd, durationMs) and every `run`'s durationS. drift is null: no spec edit in this run. Links are https only; null means not recorded yet, and the docs leave it out or show it as pending. `pnpm render-readme` refuses unknown keys and values of the wrong form. Never put an estimate here.",
   "links": {
     "landing": null,
     "video": null,
     "replay": null
   },
   "recorded": {
-    "ledger": null
+    "ledger": "apps/dashboard/fixtures/ledger.jsonl"
   },
   "spec": {
-    "questions": null,
-    "criteria": null,
-    "tests": null
+    "questions": 2,
+    "criteria": 57,
+    "tests": 22,
+    "noTest": 14
   },
   "build": {
-    "turns": null,
-    "bugReports": null,
-    "gateOpen": null
+    "turns": 9,
+    "bugReports": 7,
+    "greenFirst": 16,
+    "greenLast": 26,
+    "gateOpen": false
   },
   "falsify": {
-    "planted": null,
-    "caught": null,
-    "breakerUsd": null
+    "planted": 26,
+    "caught": 4,
+    "survived": 6,
+    "survivedNoChange": 3,
+    "survivedOtherRule": 3,
+    "invalid": 16,
+    "breakerUsd": 0.0262
+  },
+  "evolve": {
+    "evolved": 2,
+    "paused": 1,
+    "minted": 5,
+    "retired": 10
   },
   "drift": {
     "reopened": null
   },
   "spend": {
-    "kaneCredits": null,
-    "agentUsd": null,
-    "wallMin": null
+    "kaneCredits": 5233.94,
+    "agentUsd": 6.37,
+    "agentMin": 41.0,
+    "kaneRunMin": 499.3
   }
 }

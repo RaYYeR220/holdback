@@ -1,6 +1,7 @@
 // Fills the generated parts of the public docs from files, never from typed numbers:
-//   results, headline, exam-status  <- eval/results/summary.json (the scored exam)
+//   results, exam, exam-status      <- eval/results/summary.json (the scored exam)
 //   links, demo, demo-status        <- docs/demo-run.json (the recorded demo run)
+//   headline                        <- both: what the planted bugs found, then the exam
 // A part sits between `<!-- name:start -->` and `<!-- name:end -->`. Block parts render on lines of
 // their own; inline parts sit inside a sentence or a table cell. A missing input renders as pending.
 // Idempotent: the same inputs always render the same text.
@@ -29,7 +30,7 @@ export function renderResults(summary) {
     return `| ${NAMES[a]} | ${s.examPassed}/${s.examTotal} | ${num(s.inconclusive)} | ${s.claimedDone ? "yes" : "no"} | ${num(s.turns)} | ${num(s.kaneCredits, 1)} | ${usd(s.agentUsd)} | ${usd(s.breakerUsd)} | ${num(s.wallMin, 1)} |`;
   });
   const table = [
-    "| Arm | Exam passed | Inconclusive | Claimed done | Agent turns | Build credits | Agent cost | Breaker cost | Wall minutes |",
+    "| Arm | Exam passed | Inconclusive | Claimed done | Claude Code turns | Build credits | Agent cost | Breaker cost | Wall minutes |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows,
   ].join("\n");
@@ -49,7 +50,9 @@ function footnotes(summary, arms) {
     if (s.assuranceCallsUsed > 0) out.push(`${a}: the agent ran ${s.assuranceCallsUsed} Kane assurance command${s.assuranceCallsUsed === 1 ? "" : "s"} (context, design, maintain or cover) despite the deny rules.`);
     if (typeof s.specCredits === "number") {
       const mins = typeof s.specMinutes === "number" ? `, ${s.specMinutes.toFixed(1)} minutes` : "";
-      out.push(`${a}: build credits and wall minutes count from its first build turn; its spec stage is not in them (${s.specCredits.toFixed(1)} credits${mins}).`);
+      out.push(
+        `${a}: build credits and wall minutes count from its first build turn to its last ledger event, planted bugs included and stops between runs included; its spec stage is not in them (${s.specCredits.toFixed(1)} credits${mins}).`,
+      );
     }
     if (s.kaneUnmeasured > 0) out.push(`${a}: ${s.kaneUnmeasured} Kane batch${s.kaneUnmeasured === 1 ? "" : "es"} had no balance reading, so build credits are a lower bound.`);
     if (s.turnsWithoutCost > 0) out.push(`${a}: ${s.turnsWithoutCost} loop turn${s.turnsWithoutCost === 1 ? "" : "s"} did not report agent cost, so turns and agent cost are not shown.`);
@@ -57,16 +60,41 @@ function footnotes(summary, arms) {
   return out;
 }
 
-/** The outcome-first line: Holdback's score next to the agent alone's, once both are scored. */
-export function renderHeadline(summary) {
+const EXAM_PENDING =
+  "Exam pending: Holdback's build and Claude Code alone have not been scored yet on the held-out 22-case exam ([pre-registration](eval/PREREGISTERED.md)).";
+
+/** The exam in one sentence: Holdback's score next to the agent alone's, once both are scored. A tie says so. */
+export function renderExam(summary) {
   const a = arm(summary, "A");
   const b = arm(summary, "B");
   const c = arm(summary, "C");
-  if (!a || !c) {
-    return "Exam pending: Holdback's build and Claude Code alone have not been scored yet on the held-out 22-case exam ([pre-registration](eval/PREREGISTERED.md)).";
+  if (!a || !c) return EXAM_PENDING;
+  if ([a, b, c].filter(Boolean).every((s) => s.examPassed === c.examPassed && s.examTotal === c.examTotal)) {
+    const who = b ? "Holdback's build, Claude Code alone and Claude Code with its own Kane checks" : "Holdback's build and Claude Code alone";
+    return `On the held-out ${c.examTotal}-case exam the builds tied: ${who} each passed ${c.examPassed}/${c.examTotal}.`;
   }
   const withKane = b ? `, and with its own Kane checks ${b.examPassed}/${b.examTotal}` : "";
   return `On a held-out ${c.examTotal}-case exam, Holdback's build passed ${c.examPassed}/${c.examTotal}; Claude Code alone passed ${a.examPassed}/${a.examTotal}${withKane}.`;
+}
+
+/** What the planted bugs found in the recorded demo run, or null until its falsify figures are recorded. */
+export function renderFalsified(demo) {
+  const f = demo?.falsify;
+  if (!demo?.recorded.ledger || !f || [f.planted, f.caught, f.survived].some((v) => v === null)) return null;
+  const judged = f.caught + f.survived;
+  const why =
+    f.survivedNoChange !== null && f.survivedOtherRule !== null && f.survivedNoChange + f.survivedOtherRule === f.survived
+      ? `; none of the ${f.survived} that got past them broke the criterion it was planted against (${f.survivedNoChange} changed no behaviour, ${f.survivedOtherRule} broke a different rule)`
+      : `; ${f.survived} got past them`;
+  return `Holdback planted a bug against each of the ${f.planted} criteria Kane's tests passed on a real app. Kane's replays could judge ${judged} of them and caught ${f.caught}, each on two replays${why}.`;
+}
+
+/** The outcome-first line: what the planted bugs found, then the exam; the exam alone until the demo run is recorded. */
+export function renderHeadline(summary, demo = null) {
+  const falsified = renderFalsified(demo);
+  const exam = renderExam(summary);
+  if (!falsified) return exam;
+  return exam === EXAM_PENDING ? falsified : `${falsified} ${exam}`;
 }
 
 const PENDING_TAG = "NOT-CLAIMED (pending)";
@@ -78,11 +106,12 @@ export const renderExamStatus = (summary) => (arm(summary, "A") && arm(summary, 
 const DEMO_SCHEMA = {
   links: { landing: "url", video: "url", replay: "url" },
   recorded: { ledger: "path" },
-  spec: { questions: "count", criteria: "count", tests: "count" },
-  build: { turns: "count", bugReports: "count", gateOpen: "bool" },
-  falsify: { planted: "count", caught: "count", breakerUsd: "number" },
+  spec: { questions: "count", criteria: "count", tests: "count", noTest: "count" },
+  build: { turns: "count", bugReports: "count", greenFirst: "count", greenLast: "count", gateOpen: "bool" },
+  falsify: { planted: "count", caught: "count", survived: "count", survivedNoChange: "count", survivedOtherRule: "count", invalid: "count", breakerUsd: "number" },
+  evolve: { evolved: "count", paused: "count", minted: "count", retired: "count" },
   drift: { reopened: "count" },
-  spend: { kaneCredits: "number", agentUsd: "number", wallMin: "number" },
+  spend: { kaneCredits: "number", agentUsd: "number", agentMin: "number", kaneRunMin: "number" },
 };
 
 /** A demo record with every figure null. */
@@ -127,34 +156,51 @@ export function renderLinks(demo) {
 /** The demo run's claim tag: claimed only once its ledger is in the repo. */
 export const renderDemoStatus = (demo) => (demo?.recorded.ledger ? "VERIFIED-LIVE" : PENDING_TAG);
 
-/** The recorded demo run as a table, or pending until its ledger is in the repo. */
+/** The recorded demo run as a table, or pending until its ledger is in the repo. A figure not recorded leaves its row out. */
 export function renderDemo(demo) {
   const d = demo ?? emptyDemo();
   if (!d.recorded.ledger) return "Demo run pending: nothing from it is claimed yet.";
-  const n = (v, f = (x) => String(x)) => (v === null ? "not recorded" : f(v));
-  const money = (digits) => (v) => "$" + v.toFixed(digits);
-  const caught = d.falsify.planted === null || d.falsify.caught === null ? "not recorded" : `${d.falsify.caught} of ${d.falsify.planted}`;
+  const of = (a, b) => (a === null ? null : b === null ? String(a) : `${a} of ${b}`);
+  const money = (v, digits) => (v === null ? null : "$" + v.toFixed(digits));
+  const fixed = (v, digits) => (v === null ? null : v.toFixed(digits));
+  const f = d.falsify;
+  const survived =
+    f.survived === null
+      ? null
+      : f.survivedNoChange !== null && f.survivedOtherRule !== null
+        ? `${f.survived} (${f.survivedNoChange} changed no behaviour, ${f.survivedOtherRule} broke a different rule)`
+        : String(f.survived);
+  const evolved = d.evolve.evolved === null ? null : `${d.evolve.evolved}${d.evolve.paused ? ` (${d.evolve.paused} more paused on Kane's own questions)` : ""}`;
   const rows = [
-    ["Questions Kane asked about the spec", n(d.spec.questions)],
-    ["Acceptance criteria Kane designed", n(d.spec.criteria)],
-    ["Browser tests Kane designed", n(d.spec.tests)],
-    ["Agent turns", n(d.build.turns)],
-    ["Kane bug reports sent back to the agent", n(d.build.bugReports)],
-    ["Planted bugs Kane caught", caught],
-    ["Criteria a spec edit reopened", n(d.drift.reopened)],
-    ["Gate at the end", n(d.build.gateOpen, (v) => (v ? "open" : "closed"))],
-    ["Kane credits, by balance", n(d.spend.kaneCredits, (v) => v.toFixed(1))],
-    ["Agent cost", n(d.spend.agentUsd, money(2))],
-    ["Breaker cost", n(d.falsify.breakerUsd, money(4))],
-    ["Wall-clock minutes", n(d.spend.wallMin, (v) => v.toFixed(1))],
-  ];
+    ["Questions Kane asked about the spec", d.spec.questions],
+    ["Acceptance criteria Kane designed", d.spec.criteria],
+    ["Browser tests Kane designed", d.spec.tests],
+    ["Criteria left without a test (design cap)", d.spec.noTest],
+    ["Agent turns (Claude Code calls)", d.build.turns],
+    ["Kane bug reports that reached the agent", d.build.bugReports],
+    ["Criteria green after the first turn's check", of(d.build.greenFirst, d.spec.criteria)],
+    ["Criteria green when the build stopped", of(d.build.greenLast, d.spec.criteria)],
+    ["Gate at the end", d.build.gateOpen === null ? null : d.build.gateOpen ? "open" : "closed"],
+    ["Planted bugs Kane caught", f.caught === null || f.planted === null ? null : `${f.caught} of ${f.planted}`],
+    ["Planted bugs that got past their criterion's tests", survived],
+    ["Planted bugs whose replays proved nothing", f.invalid],
+    ["Use cases Kane evolved after a surviving bug", evolved],
+    ["Tests Kane's evolves minted, retired", d.evolve.minted === null || d.evolve.retired === null ? null : `${d.evolve.minted}, ${d.evolve.retired}`],
+    ["Criteria a spec edit reopened", d.drift.reopened],
+    ["Kane credits, by balance", fixed(d.spend.kaneCredits, 1)],
+    ["Agent cost", money(d.spend.agentUsd, 2)],
+    ["Claude Code minutes", fixed(d.spend.agentMin, 1)],
+    ["Kane test-run minutes", fixed(d.spend.kaneRunMin, 1)],
+    ["Breaker cost", money(f.breakerUsd, 4)],
+  ].filter(([, v]) => v !== null);
   return [`| Recorded demo run ([ledger](${d.recorded.ledger})) | |`, "| --- | --- |", ...rows.map(([k, v]) => `| ${k} | ${v} |`)].join("\n");
 }
 
 /** Every part the docs may hold. `block` parts sit on lines of their own. */
 const PARTS = {
   results: { block: true, render: (d) => renderResults(d.summary) },
-  headline: { block: false, render: (d) => renderHeadline(d.summary) },
+  headline: { block: false, render: (d) => renderHeadline(d.summary, d.demo) },
+  exam: { block: false, render: (d) => renderExam(d.summary) },
   "exam-status": { block: false, render: (d) => renderExamStatus(d.summary) },
   links: { block: false, render: (d) => renderLinks(d.demo) },
   demo: { block: true, render: (d) => renderDemo(d.demo) },
