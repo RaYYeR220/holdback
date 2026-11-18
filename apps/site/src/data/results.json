@@ -2,7 +2,7 @@
   "_readme": "The page reads every figure from this file. null means not measured yet: the page shows it as pending. Never put an estimate here. firstLiveRun: examples/first-live-run/ledger.jsonl. demo: the pantry run, docs/demo-run.json (survived = planted bugs that got past their criterion's tests, none of which broke that criterion; invalid = replays that proved nothing). exam: eval/results/summary.json (failingAtDone = exam cases failing when the arm stopped).",
   "links": {
     "github": "https://github.com/RaYYeR220/holdback",
-    "video": null
+    "video": "https://youtu.be/U6Cx9BSI2O8"
   },
   "firstLiveRun": {
     "specRules": 4,

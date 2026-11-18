@@ -6,7 +6,7 @@ Five minutes, no credentials. Each step says what to open and what it proves. Ev
 
 ## 1. The landing page and the demo video
 
-<!-- links:start -->[Landing page](https://holdback-seven.vercel.app) · Demo video: pending · [Dashboard replay](https://holdback-seven.vercel.app/replay/)<!-- links:end -->
+<!-- links:start -->[Landing page](https://holdback-seven.vercel.app) · [Demo video](https://youtu.be/U6Cx9BSI2O8) · [Dashboard replay](https://holdback-seven.vercel.app/replay/)<!-- links:end -->
 
 The landing page, the video and a hosted replay are not published yet. Until they are, steps 2 to 5 carry the evidence.
 

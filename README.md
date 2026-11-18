@@ -4,7 +4,7 @@
 
 Holdback holds back a coding agent's "done" until Kane CLI proves every acceptance criterion of your spec in a real browser. You write only the spec. Kane designs the criteria and the tests, Claude Code builds from Kane's bug reports, and a criterion counts as proved only after Kane catches a bug planted to break it.
 
-<!-- links:start -->[Landing page](https://holdback-seven.vercel.app) · Demo video: pending · [Dashboard replay](https://holdback-seven.vercel.app/replay/)<!-- links:end -->
+<!-- links:start -->[Landing page](https://holdback-seven.vercel.app) · [Demo video](https://youtu.be/U6Cx9BSI2O8) · [Dashboard replay](https://holdback-seven.vercel.app/replay/)<!-- links:end -->
 
 ![How Holdback holds back "done"](docs/architecture.svg)
 
