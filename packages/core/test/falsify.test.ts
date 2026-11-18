@@ -1756,6 +1756,30 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(tl.indexOf("falsify.evolved")).toBeLessThan(tl.indexOf("redesign.dropped"));
   });
 
+  it("a follow-up evolve that fails inside Kane (live: uc-3's after m-ac-19-1, ILLEGAL_EDGE) leaves the first evolve standing, Kane's error and credits on record, the criteria it left needing the spec (FINDINGS 23)", async () => {
+    const LIVE = JSON.parse(readFileSync(join(fxKane, "23-follow-up-evolve-illegal-edge.json"), "utf8"));
+    expect(LIVE.dropped.detail).toBe(`follow-up evolve of uc-3: Kane's evolve of uc-3 failed: ${LIVE.kaneError}`);
+    await setup();
+    const { deps, io, calls } = fakes({
+      mutantRun: survives3,
+      evolve: (n, kit) => {
+        if (n > 0) return { status: "error", message: LIVE.kaneError, credits: LIVE.dropped.credits };
+        kit.mint("t-4", ["ac-3"]);
+        kit.retire("t-1", "t-3");
+        return EVOLVED;
+      },
+    });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r.redesigned).toEqual(["uc-1"]);
+    expect(calls.evolve).toHaveLength(2);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "falsify.evolved")).toMatchObject({ minted: ["t-4"], retired: ["t-1", "t-3"] });
+    expect(all.find((e) => e.t === "redesign.dropped")).toEqual({ at: expect.any(String), t: "redesign.dropped", useCases: ["uc-1"], detail: `follow-up evolve of uc-1: Kane's evolve of uc-1 failed: ${LIVE.kaneError}`, credits: LIVE.dropped.credits });
+    const s = reduce(all);
+    expect(s.acs["ac-1"]).toMatchObject({ status: "needs-spec", tests: [] });
+    expect(s.acs["ac-3"]).toMatchObject({ status: "passing", tests: ["t-4"] });
+  });
+
   it("a survivor whose account is too long to hand Kane whole is never cut: its evolve is skipped with the reason, and it stays vacuous", async () => {
     const giant: Slip = { ...SLIP["ac-3"]!, inputs: "household size 1 ".repeat(3000) };
     const referee = { confirmed: true, input: giant.inputs, expected: giant.expected, observed: giant.observed, reason: "r", usd: 0.0001, model: REFEREE_MODEL };

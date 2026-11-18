@@ -1,0 +1,100 @@
+{
+  "about": "The pantry app, 2026-11-18, the pass whose referee ran on z-ai-glm-5-3-flash: Kane's evolve of uc-3 after the survivor m-ac-19-1, and its follow-up evolve, which failed inside Kane (ILLEGAL_EDGE). Excerpts of that run's ledger (in Holdback's home, not in this repo), sanitized: no home paths.",
+  "survivor": {
+    "at": "2026-11-18T21:51:42.036Z",
+    "id": "m-ac-19-1",
+    "ac": "ac-19",
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -278,7 +278,7 @@ function bookingPage(checkId, form = {}, errors = [], booked = null) {\n   if (booked) {\n     const lines = ['Visit booked.', `Your visit: ${fmtDate(booked.date)} at ${booked.time}.`];\n-    if (booked.proxy) lines.push(`Proxy: ${booked.proxy}`);\n+    if (booked.proxy === undefined) lines.push(`Proxy: ${booked.proxy}`);\n     return page(\n       'Book a visit',\n",
+    "verdict": "survived",
+    "referee": {
+      "confirmed": true,
+      "input": "Book a visit without naming a proxy (leave the proxy field empty so booked.proxy is undefined)",
+      "expected": "The confirmation page shows 'Visit booked.' and the visit date/time, with no Proxy line",
+      "observed": "The confirmation page shows an extra line 'Proxy: undefined'",
+      "reason": "The condition was inverted from truthy-check to === undefined, so an unnamed proxy (undefined) now renders a 'Proxy: undefined' line, which the AC forbids when no proxy is named.",
+      "usd": 0.00025975,
+      "model": "z-ai-glm-5-3-flash"
+    }
+  },
+  "credits": [
+    {
+      "at": "2026-11-18T22:41:05.612Z",
+      "source": "evolve",
+      "delta": 21.9982
+    },
+    {
+      "at": "2026-11-18T22:43:29.213Z",
+      "source": "evolve",
+      "delta": 35.2279
+    }
+  ],
+  "evolved": {
+    "at": "2026-11-18T22:43:29.247Z",
+    "t": "falsify.evolved",
+    "uc": "uc-3",
+    "because": "A planted bug got past every test of this use case. ac-19 (\"When no proxy is named for a booked visit, confirmation has no Proxy line.\"): After booking a visit with a proxy name, the confirmation page does not show the Proxy line, even though a proxy was entered. With Book a visit without naming a proxy (leave the proxy field empty so booked.proxy is undefined), the page should show The confirmation page shows 'Visit booked.' and the visit date/time, with no Proxy line, but it showed The confirmation page shows an extra line 'Proxy: undefined'. Add a test that catches it.",
+    "minted": [
+      "t-28"
+    ],
+    "retired": [
+      "t-27"
+    ],
+    "credits": 21.99,
+    "mutants": [
+      "m-ac-19-1"
+    ]
+  },
+  "dropped": {
+    "at": "2026-11-18T22:43:29.258Z",
+    "t": "redesign.dropped",
+    "useCases": [
+      "uc-3"
+    ],
+    "detail": "follow-up evolve of uc-3: Kane's evolve of uc-3 failed: error: design agent failed: design commit failed: ILLEGAL_EDGE: t3.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t4.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t8.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t9.automates: automates dst must be scenario, got gap",
+    "credits": 35.22
+  },
+  "kaneError": "error: design agent failed: design commit failed: ILLEGAL_EDGE: t3.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t4.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t8.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t9.automates: automates dst must be scenario, got gap",
+  "design": {
+    "at": "2026-11-18T22:43:29.271Z",
+    "useCase": "uc-3",
+    "tests": [
+      {
+        "id": "t-28",
+        "title": "Show the entered pickup proxy on a successful booking confirmation",
+        "file": ".testmuai/tests/show-the-entered-pickup-proxy-on-a-successful-booking_test.md",
+        "verifies": [
+          "ac-10",
+          "ac-6",
+          "ac-7",
+          "ac-18"
+        ]
+      }
+    ],
+    "notes": {
+      "ac-19": "Kane's evolved tests no longer cover it; a follow-up evolve did not cover it either",
+      "ac-66": "Kane's evolved tests no longer cover it; a follow-up evolve did not cover it either"
+    },
+    "criteriaWithoutTest": 20,
+    "gaps": [
+      {
+        "id": "gap-6",
+        "title": "no proxy confirmation",
+        "kind": "invariant-unexercised",
+        "acs": [],
+        "useCase": "uc-3",
+        "question": {
+          "header": "no proxy confirmation",
+          "prompt": "Add a no-proxy booking journey to prove its confirmation omits the Proxy line?",
+          "options": [
+            {
+              "label": "Leave no-proxy confirmation unexercised under this ceiling"
+            },
+            {
+              "label": "Increase coverage with a no-proxy journey"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

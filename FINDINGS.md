@@ -1,6 +1,6 @@
 # Kane CLI findings
 
-What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. Findings 1 to 14 come from the first live run and the rehearsal on a 4-rule spec; there, "the ledger" is the first live run's, `examples/first-live-run/ledger.jsonl`. Findings 15 to 22 come from the pantry run (2026-11-16 to 18), whose ledger is `apps/dashboard/fixtures/ledger.jsonl` (line numbers are its lines); 22 comes from a later pass, its evidence in a fixture of its own.
+What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. Findings 1 to 14 come from the first live run and the rehearsal on a 4-rule spec; there, "the ledger" is the first live run's, `examples/first-live-run/ledger.jsonl`. Findings 15 to 23 come from the pantry run (2026-11-16 to 18), whose ledger is `apps/dashboard/fixtures/ledger.jsonl` (line numbers are its lines); 22 and 23 come from later passes, each with its evidence in a fixture of its own.
 
 ## 1. `--timeout` bounds each step, not the whole run
 
@@ -156,5 +156,12 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 - **Holdback then:** refused the new test, because a minted test may verify only criteria of the use case it evolves, and logged it as a sealed file Kane "did not mint or retire" (`falsify.evolve.stray`): a tamper, the evolve rolled back.
 - **Holdback now:** a new test may also verify a criterion the ledger has under no use case when a sealed test of the same use case already verifies it and Kane's graph puts it under no other use case. A refused new test is named as one, with the reason: "minted tests Holdback may not seal: <path> (t-N: it verifies ac-9, not a criterion of uc-1)".
 - **Suggestion:** give such a criterion a `scoped_to` edge to its scenario's use case as well, so `context view` says where it belongs.
+
+## 23. A follow-up evolve failed on Kane's own graph check: tests that `automates` a gap
+
+- **Seen:** on 2026-11-18, after the planted bug m-ac-19-1 got past uc-3's tests, `maintain evolve uc-3` (21.99 credits) minted t-28 and retired t-27. t-28 verifies ac-6, ac-7, ac-10 and ac-18, so ac-19, ac-66 and 18 other criteria of uc-3 had no test. The follow-up evolve that asked Kane to cover those 20 failed after 35.22 credits, with nothing written: "error: design agent failed: design commit failed: ILLEGAL_EDGE: t3.automates: automates dst must be scenario, got gap; ILLEGAL_EDGE: t4.automates: …; t8 …; t9 …" (`redesign.dropped`, 22:43:29Z). The design Holdback read back afterwards lists 10 gaps for uc-3, among them gap-6: "Add a no-proxy booking journey to prove its confirmation omits the Proxy line?" (`packages/core/test/fixtures/kane/23-follow-up-evolve-illegal-edge.json`: the ledger's events, sanitized).
+- **What it means:** Kane's design agent wrote four tests aimed at gaps instead of scenarios, and Kane's own commit check refused the whole design. The credits were spent, and the criteria the follow-up was for stayed without a test. A caller cannot tell which gaps the four tests were for: `t3`, `t4`, `t8` and `t9` are ids from inside that design session.
+- **Holdback now:** records the follow-up as dropped with Kane's error and its credits, keeps the first evolve's sealed tests, and marks each criterion still without a test as needing the spec ("Kane's evolved tests no longer cover it; a follow-up evolve did not cover it either"). It does not retry (`packages/core/test/falsify.test.ts`, on this error). The survivor behind it was not a real one: m-ac-19-1 breaks ac-18, not ac-19, and the referee, shown only the patch, confirmed it ([CLAIMS.md](CLAIMS.md#after-the-submission)).
+- **Suggestion:** check the agent's edges before the commit and drop or re-target a test aimed at a gap (or make the gap a scenario first) rather than failing the whole design, and name the gap in the error.
 
 Not filed upstream yet.
