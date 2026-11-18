@@ -1,8 +1,8 @@
 {
   "spec": ["PRD.md"],
   "start": { "port": 3190, "readyPath": "/" },
-  "agent": { "model": "sonnet" },
-  "kane": { "parallel": 2, "timeoutS": 420, "designMax": 3 },
-  "breaker": { "model": "deepseek-v4-flash", "capUsd": 0.25 },
-  "loop": { "maxTurns": 6 }
+  "agent": { "model": "opus" },
+  "kane": { "parallel": 1, "timeoutS": 120, "designMax": 6, "capCredits": 4500 },
+  "breaker": { "model": "deepseek-v4-flash", "capUsd": 2, "parallel": 1 },
+  "loop": { "maxTurns": 15 }
 }

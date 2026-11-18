@@ -41,24 +41,28 @@ describe("REPLAY: the static build renders the recorded run", () => {
     await page.goto(site.url);
     await ready(page);
 
-    await expect(page.locator("[data-testid=gate]").textContent()).resolves.toMatch(/Held back.*5 owed.*2\/11 proved/);
+    // the pantry demo run: the verdict's parts are long, the pill keeps them on one line
+    await expect(page.locator("[data-testid=gate]").textContent()).resolves.toMatch(/Held back.*23 owed.*2\/58 proved/);
     await expect(page.locator("h1").textContent()).resolves.toBe("Held back.");
-    expect(await page.locator("article.ac").count()).toBe(11);
-    expect([await colCount(page, "owed"), await colCount(page, "passing"), await colCount(page, "proved"), await colCount(page, "vacuous"), await colCount(page, "needs-spec")]).toEqual([5, 4, 2, 0, 0]);
+    expect(await page.locator("article.ac").count()).toBe(58);
+    expect([await colCount(page, "owed"), await colCount(page, "passing"), await colCount(page, "proved"), await colCount(page, "vacuous"), await colCount(page, "needs-spec")]).toEqual([23, 7, 2, 4, 22]);
     // the proved card carries the catch: Kane's words, the screenshot, the planted line
-    const ac2 = page.locator("[data-ac=ac-2]");
-    await expect(ac2.locator(".saw").textContent()).resolves.toBe("Eligible. Monthly limit applied: $2,461.");
-    await expect(ac2.locator(".d-add").textContent()).resolves.toContain("income >= limit");
+    const ac29 = page.locator("[data-ac=ac-29]");
+    await expect(ac29.locator(".saw").textContent()).resolves.toBe("Eligible.");
+    await expect(ac29.locator(".d-add").textContent()).resolves.toContain('<button type="submit" disabled>Book a visit</button>');
     const shots = await page.$$eval(".thumb img", (imgs) => imgs.map((i) => (i as HTMLImageElement).naturalWidth));
     expect(shots.length).toBeGreaterThanOrEqual(3);
     expect(shots.every((w) => w === 1920)).toBe(true);
-    await expect(page.locator(".seg h3").allTextContents()).resolves.toEqual(["Spec", "Turn 1", "Turn 2"]);
-    await expect(page.locator("#exam").textContent()).resolves.toContain("results pending");
+    await expect(page.locator(".seg h3").allTextContents()).resolves.toEqual(["Spec", ...Array.from({ length: 9 }, (_, i) => `Turn ${i + 1}`)]);
+    // the scored exam, read from eval/results/summary.json at build time
+    const exam = (await page.locator("#exam").textContent()) ?? "";
+    expect(exam.match(/22\/22/g)).toHaveLength(3);
+    expect(exam).toContain("did not claim done");
     expect(api).toEqual([]);
     expect(errors).toEqual([]);
     // the lightbox opens the full screenshot
-    await ac2.locator(".thumb").click();
-    await expect(page.locator("dialog.lightbox[open] img").getAttribute("src")).resolves.toBe("./artifacts/m-ac-2-1-step_007.png");
+    await ac29.locator(".thumb").click();
+    await expect(page.locator("dialog.lightbox[open] img").getAttribute("src")).resolves.toBe("./artifacts/m-ac-29-1-step_001.png");
     await page.close();
   });
 

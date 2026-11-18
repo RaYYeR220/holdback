@@ -7,7 +7,7 @@ import { appendEvent, appSealFiles, gate, loadProject, readEvents, reduce, seal,
 import { gate as browserGate, parseEvents as browserParse, reduce as browserReduce } from "@holdback/core/browser";
 import { gateLabel, stateFromLedger } from "../src/model";
 import { loadReplay } from "../src/source";
-import { DASH, FIXTURE, fixtureFetch, fixtureText, REHEARSAL } from "./helpers";
+import { DASH, FIXTURE, fixtureFetch, fixtureText, REHEARSAL, replayText } from "./helpers";
 
 /** The built CLI (`pnpm -r build` runs before the tests). */
 const CLI = path.resolve(DASH, "..", "..", "packages", "cli", "dist", "index.js");
@@ -15,14 +15,15 @@ const CLI = path.resolve(DASH, "..", "..", "packages", "cli", "dist", "index.js"
 const json = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 describe("the replay reduces the ledger exactly as core does", () => {
-  it("the fixture is the real run: 11 criteria, 5 owed, 4 passing, 2 proved, 2 planted bugs caught", async () => {
+  it("the fixture is the pantry demo run: 58 criteria, 23 owed, 7 passing, 2 proved, 4 vacuous, 22 without a test; 26 planted bugs, 4 caught", async () => {
     const snap = await loadReplay(fixtureFetch);
     const by = snap.api.counts.byStatus;
-    expect(snap.events).toHaveLength(25);
-    expect(by).toEqual({ owed: 5, passing: 4, proved: 2 });
-    expect(snap.api.state.mutants).toEqual({ killed: 2, survived: 0, invalid: 0 });
+    expect(snap.events).toHaveLength(331);
+    expect(by).toEqual({ owed: 23, passing: 7, proved: 2, vacuous: 4, "needs-spec": 22 });
+    expect(snap.api.state.mutants).toEqual({ killed: 4, survived: 6, invalid: 16 });
     expect(snap.api.gate.open).toBe(false);
-    expect(snap.api.config?.breaker.capUsd).toBe(0.25);
+    expect(snap.api.config?.breaker.capUsd).toBe(2);
+    expect(snap.api.config?.kane.capCredits).toBe(4500);
   });
 
   it("browser parse + reduce + gate equal core's node entry on the fixture file", async () => {
@@ -43,8 +44,8 @@ describe("the replay reduces the ledger exactly as core does", () => {
       inconclusive: g.inconclusive,
     });
     // and the browser entry's functions give the same answer on their own
-    expect(browserReduce(browserParse(fixtureText()))).toEqual(reduce(nodeEvents));
-    expect(json(browserGate(browserReduce(browserParse(fixtureText()))))).toEqual(json(g));
+    expect(browserReduce(browserParse(replayText()))).toEqual(reduce(nodeEvents));
+    expect(json(browserGate(browserReduce(browserParse(replayText()))))).toEqual(json(g));
   });
 
   it("the replay build ships no node module", () => {

@@ -4,8 +4,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DASH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** The shipped replay: the pantry demo run's ledger, config and screenshots, sanitized. */
 export const FIXTURE = path.join(DASH, "fixtures");
-export const fixtureText = () => readFileSync(path.join(FIXTURE, "ledger.jsonl"), "utf8");
+export const replayText = () => readFileSync(path.join(FIXTURE, "ledger.jsonl"), "utf8");
+/** The first live run (2026-11-15, the 4-rule spec), sanitized: the model and live-server tests read it. */
+export const FIRST_RUN = path.resolve(DASH, "..", "..", "examples", "first-live-run");
+export const fixtureText = () => readFileSync(path.join(FIRST_RUN, "ledger.jsonl"), "utf8");
 /** The live rehearsal's ledger (2026-11-16), sanitized: core's test fixture. */
 export const REHEARSAL = path.resolve(DASH, "..", "..", "packages", "core", "test", "fixtures", "rehearsal", "ledger.jsonl");
 
