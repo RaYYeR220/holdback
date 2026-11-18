@@ -1,10 +1,10 @@
 # Kane CLI findings
 
-What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. "The ledger" is the first live run's, `apps/dashboard/fixtures/ledger.jsonl`.
+What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. Findings 1 to 14 come from the first live run and the rehearsal on a 4-rule spec; there, "the ledger" is the first live run's, `examples/first-live-run/ledger.jsonl`. Findings 15 to 21 come from the pantry run (2026-11-16 to 18), whose ledger is `apps/dashboard/fixtures/ledger.jsonl` (line numbers are its lines).
 
 ## 1. `--timeout` bounds each step, not the whole run
 
-- **Seen:** t-3 has 11 steps and ran with `--timeout 420` (`kane.timeoutS` in `apps/dashboard/fixtures/config.json`). Its steps took 36 to 49 seconds each. At 450.9 seconds Kane was still running, and Holdback's own whole-run timer stopped it after 9 passed steps (the ledger's turn-1 `run` for t-3). The run billed 164.87 credits and saved nothing.
+- **Seen:** t-3 has 11 steps and ran with `--timeout 420` (`kane.timeoutS` in `examples/first-live-run/config.json`). Its steps took 36 to 49 seconds each. At 450.9 seconds Kane was still running, and Holdback's own whole-run timer stopped it after 9 passed steps (the ledger's turn-1 `run` for t-3). The run billed 164.87 credits and saved nothing.
 - **Holdback now:** passes `--timeout` as it is, and stops a run only after the timeout times the test's step count, plus 30 seconds (`packages/core/src/kane/testmd.ts`).
 - **Suggestion:** say "per step" in `testmd run --help` ("Kill after N seconds" today), or add a separate whole-run limit.
 
@@ -51,7 +51,7 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 
 ## 8. `design tests --max` bounds how many scenarios, not how long their tests are
 
-- **Seen:** Holdback passes `kane.designMax` as `kane-cli design tests --max`, which caps the scenarios Kane designs per use case, one test each (`packages/core/src/kane/assurance.ts`). With `--max 3` (`apps/dashboard/fixtures/config.json`), Kane designed 3 tests of 4, 4 and 11 steps. The 11-step test is the one that timed out (finding 1).
+- **Seen:** Holdback passes `kane.designMax` as `kane-cli design tests --max`, which caps the scenarios Kane designs per use case, one test each (`packages/core/src/kane/assurance.ts`). With `--max 3` (`examples/first-live-run/config.json`), Kane designed 3 tests of 4, 4 and 11 steps. The 11-step test is the one that timed out (finding 1).
 - **What it means:** the cost of a design follows its total step count, which no flag bounds.
 - **Suggestion:** a step limit for design, or the step count in the design output so a caller can ask for a split.
 
@@ -102,16 +102,51 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 
 ## 15. Variables `design tests` leaves empty are sealed and run as they are, unless the caller fills them
 
-- **Seen:** in the second live run (2026-11-17, the pantry spec with bookings), `design tests` declared 12 owner-supplied variables in `.testmuai/variables/assurance.json` with an empty `value` and a description of what goes there: `primary_phone` ("Unused ten-digit household test phone, supplied as digits only"), `primary_phone_formatted` ("Same ten digits as primary_phone with permitted punctuation in a different format"), `proxy_name`, `slot_phone_1` to `slot_phone_7` ("Distinct unused ten-digit phone for full-slot household N"), `invalid_phone` ("Test phone input consisting of exactly nine digits") and `spare_phone` (`packages/core/test/fixtures/kane/variables-declared-empty.json`, as Kane wrote it; Holdback had filled `start_url`). Its `incomplete` gaps said the same: "Leave {{slot_phone_1}} through {{slot_phone_7}} for the owner to fill". Nothing stopped a caller from sealing and running the tests as they were: Holdback filled only `start_url`, and 11 of the 22 tests failed with an `automation_bug` verdict, typing empty values. The human then filled the file by hand.
+- **Seen:** in the pantry run's spec stage (2026-11-16), `design tests` declared 12 owner-supplied variables in `.testmuai/variables/assurance.json` with an empty `value` and a description of what goes there: `primary_phone` ("Unused ten-digit household test phone, supplied as digits only"), `primary_phone_formatted` ("Same ten digits as primary_phone with permitted punctuation in a different format"), `proxy_name`, `slot_phone_1` to `slot_phone_7` ("Distinct unused ten-digit phone for full-slot household N"), `invalid_phone` ("Test phone input consisting of exactly nine digits") and `spare_phone` (`packages/core/test/fixtures/kane/variables-declared-empty.json`, as Kane wrote it; Holdback had filled `start_url`). Its `incomplete` gaps said the same: "Leave {{slot_phone_1}} through {{slot_phone_7}} for the owner to fill". Nothing stopped a caller from sealing and running the tests as they were: Holdback filled only `start_url`, and 11 of the 22 tests failed with an `automation_bug` verdict, typing empty values. The human then filled the file by hand.
 - **What it means:** a design is not runnable until someone fills its variables, and neither `design tests` nor `testmd run` says so; the run fails as Kane's own automation, so a loop records it as inconclusive, never as the app's failure, and pays for it on every turn.
 - **Holdback now:** never seals a test that types an empty variable. In `holdback spec` and `holdback drift` it asks the human for each, with a test value it derives from the description (a distinct `215555` number for each phone, the same digits punctuated for a "formatted" one, nine digits for "nine digits", a test name for a person's name); a secret is asked for with no suggestion. After Kane's evolve it writes those suggestions itself, or, for a secret or a variable it has no suggestion for, does not seal the evolve (`packages/core/src/loop/variables.ts`, `spec.ts`, `drift.ts`, `falsify.ts`; `packages/core/test/variables.test.ts`, `spec.test.ts`, `drift.test.ts`, `falsify.test.ts`).
 - **Suggestion:** fail `testmd run` before it starts when a variable a test uses is empty, and let `design tests` propose fixture values (or say in its summary which variables the owner must fill).
 
 ## 16. On Windows an `@import` can be written as an absolute path after `./`
 
-- **Seen:** in the second live run, Kane 0.10.4 on Windows designed a test that imports another as `@import ./C:\Users\…\verifier\.testmuai\tests\book-an-available-visit-and-confirm-proxy-and-schedule_test.md`: the absolute path of the imported test joined after `./` (`packages/core/test/fixtures/kane/import-absolute-windows_test.md`, its home path renamed). `testmd run` stopped on it with "@import path not found". The human changed the line to `@import ./book-an-available-visit-and-confirm-proxy-and-schedule_test.md`, the file next to it.
+- **Seen:** in the pantry run's spec stage, Kane 0.10.4 on Windows designed a test that imports another as `@import ./C:\Users\…\verifier\.testmuai\tests\book-an-available-visit-and-confirm-proxy-and-schedule_test.md`: the absolute path of the imported test joined after `./` (`packages/core/test/fixtures/kane/import-absolute-windows_test.md`, its home path renamed). `testmd run` stopped on it with "@import path not found". The human changed the line to `@import ./book-an-available-visit-and-confirm-proxy-and-schedule_test.md`, the file next to it.
 - **What it means:** a test that imports another may never run on Windows, whatever the app does.
 - **Holdback now:** in `holdback spec`, before the human approves the tests, records (`spec.repaired`) and then rewrites such an import to the file of that name in the tests folder, and shows it on the test in the approval; one it cannot repair that way, and any import that resolves to no file, is flagged there (`packages/core/src/loop/imports.ts`, `packages/core/test/variables.test.ts`).
 - **Suggestion:** write imports relative to the test's folder (`path.relative`, with `/`), and check that each import resolves when the design is committed.
+
+## 17. A step that does several things outruns a per-step timeout
+
+- **Seen:** the pantry run used `--timeout 120` (`kane.timeoutS` in `apps/dashboard/fixtures/config.json`). 9 runs were stopped at Holdback's whole-run bound (the timeout times the test's steps, plus 30 seconds) before Kane finished: 7 of turn 4's runs and t-19 in turns 6 and 7 (lines 77, 78, 81, 82, 85, 87, 91, 125, 152). Kane's verdicts on their first attempts named the cause, such as "Step budget cannot complete six required visit bookings" (t-3, line 78) and "Selected visit variables captured in incompatible format" (t-2, line 77: 108.95 credits over 560 seconds).
+- **What it means:** a test whose one step books six visits does not fit a budget sized for one action, and the run ends as a timeout, which proves nothing, after it has spent its credits.
+- **Holdback now:** re-runs such a run once, then counts it inconclusive and never briefs it.
+- **Suggestion:** report which step ran out of time and how long it had run, and let a design split a step that repeats an action, or carry a per-step budget in the test file.
+
+## 18. Tests depend on rows that other tests leave behind
+
+- **Seen:** Holdback starts the app once per batch, with an empty data folder, and Kane runs the batch's tests one after another against it. At the end of the build, 6 of the 7 tests still failing had an `automation_bug` verdict about such data: t-3 "Required visit slot lacks capacity for sixth booking" (the 10:00 slot was already full from earlier tests), t-16 "Expected-today fixture contains extra visits", t-18 "Prepared expected-visit fixtures do not match the volunteer list", t-21 "Automation picked up every remaining expected visit", t-22 "Prepared volunteer roster was not loaded" and t-6 "Booking-page state assumed but unavailable" (lines 179 to 191). Replayed alone against a planted bug, t-13 and t-20 found the opposite: "Expected-today visit fixture is missing" and "Prepared volunteer visit is absent from live test data" (`mutant` m-ac-47-1 and m-ac-61-1, lines 290 and 299).
+- **What it means:** the tests assume rows that only some earlier test, in some order, creates: after other tests they meet too much data, alone too little. No order makes them all pass, whatever the app does.
+- **Holdback now:** counts each such run inconclusive, never a catch and never briefed; the gate stays shut while they keep failing. In the pantry run they held 17 criteria owed.
+- **Suggestion:** let a test declare the data it needs (a setup step, or an imported fixture flow that runs first), and say in the `design tests` output when a test relies on another test's side effects.
+
+## 19. A replay with healing off can select an input after it submits the form
+
+- **Seen:** 5 planted-bug replays of t-1 and t-2, with `--no-adaptive-heal`, ended in `automation_bug` with Kane's own diagnosis of its recording: "Visit-time selection recorded after booking submission", "Visit-time selection replayed after booking", "Replay selects visit time after booking confirmation" (`mutant` m-ac-7-1, m-ac-10-1, m-ac-11-1, m-ac-13-1, m-ac-18-1, lines 196 to 217). The same tests passed in build checks, where healing is on.
+- **What it means:** the recording replays its steps in an order that cannot work, and only a heal saves it. Every planted bug judged by these two tests proved nothing: 5 of the 16 that did.
+- **Holdback now:** replays planted bugs with healing off, so that the sealed test is what judges them, and counts such a replay inconclusive.
+- **Suggestion:** check a recording's action order when the test is authored (a form's select before its submit), or have a replay with healing off name the recorded step that is out of order.
+
+## 20. `maintain evolve` can pause inside its design session, and Kane checks the reason it is given
+
+- **Seen:** twice in the pantry run, `maintain evolve` started a child `design tests` session (`evolve_target`, `child_start`) that paused on its own questions (`session_paused`), and the evolve ended `done` with `status: "paused"`, exit 3, pointing at `design tests --resume <sid> --answer q1=1` (`redesign.dropped`, lines 305 and 315). For uc-1, Kane asked: "For a household of one with no benefit and $568 weekly income, should the result be Eligible. as the published at-or-below rule says, or Not eligible. as the bug report says?" The bug report was the breaker's account of m-ac-27-1, and it was wrong; Kane also said the reason was cut off. For uc-3's follow-up it asked what "an unfinished 'ac'" meant. Holdback cuts the reason at 1,500 characters (`MAX_BECAUSE` in `packages/core/src/loop/falsify.ts`).
+- **What it means:** an evolve can stop at two levels, with two resume commands, and a caller that knows only the evolve's own question sees a failure. Kane's design agent reads the reason against the spec, and here it was right where the reason was wrong.
+- **Holdback now:** answers only the evolve's own question (`--answer evolve:<uc>=1`) and rolls back an evolve that ends paused; its criteria stay vacuous or need the spec. Not handled yet.
+- **Suggestion:** surface the child session's questions on the evolve itself, answerable with `maintain evolve --answer`, and take a long reason from a file or stdin.
+
+## 21. An application verdict that its own observation contradicts
+
+- **Seen:** in turn 3, t-15 failed with `application_issue` (confidence 0.9, `navigation_defect`): "Volunteer list link does not display the Volunteer list", root cause "The app received the Volunteer list page request but did not switch the displayed page" (line 57). The same verdict's `observed` reads "Expected today lists 0111–0115; 0101 is Picked up and 0199 is absent.", which is the volunteer list. The app's link was a plain `<a href="/volunteer">Volunteer list</a>`. Variants followed in turns 5 to 9 ("Volunteer list link returns users to eligibility check", "Volunteer list link does not leave eligibility check", lines 103, 121, 166, 184); the agent moved the link to `/volunteer-list` in turn 6, and the final app passed the exam's volunteer-list cases (`eval/results/c.json`, e-17 and e-18).
+- **What it means:** an application verdict goes to the coding agent as a bug to fix. When it is wrong, the agent spends turns on a link that works, and the criterion never passes.
+- **Holdback now:** briefs it, as Kane blamed the app. When two turns in a row change nothing, the stall stop lists such reports as disputed for a human to review (R48).
+- **Suggestion:** check a verdict's root cause against its own `observed` before blaming the app, and add the page URL at the failing step to the evidence.
 
 Not filed upstream yet.
