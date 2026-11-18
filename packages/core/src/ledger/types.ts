@@ -29,6 +29,13 @@ export type Stall = {
 /** What `holdback run`'s falsify pass did with the gate shut: criteria attacked (budget skips apart), proved, vacuous, skipped on the breaker's budget. */
 export type GateShutFalsify = { criteria: number; proved: number; vacuous: number; skipped: number };
 
+/**
+ * The referee's judgment of a planted bug that got past the tests: `input` what a user enters or
+ * does, `expected` what the page must show for it by the criterion, `observed` what the mutant shows,
+ * `reason` why, in its words (one line each, capped); `usd` the call's cost.
+ */
+export type RefereeRecord = { confirmed: boolean; input: string; expected: string; observed: string; reason: string; usd: number };
+
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }
   | { t: "spec.paused"; sid: string; questions: PendingQuestion[]; credits?: number }
@@ -85,11 +92,19 @@ export type LedgerEvent = { at: string } & (
       ac: string;
       patch: string;
       model: string;
+      /** Every Venice call spent on this planted bug: the breaker's, and the referee's (`referee.usd`) when there was one. */
       usd: number;
+      /** `survived` and `survived-by-heal` only once the referee confirmed it (a ledger from before the referee: as it was logged). */
       verdict: "killed" | "survived" | "survived-by-heal" | "invalid";
       note?: string;
-      /** The breaker's account of the bug in a user's terms (what Kane is told if it survives). */
+      /** The breaker's account of the bug in a user's terms (what Kane is told if it survives, unless the referee gave its own). */
       slip?: Slip;
+      /**
+       * What the referee made of a planted bug that got past the tests: confirmed with a concrete input
+       * whose expected result (by the criterion) and observed result (the mutant's) differ, or not
+       * (`refuted: referee`). An LLM's judgment, not a proof.
+       */
+      referee?: RefereeRecord;
       /**
        * The id of the surviving mutant this one re-plants after Kane evolved the use case (R40): it
        * must now be killed; any other verdict leaves the criterion vacuous, but a refuted one.

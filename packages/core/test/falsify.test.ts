@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppStartError, type StartAppOptions } from "../src/app.js";
 import { estimateUsd, usdOf, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
 import { evolve as kaneEvolve, type AcNode, type EvolveResult, type Graph, type TestNode } from "../src/kane/assurance.js";
-import type { Slip } from "../src/breaker/mutate.js";
+import { BudgetRefused, type Slip } from "../src/breaker/mutate.js";
 import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
 import { reduce } from "../src/ledger/reduce.js";
 import { appendEvent, readEvents } from "../src/ledger/store.js";
@@ -173,8 +173,8 @@ async function greenTurn(n: number) {
 }
 
 /** An earlier pass: ac-3's planted bug survived, Kane evolved uc-1 (t-4 replaced t-1 and t-3), sealed it, and t-4 passed. */
-async function evolvedEarlier() {
-  await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"] });
+async function evolvedEarlier(extra: Partial<Extract<LedgerEvent, { t: "mutant" }>> = {}) {
+  await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"], ...extra });
   await log({ at, t: "falsify.evolved", uc: "uc-1", because: "b", minted: ["t-4"], retired: ["t-1", "t-3"], credits: 11.39, mutants: ["m-ac-3-1"] });
   writeFileSync(testFile("t-4"), "---\nassurance:\n  id: t-4\n---\n# t-4\n");
   await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests: [{ id: "t-4", title: "minted t-4", file: testFile("t-4"), verifies: ["ac-1", "ac-3"] }], gaps: [], credits: 0 });
@@ -223,7 +223,23 @@ type Plan = {
   chatError?: (ac: string, call: number) => Error | undefined;
   /** The breaker leaves its account of the bug out. */
   noSlip?: boolean;
+  /**
+   * The referee's reply on a survivor of `ac` (its Nth referee call, 0-based), or an error its call
+   * throws. Default: it confirms the bug with the breaker's own inputs and results.
+   */
+  referee?: (ac: string, call: number) => unknown;
+  /** The referee call's usage. Default: none, so a pass's spend is the breaker's. */
+  refereeUsage?: { prompt_tokens: number; completion_tokens: number };
 };
+
+/** The referee confirming a survivor of `ac`: the breaker's inputs, expected and observed results. */
+const confirms = (ac: string) => ({
+  verdict: "violates",
+  input: SLIP[ac]?.inputs ?? "household size 1, monthly income $2,462",
+  expected: SLIP[ac]?.expected ?? "Not eligible.",
+  observed: SLIP[ac]?.observed ?? "Eligible.",
+  reason: `the change breaks ${ac}`,
+});
 
 const EVOLVED: EvolveResult = {
   status: "complete",
@@ -244,6 +260,8 @@ const testFile = (id: string) => join(p.verifierDir, ".testmuai", "tests", `${id
 function fakes(plan: Plan) {
   const calls = {
     chat: [] as { ac: string; o: VeniceChatOptions }[],
+    /** The referee's calls, apart from the breaker's. */
+    referee: [] as { ac: string; o: VeniceChatOptions }[],
     tests: [] as { ac: string; cwd: string; files: string[]; opts: RunTestOptions & { parallel?: number } }[],
     apps: [] as StartAppOptions[],
     stops: 0,
@@ -253,6 +271,7 @@ function fakes(plan: Plan) {
   };
   let current = "";
   const perAc = new Map<string, number>();
+  const refereed = new Map<string, number>();
   // Kane's live tests: what its graph shows (an evolve's new set replaces the use case's old one)
   let live: TestNode[] = testNodes();
   const kit: EvolveKit = {
@@ -271,6 +290,14 @@ function fakes(plan: Plan) {
     port: async () => 5178,
     chat: async (o) => {
       const ac = /^AC (\S+):/m.exec(o.messages[1]!.content)![1]!;
+      if (o.messages[0]!.content.startsWith("You are the referee")) {
+        const n = refereed.get(ac) ?? 0;
+        refereed.set(ac, n + 1);
+        calls.referee.push({ ac, o });
+        const said = plan.referee ? plan.referee(ac, n) : confirms(ac);
+        if (said instanceof Error) throw said;
+        return { json: said, usage: plan.refereeUsage ?? { prompt_tokens: 0, completion_tokens: 0 } };
+      }
       current = ac;
       const n = perAc.get(ac) ?? 0;
       perAc.set(ac, n + 1);
@@ -596,6 +623,101 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(reduce(all).acs["ac-3"]!.status).toBe("passing");
     // the kill's two failed replays (Kane bills its verdict on a failure) and the evolve
     expect(reduce(all).credits - reduce(all.slice(0, since)).credits).toBeCloseTo(2 * 4.7 + 11.39, 9);
+  });
+
+  describe("the referee: a survivor counts only once it confirms the planted bug visibly breaks its criterion", () => {
+    const off = (reason: string) => ({ verdict: "off-target", input: "", expected: "", observed: "", reason });
+    const REF_USD = (1000 * 0.138 + 100 * 0.275) / 1e6;
+
+    it("asks once per survivor, never for a kill: its confirmation is on the ledger, its spend in the mutant's and under the cap, and Kane is told its account", async () => {
+      await setup();
+      const spentBefore = reduce(await readEvents(p.ledgerFile)).breakerUsd;
+      const said = { verdict: "violates", input: "household size 1, monthly income $2,461.50, SNAP unchecked", expected: "Not eligible.", observed: "Eligible.", reason: "LIMITS[size] + 1 lets $2,461.50 through." };
+      const { deps, io, calls } = fakes({ mutantRun: survives3, referee: () => said, refereeUsage: { prompt_tokens: 1000, completion_tokens: 100 } });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: ["uc-1"], reason: "done" });
+      expect(calls.referee.map((c) => c.ac)).toEqual(["ac-3"]);
+      expect(calls.referee[0]!.o).toMatchObject({ model: MODEL, temperature: 0, schemaName: "referee" });
+      expect(calls.referee[0]!.o.messages[1]!.content).toContain(PATCH["ac-3"]!);
+      const all = await readEvents(p.ledgerFile);
+      expect(all.find((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({
+        verdict: "survived",
+        usd: expect.closeTo(USD_PER_CALL + REF_USD, 12),
+        referee: { confirmed: true, input: said.input, expected: "Not eligible.", observed: "Eligible.", reason: said.reason, usd: expect.closeTo(REF_USD, 12) },
+      });
+      expect(r.usd).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
+      expect(reduce(all).breakerUsd - spentBefore).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
+      // Kane is told the account the referee checked against the spec, not the breaker's
+      expect(calls.evolve[0]!.because).toContain(said.input);
+      expect(calls.evolve[0]!.because).not.toContain(SLIP["ac-3"]!.inputs);
+      expect(calls.evolve[0]!.because).toContain(SLIP["ac-3"]!.behaviour);
+    });
+
+    it("a survivor it does not confirm is invalid with its words: never sent to Kane, the criterion keeps its status (live demo m-ac-27-1, m-ac-20-1)", async () => {
+      await setup();
+      const { deps, io, calls } = fakes({
+        mutantRun: (_ac, files) => files.map(pass),
+        referee: (ac) => (ac === "ac-1" ? off("A zero income is never above the limit.") : { verdict: "no-change", input: "", expected: "", observed: "", reason: "digits already holds that value." }),
+      });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: [], survived: [], invalid: ["ac-1", "ac-3"], vacuous: [], redesigned: [], reason: "done" });
+      expect(r.survivors).toBeUndefined();
+      expect(r.refuted).toEqual([
+        { ac: "ac-1", mutant: "m-ac-1-1", by: "referee", why: "off target: A zero income is never above the limit." },
+        { ac: "ac-3", mutant: "m-ac-3-1", by: "referee", why: "no observable change: digits already holds that value." },
+      ]);
+      expect(calls.evolve).toEqual([]);
+      const all = await readEvents(p.ledgerFile);
+      expect(all.find((e) => e.t === "mutant" && e.ac === "ac-1")).toMatchObject({
+        verdict: "invalid",
+        refuted: "referee",
+        note: "off target: A zero income is never above the limit.",
+        referee: { confirmed: false, input: "", expected: "", observed: "", reason: "A zero income is never above the limit.", usd: 0 },
+      });
+      // the replay that let it through is on record all the same
+      expect(all.filter((e) => e.t === "run" && e.mutantId === "m-ac-1-1")).toHaveLength(1);
+      const s = reduce(all);
+      expect([s.acs["ac-1"]!.status, s.acs["ac-3"]!.status]).toEqual(["passing", "passing"]);
+      expect(s.mutants).toEqual({ killed: 0, survived: 0, invalid: 2 });
+    });
+
+    it("a referee with no usable answer, or one the budget refuses, leaves the survivor invalid, not refuted: only a confirmed survivor counts", async () => {
+      await setup();
+      const { deps, io, calls } = fakes({
+        mutantRun: (_ac, files) => files.map(pass),
+        referee: (ac) => (ac === "ac-1" ? new VeniceUnreachable("Venice unreachable: timeout") : new BudgetRefused(0.0003, 0.0099, 0.01)),
+      });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ survived: [], invalid: ["ac-1", "ac-3"], vacuous: [], redesigned: [], reason: "budget" });
+      expect(r.refuted).toBeUndefined();
+      expect(calls.evolve).toEqual([]);
+      const ms = (await readEvents(p.ledgerFile)).filter((e): e is Extract<LedgerEvent, { t: "mutant" }> => e.t === "mutant");
+      expect(ms[0]).toMatchObject({ verdict: "invalid", note: "got past the tests, but the referee gave no usable answer: Venice unreachable: timeout" });
+      // an outage is charged at the worst case, as the breaker's is
+      expect(ms[0]!.usd).toBeGreaterThan(USD_PER_CALL);
+      expect(ms[1]).toMatchObject({ verdict: "invalid", note: expect.stringMatching(/^got past the tests, but the referee was not asked: breaker budget: /) });
+      expect(ms.every((m) => m.refuted === undefined)).toBe(true);
+    });
+
+    it("a re-checked survivor is refereed again unless the referee confirmed that same patch before; rejected, the criterion keeps its status", async () => {
+      await setup({ before: () => evolvedEarlier() });
+      const a = fakes({ mutantRun: survives3, referee: () => off("it breaks another rule") });
+      const r = await runFalsify(p, a.deps, a.io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], invalid: ["ac-3"], vacuous: [], redesigned: [] });
+      expect(a.calls.referee.map((c) => c.ac)).toEqual(["ac-3"]);
+      expect(a.calls.evolve).toEqual([]);
+      expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("passing");
+    });
+
+    it("a re-checked survivor the referee confirmed before, planted as it was, is not asked about again: it stays vacuous", async () => {
+      const confirmed = { confirmed: true, input: SLIP["ac-3"]!.inputs, expected: SLIP["ac-3"]!.expected, observed: SLIP["ac-3"]!.observed, reason: "r", usd: 0.0001 };
+      await setup({ before: () => evolvedEarlier({ referee: confirmed }) });
+      const b = fakes({ mutantRun: survives3 });
+      const r = await runFalsify(p, b.deps, b.io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], vacuous: ["ac-3"], redesigned: [] });
+      expect(b.calls.referee).toEqual([]);
+      expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/got past the new tests too/) });
+    });
   });
 
   it("logs Kane's balance drop for each mutant's batch, the evolve (before its seal) and the closing replay, counting the evolve once (R34, R40)", async () => {

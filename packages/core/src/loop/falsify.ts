@@ -4,6 +4,7 @@ import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, noOpReason, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
+import { refereeMutant, refereeNote } from "../breaker/referee.js";
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, evolve, gapsOf, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
@@ -13,7 +14,7 @@ export { killsAc };
 import { KaneCapReached, KaneMeter, type BalanceReader } from "../ledger/credits.js";
 import { reduce } from "../ledger/reduce.js";
 import { parseEvents } from "../ledger/store.js";
-import type { AcState, LedgerEvent } from "../ledger/types.js";
+import type { AcState, LedgerEvent, RefereeRecord } from "../ledger/types.js";
 import { appendVouched, LedgerTampered, markOf, readLedger, verifiedLedger, type EventBody, type LedgerMark } from "../ledger/vouched.js";
 import { kaneCapCredits, type Project } from "../project.js";
 import { checkSeal, tier1Entries, type SealEntry } from "../seal.js";
@@ -176,7 +177,7 @@ const UNCOVERED = "Kane's evolved tests no longer cover it";
 export const NEEDS_HUMAN = "Kane's new test needs a value only you can give";
 
 /** A survivor of this pass: what Kane is told about it if its use case is evolved. */
-type Survivor = { ac: AcState; id: string; patch: string; rationale: string; slip?: Slip };
+type Survivor = { ac: AcState; id: string; patch: string; rationale: string; slip?: Slip; referee?: RefereeRecord };
 
 /** Kane's evolve cannot be used; the verifier is rolled back. */
 class EvolveFailed extends Error {}
@@ -194,12 +195,15 @@ const oneLine = (t: string): string => escapeControls(t.replace(/\s+/g, " ").tri
 
 /**
  * What Kane is told slipped through (R40): each surviving bug in a user's terms, the inputs that show
- * it, and what the page should show against what it showed, from the breaker's own account (else its
- * rationale and the lines it changed). Kane is the verifier and may see it; the builder never does.
+ * it, and what the page should show against what it showed: the referee's confirmed account (checked
+ * against the criterion and its spec quotes), else the breaker's own (else its rationale and the lines
+ * it changed). Kane is the verifier and may see it; the builder never does.
  */
-export function becauseText(list: Pick<Survivor, "ac" | "patch" | "rationale" | "slip">[]): string {
+export function becauseText(list: Pick<Survivor, "ac" | "patch" | "rationale" | "slip" | "referee">[]): string {
   const one = (s: (typeof list)[number]) => {
     const head = `${s.ac.id} ("${s.ac.text}")`;
+    const r = s.referee?.confirmed ? s.referee : undefined;
+    if (r) return `${head}: ${s.slip?.behaviour ? `${s.slip.behaviour} ` : ""}With ${r.input}, the page should show ${r.expected}, but it showed ${r.observed}.`;
     if (s.slip) return `${head}: ${s.slip.behaviour} With ${s.slip.inputs}, the page should show ${s.slip.expected}, but it showed ${s.slip.observed}.`;
     const changed = s.patch
       .split("\n")
@@ -662,7 +666,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     let rationale = "";
     let logged = false;
     let stopNote = "results discarded: the pass stopped";
-    const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = [], again: TestRunResult[] = [], set: { refuted?: "no-op" | "referee" } = {}) => {
+    const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = [], again: TestRunResult[] = [], set: { refuted?: "no-op" | "referee"; referee?: RefereeRecord } = {}) => {
       logged = true;
       out.usd += usd;
       await emit({
@@ -675,6 +679,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         verdict,
         ...(note === undefined ? {} : { note }),
         ...(slip ? { slip } : {}),
+        ...(set.referee ? { referee: set.referee } : {}),
         ...(recheck ? { recheck: recheck.id } : {}),
         ...(set.refuted ? { refuted: set.refuted } : {}),
       });
@@ -689,7 +694,30 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       if (recheck && verdict !== "killed" && !set.refuted) {
         out.vacuous.push(ac.id);
         if (survived) notEvolved(ac.useCase, [ac.id], RECHECK_SURVIVED);
-      } else if (survived) survivors.push({ ac, id, patch, rationale, ...(slip ? { slip } : {}) });
+      } else if (survived) survivors.push({ ac, id, patch, rationale, ...(slip ? { slip } : {}), ...(set.referee ? { referee: set.referee } : {}) });
+    };
+    /**
+     * A planted bug that got past every test counts only once the referee confirms it visibly breaks
+     * this criterion (one call, under the USD cap): else it is invalid, refuted when the referee said
+     * so. A re-check of a survivor the referee confirmed, planted as it was, is not asked about again.
+     */
+    const judge = async (v: { verdict: Verdict; note?: string }): Promise<{ verdict: Verdict; note?: string; set: { refuted?: "referee"; referee?: RefereeRecord }; budget?: true }> => {
+      if (v.verdict !== "survived" && v.verdict !== "survived-by-heal") return { ...v, set: {} };
+      if (recheck?.referee?.confirmed && patch === recheck.patch) return { ...v, set: {} };
+      try {
+        const f = await refereeMutant(ac, patch, { model: p.config.breaker.model, apiKey, budget, chat: deps.chat });
+        usd += f.usd;
+        const referee: RefereeRecord = { confirmed: f.confirmed, input: f.input, expected: f.expected, observed: f.observed, reason: f.reason, usd: f.usd };
+        const why = refereeNote(f);
+        return why === undefined ? { ...v, set: { referee } } : { verdict: "invalid", note: why, set: { referee, refuted: "referee" } };
+      } catch (e) {
+        if (e instanceof BudgetRefused) return { verdict: "invalid", note: `got past the tests, but the referee was not asked: ${e.message}`, set: {}, budget: true };
+        if (e instanceof BreakerError || e instanceof BreakerUnavailable) {
+          usd += e.usd;
+          return { verdict: "invalid", note: `got past the tests, but the referee gave no usable answer: ${e.message}`, set: {} };
+        }
+        throw e;
+      }
     };
     // at the Kane credit cap no batch could judge the mutant: never pay the breaker for one (N-m2)
     await meter.assertBudget();
@@ -857,10 +885,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           await recordTamper(bad);
           return "tamper";
         }
-        const v = unconfirmed === undefined ? falsifyVerdict(ac.id, results) : { verdict: "invalid" as const, note: `inconclusive: the kill did not reproduce: ${unconfirmed.join("; ")}` };
-        await finish(v.verdict, v.note, results, again);
+        const kane = unconfirmed === undefined ? falsifyVerdict(ac.id, results) : { verdict: "invalid" as const, note: `inconclusive: the kill did not reproduce: ${unconfirmed.join("; ")}` };
+        const v = await judge(kane);
+        await finish(v.verdict, v.note, results, again, v.set);
         await closeKaneWindow();
-        return "done";
+        return v.budget ? ("budget" as const) : ("done" as const);
       });
     } catch (e) {
       stopNote = `stopped before a verdict: ${errText(e)}`;
@@ -1271,7 +1300,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     // m-2: survivors an earlier pass never got to Kane go to it in this one, without a new attack
     for (const m of unevolvedSurvivors(events)) {
       const ac = state.acs[m.ac]!;
-      survivors.push({ ac, id: m.id, patch: m.patch, rationale: "", ...(m.slip ? { slip: m.slip } : {}) });
+      survivors.push({ ac, id: m.id, patch: m.patch, rationale: "", ...(m.slip ? { slip: m.slip } : {}), ...(m.referee ? { referee: m.referee } : {}) });
       named(m.ac, m.id, m.slip, "", { earlier: true });
     }
     const budget = new Budget(p.config.breaker.capUsd, state.breakerUsd);
