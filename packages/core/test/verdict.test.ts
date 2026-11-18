@@ -167,4 +167,101 @@ describe("planted bugs set aside (the referee, the no-op filter, Kane's dispute)
     const later = [...events(), { at, t: "mutant", id: "m-ac-2-2", ac: "ac-2", patch: "p", model: "m", usd: 0, verdict: "killed" } as LedgerEvent];
     expect(setAside(later).map((a) => a.ac)).toEqual(["ac-1", "ac-4"]);
   });
+
+  describe("a survivor logged before the referee existed, judged by it later (`mutant.referee`)", () => {
+    const ids = ["ac-1", "ac-2", "ac-3"];
+    const pass = (i: number, id: string, kind: "build" | "replay" = "build", failed = false): LedgerEvent => ({
+      at,
+      t: "run",
+      kind,
+      turn: 1,
+      result: {
+        testFile: `t${i + 1}.md`,
+        testId: `t-${i + 1}`,
+        status: failed ? "failed" : "passed",
+        steps: [],
+        criteriaPassed: failed ? [] : [id],
+        criteriaFailed: failed ? [id] : [],
+        credits: 0,
+        replayDecisions: 0,
+        authorDecisions: 0,
+        healTriggered: false,
+        durationS: 1,
+      },
+    });
+    const m = (id: string, ac: string, extra: object = {}) => ({ at, t: "mutant", id, ac, patch: "p", model: "m", usd: 0.0003, verdict: "survived", ...extra }) as LedgerEvent;
+    const rejudged = (mutant: string, ac: string, confirmed: boolean | undefined, note?: string): LedgerEvent => ({
+      at,
+      t: "mutant.referee",
+      mutant,
+      ac,
+      usd: 0.0002,
+      ...(confirmed === undefined ? {} : { referee: { confirmed, input: confirmed ? "size 1" : "", expected: confirmed ? "Eligible." : "", observed: confirmed ? "Not eligible." : "", reason: "r", usd: 0.0002 } }),
+      ...(note !== undefined ? { note } : {}),
+    });
+    /** ac-1 proved, then a survivor; ac-2 and ac-3 passing, then a survivor each (ac-2's evolve added no test): all three vacuous, as an old ledger left them. */
+    const old = (): LedgerEvent[] => [
+      { at, t: "design", useCase: "uc-1", acs: ids.map(crit), tests: ids.map((id, i) => ({ id: `t-${i + 1}`, title: id, file: `t${i + 1}.md`, verifies: [id] })), gaps: [], credits: 0 },
+      ...ids.map((id, i) => pass(i, id)),
+      m("m-ac-1-1", "ac-1", { verdict: "killed" }),
+      m("m-ac-1-2", "ac-1"),
+      m("m-ac-2-1", "ac-2"),
+      m("m-ac-3-1", "ac-3"),
+      { at, t: "redesign.dropped", useCases: ["uc-1"], detail: "d", credits: 0, acs: ["ac-2"], reason: "Kane could not add a test that catches this planted bug" },
+      // the pass's closing replay, its end, and the next pass's start: the referee's records come after all of it
+      ...ids.map((id, i) => pass(i, id, "replay")),
+      { at, t: "run.end" },
+      { at, t: "recordings", digest: "d", gitConfig: "g" },
+    ];
+    const statuses = (ev: LedgerEvent[]) => Object.fromEntries(Object.values(reduce(ev).acs).map((a) => [a.id, a.status]));
+
+    it("rejected, it is set aside exactly as one the referee rejected in its own pass: never vacuous, counted invalid, its criterion back to what its tests say; confirmed, it stands", () => {
+      expect(statuses(old())).toEqual({ "ac-1": "vacuous", "ac-2": "vacuous", "ac-3": "vacuous" });
+      const ev = [...old(), rejudged("m-ac-1-2", "ac-1", false, "no observable change: r"), rejudged("m-ac-2-1", "ac-2", false, "off target: r"), rejudged("m-ac-3-1", "ac-3", true)];
+      const s = reduce(ev);
+      expect(statuses(ev)).toEqual({ "ac-1": "proved", "ac-2": "passing", "ac-3": "vacuous" });
+      // why it was vacuous goes with it
+      expect(s.acs["ac-2"]!.reason).toBeUndefined();
+      expect(s.mutants).toEqual({ killed: 1, survived: 1, invalid: 2 });
+      expect(s.breakerUsd).toBeCloseTo(4 * 0.0003 + 3 * 0.0002, 12);
+      expect(verdict(s)).toMatchObject({ headline: "Held back — 2/3 green, 1 criterion unproved: a planted bug survived", counts: { vacuous: 1, proved: 1, passing: 1 } });
+      expect(setAside(ev)).toEqual([
+        { ac: "ac-1", mutant: "m-ac-1-2", by: "referee", why: "no observable change: r", rejudged: true },
+        { ac: "ac-2", mutant: "m-ac-2-1", by: "referee", why: "off target: r", rejudged: true },
+      ]);
+    });
+
+    it("the referee's record, appended in a later pass, reduces the same however much of the old ledger came between", () => {
+      const tail = [rejudged("m-ac-1-2", "ac-1", false, "no observable change: r"), rejudged("m-ac-2-1", "ac-2", false, "off target: r")];
+      // right after the survivors, or after the old pass's replay, its end and the next pass's start
+      const early = [...old().slice(0, 8), ...tail, ...old().slice(8)];
+      expect(statuses(early)).toEqual(statuses([...old(), ...tail]));
+      expect(reduce(early).mutants).toEqual(reduce([...old(), ...tail]).mutants);
+      // a test that failed since already took the criterion out of vacuous: the record leaves it at what its tests say
+      expect(statuses([...old(), pass(1, "ac-2", "build", true), ...tail])["ac-2"]).toBe("owed");
+    });
+
+    it("no usable answer leaves the survivor as logged, its cost on record", () => {
+      const ev = [...old(), rejudged("m-ac-3-1", "ac-3", undefined, "the referee gave no usable answer: Venice unreachable: timeout")];
+      expect(statuses(ev)["ac-3"]).toBe("vacuous");
+      expect(reduce(ev).breakerUsd).toBeCloseTo(4 * 0.0003 + 0.0002, 12);
+      expect(setAside(ev).map((a) => a.ac)).toEqual([]);
+    });
+
+    it("a re-check from before the referee that got past the new tests too, rejected later, gives its criterion back its status", () => {
+      const ev: LedgerEvent[] = [
+        ...old().slice(0, 4),
+        m("m-ac-3-1", "ac-3"),
+        { at, t: "falsify.evolved", uc: "uc-1", because: "b", minted: ["t-4"], retired: ["t-3"], credits: 1, mutants: ["m-ac-3-1"] },
+        { at, t: "design", useCase: "uc-1", acs: ids.map(crit), tests: [...ids.slice(0, 2).map((id, i) => ({ id: `t-${i + 1}`, title: id, file: `t${i + 1}.md`, verifies: [id] })), { id: "t-4", title: "t-4", file: "t4.md", verifies: ["ac-3"] }], gaps: [], credits: 0 },
+        ...ids.slice(0, 2).map((id, i) => pass(i, id)),
+        pass(3, "ac-3"),
+        m("m-ac-3-2", "ac-3", { recheck: "m-ac-3-1" }),
+      ];
+      expect(reduce(ev).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: "the planted bug that got past the old tests got past the new tests too" });
+      const s = reduce([...ev, rejudged("m-ac-3-2", "ac-3", false, "off target: r")]);
+      expect(s.acs["ac-3"]!.status).toBe("passing");
+      expect(s.acs["ac-3"]!.reason).toBeUndefined();
+    });
+  });
 });

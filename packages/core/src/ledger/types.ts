@@ -94,7 +94,7 @@ export type LedgerEvent = { at: string } & (
       model: string;
       /** Every Venice call spent on this planted bug: the breaker's, and the referee's (`referee.usd`) when there was one. */
       usd: number;
-      /** `survived` and `survived-by-heal` only once the referee confirmed it (a ledger from before the referee: as it was logged). */
+      /** `survived` and `survived-by-heal` only once the referee confirmed it (a ledger from before the referee: as it was logged, until a `mutant.referee` judges it). */
       verdict: "killed" | "survived" | "survived-by-heal" | "invalid";
       note?: string;
       /** The breaker's account of the bug in a user's terms (what Kane is told if it survives, unless the referee gave its own). */
@@ -118,6 +118,14 @@ export type LedgerEvent = { at: string } & (
        */
       refuted?: "no-op" | "referee";
     }
+  /**
+   * The referee's judgment of surviving planted bug `mutant` (of criterion `ac`), logged after it: a
+   * survivor from before the referee existed, judged at the start of a later falsify pass. `referee`
+   * as on a `mutant` event; a rejected one (`confirmed: false`, why in `note`) is set aside exactly as
+   * one the referee rejected in its own pass. No `referee`: it gave no usable answer (`note`), and the
+   * survivor stands as logged. `usd`: the call's cost.
+   */
+  | { t: "mutant.referee"; mutant: string; ac: string; usd: number; referee?: RefereeRecord; note?: string }
   /**
    * A planted bug survived every test of use case `uc`, and Kane evolved it (`maintain evolve`, R40):
    * `because` is what Kane was told slipped through, `minted` and `retired` the test ids its new set

@@ -28,14 +28,33 @@ export function reduce(events: LedgerEvent[]): LedgerState {
   // metered batches: balance drops (per-run sums where unreadable), and the per-run credits they cover
   let metered = 0;
   let covered = 0;
-  // per criterion, the surviving planted bug that made it vacuous and the status it had before (a dispute puts it back)
+  // per criterion, the surviving planted bug that made it vacuous and the status it had before (a dispute, or the referee's later rejection, puts it back)
   const vacuousBy = new Map<string, { mutant: string; was: AcState["status"]; reason?: string }>();
-  // survivors counted as such: a dispute counts each once as invalid instead
+  // survivors counted as such: a dispute or a later rejection counts each once as invalid instead
   const survivedIds = new Set<string>();
 
   const allPass = (ac: AcState): boolean => {
     const m = latest.get(ac.id);
     return ac.tests.length > 0 && !!m && ac.tests.every((t) => m.get(t) === true);
+  };
+  /**
+   * Survivor `mutant` of `acId` proves nothing after all (Kane disputed it, or the referee rejected it
+   * later): it counts as invalid, and the criterion it made vacuous, while still so, gets back the
+   * status it had before it.
+   */
+  const setAside = (acId: string, mutant: string) => {
+    if (survivedIds.delete(mutant)) {
+      state.mutants.survived -= 1;
+      state.mutants.invalid += 1;
+    }
+    const ac = state.acs[acId];
+    const by = vacuousBy.get(acId);
+    if (ac && by?.mutant === mutant && ac.status === "vacuous") {
+      ac.status = by.was;
+      if (by.reason !== undefined) ac.reason = by.reason;
+      else delete ac.reason;
+      vacuousBy.delete(acId);
+    }
   };
 
   for (const e of events) {
@@ -181,6 +200,8 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           // R40: the planted bug that got past the old tests, re-planted against Kane's evolved ones,
           // must now be killed; anything else (it survived, or it proved nothing) fails closed
           if (green) {
+            // a survivor the referee rejects later gives the criterion back what it had
+            if (e.verdict !== "invalid") vacuousBy.set(ac.id, { mutant: e.id, was: ac.status, ...(ac.reason !== undefined ? { reason: ac.reason } : {}) });
             ac.status = "vacuous";
             ac.reason =
               e.verdict === "invalid"
@@ -196,23 +217,16 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         }
         break;
       }
-      case "falsify.disputed": {
-        // Kane disputes the planted bug (its evolve paused on a question): it proves nothing, counted
-        // as invalid, and the criterion it made vacuous gets back the status it had before it
-        if (survivedIds.delete(e.mutant)) {
-          state.mutants.survived -= 1;
-          state.mutants.invalid += 1;
-        }
-        const ac = state.acs[e.ac];
-        const by = vacuousBy.get(e.ac);
-        if (ac && by?.mutant === e.mutant && ac.status === "vacuous") {
-          ac.status = by.was;
-          if (by.reason !== undefined) ac.reason = by.reason;
-          else delete ac.reason;
-          vacuousBy.delete(e.ac);
-        }
+      case "falsify.disputed":
+        // Kane disputes the planted bug (its evolve paused on a question): it proves nothing
+        setAside(e.ac, e.mutant);
         break;
-      }
+      case "mutant.referee":
+        state.breakerUsd += e.usd;
+        // a survivor from before the referee, rejected by it later: as one it rejected in its own
+        // pass, it proves nothing, however much of the ledger came between
+        if (e.referee && !e.referee.confirmed) setAside(e.ac, e.mutant);
+        break;
       case "run.end":
         if (e.stop) state.stopped = { reason: e.stop, exit: e.exit ?? 1, ...(e.detail !== undefined ? { detail: e.detail } : {}), ...(e.falsified ? { falsified: { ...e.falsified } } : {}) };
         else delete state.stopped;
