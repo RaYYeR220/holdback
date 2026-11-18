@@ -31,16 +31,20 @@ export type VeniceChatOptions = {
 };
 export type VeniceChatResult = { json: unknown; usage: Usage };
 
-/** USD per 1M tokens. */
+/** USD per 1M tokens (Venice's model list, November 2026), with the referee models measured in eval/referee/RESULTS.md. */
 export const PRICES: Record<string, { in: number; out: number }> = {
   "deepseek-v4-flash": { in: 0.138, out: 0.275 },
   "qwen-3-8-flash": { in: 0.14, out: 0.49 },
+  "z-ai-glm-5-3-flash": { in: 0.15, out: 0.5 },
+  "claude-haiku-5-5": { in: 0.1, out: 0.5 },
+  "openai-gpt-6-luna": { in: 0.1, out: 0.5 },
+  "qwen3-235b-a22b-instruct-2507": { in: 0.15, out: 0.75 },
 };
 
 function priceOf(model: string): { in: number; out: number } {
   const p = Object.hasOwn(PRICES, model) ? PRICES[model] : undefined;
   // an unpriced model cannot be held to the cap: refuse it rather than count it as free
-  if (!p) throw new Error(`no price for breaker model ${JSON.stringify(model)}: add it to PRICES`);
+  if (!p) throw new Error(`no price for Venice model ${JSON.stringify(model)}: add it to PRICES`);
   return p;
 }
 

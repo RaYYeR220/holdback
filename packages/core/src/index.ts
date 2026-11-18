@@ -188,6 +188,16 @@ export {
   type Mutant,
   type ProposeOptions,
 } from "./breaker/mutate.js";
+export {
+  refereeMutant,
+  refereeNote,
+  REFEREE_SYSTEM,
+  REFEREE_SCHEMA,
+  REFEREE_MAX_TOKENS,
+  type RefereeFinding,
+  type RefereeCall,
+  type RefereeOptions,
+} from "./breaker/referee.js";
 export { LedgerTampered, type EventBody } from "./ledger/vouched.js";
 export {
   git,

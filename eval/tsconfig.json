@@ -12,6 +12,7 @@
   "include": [
     "*.ts",
     "test/*.ts",
+    "referee/*.ts",
     "../scripts/*.d.mts"
   ]
 }
