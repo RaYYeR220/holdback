@@ -132,7 +132,7 @@ export function Scoreboard({ summary }: { summary: EvalSummary | null }) {
                     typeof s.inconclusive === "number" && s.inconclusive > 0 ? `${s.inconclusive} inconclusive` : null,
                     typeof s.kaneCredits === "number" ? `${fmtCredits(s.kaneCredits)} build credits` : null,
                     typeof s.agentUsd === "number" ? `agent ${fmtUsd(s.agentUsd)}` : null,
-                    typeof s.wallMin === "number" ? `${s.wallMin.toFixed(1)} min` : null,
+                    typeof s.wallMin === "number" ? `${s.wallMin.toFixed(1)} min wall clock${typeof s.specCredits === "number" ? " from the first build turn, stops between runs included" : ""}` : null,
                   ]
                     .filter(Boolean)
                     .join(" · ")

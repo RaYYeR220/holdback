@@ -38,7 +38,9 @@ ol, ul { list-style: none; }
 .inbox + .gate { margin-left: 0; }
 
 /* the gate pill: the landing page's, fed by the real ledger */
-.gate { display: inline-flex; align-items: center; gap: 11px; height: 34px; padding: 0 15px 0 13px; border: 1px solid var(--hair-2); border-radius: var(--r-pill); background: var(--raised); font-size: 13px; white-space: nowrap; }
+.gate { display: inline-flex; align-items: center; gap: 11px; height: 34px; padding: 0 15px 0 13px; border: 1px solid var(--hair-2); border-radius: var(--r-pill); background: var(--raised); font-size: 13px; white-space: nowrap; min-width: 0; max-width: 100%; }
+.gate > * { flex: none; }
+.gate > .gate-n:not(.gate-pr) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .gate-rings { display: inline-flex; gap: 6px; align-items: center; padding: 0 2px; }
 .gr { display: block; width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--ink); }
 .gr-passing, .gr-proved { background: var(--ink); }
@@ -166,7 +168,7 @@ h2 { font-family: var(--display); font-weight: 500; font-size: 32px; letter-spac
 .r-title .mono { font-size: 12px; font-weight: 500; margin-right: 2px; }
 .r-title code { font-size: 12px; }
 .r-ctx { color: var(--ink-3); font-weight: 400; }
-.r-detail { margin-top: 3px; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+.r-detail { margin-top: 3px; font-size: 13px; line-height: 1.55; color: var(--ink-2); overflow-wrap: anywhere; }
 .r-detail code { font-size: 12px; color: var(--ink); }
 .r-v { font-weight: 600; }
 .r-saw { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-3); }

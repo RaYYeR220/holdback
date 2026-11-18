@@ -696,6 +696,8 @@ export type ArmSummary = {
   agentUsd?: number | null;
   breakerUsd?: number | null;
   wallMin?: number | null;
+  /** Holdback arm only: its spec stage, kept out of the build figures (credits and minutes). */
+  specCredits?: number | null;
 };
 export type EvalSummary = Partial<Record<"A" | "B" | "C", ArmSummary>>;
 

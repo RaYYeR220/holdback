@@ -68,7 +68,7 @@ export function GatePill({ api }: { api: ApiState }) {
       )}
       <span className="gate-word">{g.word}</span>
       <span className="gate-div" aria-hidden="true" />
-      <span className="gate-n">{g.parts.join(" · ")}</span>
+      <span className="gate-n" title={g.parts.join(" · ")}>{g.parts.join(" · ")}</span>
       {acs.length > 0 && (
         <span className="gate-n gate-pr">
           <b>{proved}</b>/{acs.length} proved
