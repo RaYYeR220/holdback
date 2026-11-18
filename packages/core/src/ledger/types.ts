@@ -126,6 +126,14 @@ export type LedgerEvent = { at: string } & (
    */
   | { t: "falsify.evolved"; uc: string; because: string; minted: string[]; retired: string[]; credits: number; mutants: string[]; followUp?: boolean }
   /**
+   * Kane disputes planted bug `mutant` of criterion `ac`: told it got past the tests of `uc`, Kane's
+   * evolve paused on a question (`question`, Kane's own words) instead of running to completion, and
+   * Holdback never answers one on its own. The planted bug counts as invalid ("Kane disputes the
+   * planted bug"), nothing was retired or sealed, and the criterion keeps the status it had before
+   * the bug. `credits`: the paused evolve's, on the first of its disputes (0 on the rest).
+   */
+  | { t: "falsify.disputed"; uc: string; ac: string; mutant: string; question: string; credits: number }
+  /**
    * Kane's evolve of `uc` added, changed or removed sealed verifier entries (`paths`) other than the
    * tests it minted and the tests of `uc` it retired. A tamper: rolled back, never sealed, and the gate
    * stays shut until a human re-seals.

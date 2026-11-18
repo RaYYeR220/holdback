@@ -14,7 +14,7 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
-import { falsifyVerdict, killsAc, pendingRecheck, runFalsify, type FalsifyDeps } from "../src/loop/falsify.js";
+import { falsifyVerdict, killsAc, pendingRecheck, runFalsify, unevolvedSurvivors, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -1418,6 +1418,92 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     // m-7: the timeline reads evolved, then the follow-up rolled back
     const tl = all.map((e) => e.t);
     expect(tl.indexOf("falsify.evolved")).toBeLessThan(tl.indexOf("redesign.dropped"));
+  });
+
+  describe("Kane disputes a planted bug: its evolve pauses on a question, which Holdback never answers", () => {
+    const Q = "For a household of one with $2,461 monthly income, should the result be Eligible. as the published at-or-below rule says, or Not eligible. as the bug report says?";
+    const paused = (credits: number, ...texts: string[]): EvolveResult => ({
+      status: "paused",
+      questions: texts.map((text, i) => ({ id: `q${i + 1}`, text, risk: "high", rationale: "r", options: [{ label: "Follow published rule" }], recommendedIndex: 0, allowFreeText: true })),
+      credits,
+    });
+
+    it("the survivor it answers is invalid with Kane's question on the ledger, nothing is retired or sealed, the criterion keeps its status, and it is not sent again (live demo uc-1)", async () => {
+      await setup();
+      const since = (await readEvents(p.ledgerFile)).length;
+      const { deps, io, calls } = fakes({
+        mutantRun: survives3,
+        // Kane wrote a test before it stopped to ask: rolled back with the rest
+        evolve: (_n, kit) => (kit.mint("t-4", ["ac-1", "ac-3"]), paused(11.25, Q)),
+      });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], survived: [], invalid: ["ac-3"], vacuous: [], redesigned: [], reason: "done" });
+      expect(r.disputed).toEqual([{ uc: "uc-1", acs: ["ac-3"], mutants: ["m-ac-3-1"], question: Q }]);
+      expect(r.survivors).toBeUndefined();
+      expect(r.notEvolved).toBeUndefined();
+      expect(calls.evolve).toHaveLength(1); // never answered, never a follow-up
+      const ev = await after(since);
+      expect(tags(ev)).toEqual([
+        "recordings",
+        "mutant:ac-1:killed",
+        "run:falsify:t-1:failed",
+        "run:falsify:t-1:failed",
+        "recordings",
+        "mutant:ac-3:survived",
+        "run:falsify:t-3:passed",
+        "recordings",
+        "recordings", // the verifier rolled back, Kane's recordings anchored again
+        "falsify.disputed",
+        "run:replay:t-1:passed",
+        "run:replay:t-3:passed",
+        "recordings",
+      ]);
+      expect(ev.find((e) => e.t === "falsify.disputed")).toEqual({ at: expect.any(String), t: "falsify.disputed", uc: "uc-1", ac: "ac-3", mutant: "m-ac-3-1", question: Q, credits: 11.25 });
+      expect(existsSync(testFile("t-4"))).toBe(false);
+      const all = await readEvents(p.ledgerFile);
+      const s = reduce(all);
+      expect(s.acs["ac-3"]).toMatchObject({ status: "passing", tests: ["t-3"] });
+      expect(s.mutants).toEqual({ killed: 1, survived: 0, invalid: 1 });
+      expect(s.credits - reduce(all.slice(0, since)).credits).toBeCloseTo(2 * 4.7 + 11.25, 9);
+      expect(unevolvedSurvivors(all)).toEqual([]);
+    });
+
+    it("every survivor of the paused evolve is disputed with Kane's questions; the paused evolve's credits are booked once", async () => {
+      await setup();
+      const { deps, io } = fakes({ mutantRun: (_ac, files) => files.map(pass), evolve: () => paused(5, Q, "The fourth planted bug was truncated; proceed with the visible cases?") });
+      const r = await runFalsify(p, deps, io, log);
+      const both = `${Q} / The fourth planted bug was truncated; proceed with the visible cases?`;
+      expect(r).toMatchObject({ survived: [], invalid: ["ac-1", "ac-3"], vacuous: [], redesigned: [] });
+      expect(r.disputed).toEqual([{ uc: "uc-1", acs: ["ac-1", "ac-3"], mutants: ["m-ac-1-1", "m-ac-3-1"], question: both }]);
+      const ds = (await readEvents(p.ledgerFile)).filter((e) => e.t === "falsify.disputed");
+      expect(ds.map((e) => e.t === "falsify.disputed" && [e.ac, e.mutant, e.question, e.credits])).toEqual([
+        ["ac-1", "m-ac-1-1", both, 5],
+        ["ac-3", "m-ac-3-1", both, 0],
+      ]);
+      const s = reduce(await readEvents(p.ledgerFile));
+      expect([s.acs["ac-1"]!.status, s.acs["ac-3"]!.status]).toEqual(["passing", "passing"]);
+    });
+
+    it("a follow-up cover evolve that pauses is no dispute of the planted bug: the first evolve stands, its question on record", async () => {
+      await setup();
+      const { deps, io, calls } = fakes({
+        mutantRun: survives3,
+        evolve: (n, kit) => {
+          if (n > 0) return paused(5, "The request ends with an unfinished “ac”; cover the named criteria only?");
+          kit.mint("t-4", ["ac-3"]);
+          kit.retire("t-1", "t-3");
+          return EVOLVED;
+        },
+      });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ redesigned: ["uc-1"], survived: ["ac-3"] });
+      expect(r.disputed).toBeUndefined();
+      expect(calls.evolve).toHaveLength(2);
+      const all = await readEvents(p.ledgerFile);
+      expect(all.some((e) => e.t === "falsify.disputed")).toBe(false);
+      expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ credits: 5, detail: "follow-up evolve of uc-1: Kane asked a question Holdback does not answer on its own: The request ends with an unfinished “ac”; cover the named criteria only?" });
+      expect(reduce(all).acs["ac-1"]).toMatchObject({ status: "needs-spec" });
+    });
   });
 
   it("a follow-up cover evolve does not count toward the run's bound: after one evolve and its follow-up, a later survivor is still evolved (R44)", async () => {

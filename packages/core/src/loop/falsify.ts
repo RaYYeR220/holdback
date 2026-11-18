@@ -104,6 +104,11 @@ export type FalsifyResult = {
   notEvolved?: { uc: string; acs: string[]; why: string }[];
   /** Planted bugs set aside in this pass before they could count (their ACs are among `invalid`): no code changed, or the referee found them off target. */
   refuted?: { ac: string; mutant: string; by: "no-op" | "referee"; why: string }[];
+  /**
+   * Use cases whose evolve paused on Kane's question (never answered): Kane disputes the planted bugs
+   * it was told about (`mutants`, of `acs`); they prove nothing (this pass's are among `invalid`).
+   */
+  disputed?: { uc: string; acs: string[]; mutants: string[]; question: string }[];
 };
 
 const MUT_DIR = "mut";
@@ -189,9 +194,19 @@ class EvolveStray extends Error {
 }
 /** A tamper found in an evolve, already on record: the pass stops with reason `tamper`. */
 class EvolveTampered extends Error {}
+/** Kane's evolve paused on a question of its own, which Holdback never answers; the verifier is rolled back. */
+class EvolveDisputed extends Error {}
 
 /** One line, control and format characters escaped: text a model wrote, on its way to a command line. */
 const oneLine = (t: string): string => escapeControls(t.replace(/\s+/g, " ").trim());
+
+/** The longest question of Kane's Holdback keeps on the ledger. */
+const MAX_QUESTION = 1000;
+/** Kane's questions on one line, joined, control characters escaped, capped. */
+function questionText(qs: { text: string }[]): string {
+  const t = oneLine(qs.map((q) => q.text).join(" / ")) || "(no question text)";
+  return t.length <= MAX_QUESTION ? t : `${t.slice(0, MAX_QUESTION - 1)}…`;
+}
 
 /**
  * What Kane is told slipped through (R40): each surviving bug in a user's terms, the inputs that show
@@ -268,6 +283,8 @@ export function unevolvedSurvivors(events: LedgerEvent[]): MutantEvent[] {
     if (!m || m.recheck !== undefined || (m.verdict !== "survived" && m.verdict !== "survived-by-heal")) continue;
     const after = events.slice(at + 1);
     if (after.some((e) => e.t === "falsify.evolved" && e.mutants.includes(m.id))) continue;
+    // Kane disputed it: it proves nothing, and is never sent again
+    if (after.some((e) => e.t === "falsify.disputed" && e.mutant === m.id)) continue;
     if (after.some((e) => e.t === "redesign.dropped" && e.acs?.includes(ac.id) && e.reason === NO_TEST)) continue;
     out.push(m);
   }
@@ -513,11 +530,13 @@ export type FalsifyOptions = {
  * Falsify every `passing` AC: the breaker (a different model family, via Venice) writes the
  * smallest patch that violates exactly that AC; it is applied in a throwaway worktree of HEAD,
  * started on a spare port, and the AC's sealed tests are replayed against it with healing off.
- * Kane failing the AC kills the mutant (the AC is `proved`); a mutant that passes makes the AC
- * `vacuous`, and Kane evolves its use case (R40): it is told what slipped through, its new tests
- * replace the old ones and are sealed with Kane as their author, and every AC of the use case is
- * owed again, so it goes back to the build loop; the next pass re-checks the survivor's own bug
- * against the new tests first. Afterwards every test is replayed once against the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
+ * A patch that changes no code is invalid before any of that. Kane failing the AC kills the mutant
+ * (the AC is `proved`); a mutant that passes counts only once the referee confirms it visibly breaks
+ * the AC (else it is invalid). A confirmed survivor makes the AC `vacuous`, and Kane evolves its use
+ * case (R40): it is told what slipped through, its new tests replace the old ones and are sealed with
+ * Kane as their author, and every AC of the use case is owed again, so it goes back to the build
+ * loop; the next pass re-checks the survivor's own bug against the new tests first. An evolve that
+ * pauses on Kane's question is a dispute: never answered, nothing sealed, the bugs invalid. Afterwards every test is replayed once against the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
  * Throws, before anything else, when VENICE_API_KEY is not set.
  */
 export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, log: Log, opts: FalsifyOptions = {}): Promise<FalsifyResult> {
@@ -906,6 +925,27 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   const testIdsByFile = () => new Map([...testFileMap(events, p.verifierDir)].map(([id, f]) => [f, id]));
 
   /**
+   * Kane's evolve of `uc` paused on a question (already rolled back): Kane disputes the planted bugs it
+   * was told about. Never answered: each is on record as disputed (`falsify.disputed`, the evolve's
+   * credits on the first), proves nothing (this pass's count as invalid), and its criterion keeps the
+   * status it had. Nothing is retired or sealed.
+   */
+  const dispute = async (uc: string, list: Survivor[], question: string, credits: number): Promise<undefined> => {
+    for (const [i, s] of list.entries()) await emit({ t: "falsify.disputed", uc, ac: s.ac.id, mutant: s.id, question, credits: i === 0 ? credits : 0 });
+    const mutants = list.map((s) => s.id);
+    for (const s of list) {
+      const k = out.survived.indexOf(s.ac.id);
+      if (k < 0) continue;
+      out.survived.splice(k, 1);
+      out.invalid.push(s.ac.id);
+    }
+    out.survivors = out.survivors?.filter((v) => !mutants.includes(v.mutant));
+    if (out.survivors?.length === 0) delete out.survivors;
+    (out.disputed ??= []).push({ uc, acs: list.map((s) => s.ac.id), mutants, question });
+    return undefined;
+  };
+
+  /**
    * R40: a planted bug got past every test of use case `uc`. Kane evolves the use case
    * (`maintain evolve --because <what slipped through>`), and its new set replaces the old tests.
    * When the new set leaves criteria of the use case without a test, one bounded follow-up evolve
@@ -933,6 +973,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     const ucCopy = await copySealed(p);
     const first = await evolveOnce(uc, because, list);
     if ("stray" in first) return strayTamper(uc, first.stray, first.credits);
+    if ("disputed" in first) return dispute(uc, list, first.disputed, first.credits);
     if ("failed" in first) return giveUp(first.failed, first.credits);
     const out_: EventBody[] = [{ t: "falsify.evolved", uc, because, minted: first.minted, retired: first.retired, credits: first.credits, mutants }];
     let g = first.graph;
@@ -954,9 +995,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         });
         if ("capped" in again) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
         else if ("stray" in again) return strayTamper(uc, again.stray, again.credits);
-        else if ("failed" in again) {
-          // the first evolve stands; the follow-up's spend is still on record, after it on the timeline (m-7)
-          out_.push({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${again.failed}`, credits: again.credits });
+        else if ("failed" in again || "disputed" in again) {
+          // the first evolve stands; the follow-up's spend is still on record, after it on the timeline (m-7).
+          // A question it paused on is about its coverage, not the planted bug: never answered, no dispute
+          const why_ = "failed" in again ? again.failed : `Kane asked a question Holdback does not answer on its own: ${again.disputed}`;
+          out_.push({ t: "redesign.dropped", useCases: [uc], detail: `follow-up evolve of ${uc}: ${why_}`, credits: again.credits });
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         } else {
           out_.push({ t: "falsify.evolved", uc, because: oneLine(cover).slice(0, MAX_BECAUSE), minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
@@ -1022,7 +1065,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     prior: TestNode[] = [],
     /** Tests an earlier evolve of this use case retired in this pass (the ledger still has them live). */
     priorRetired: string[] = [],
-  ): Promise<{ minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number }> => {
+  ): Promise<
+    { minted: string[]; retired: string[]; credits: number; graph: Graph } | { failed: string; credits: number } | { stray: string[]; credits: number } | { disputed: string; credits: number }
+  > => {
     /** A verifier path exactly: relative to the verifier, `/`-separated. The allowlist matches only these. */
     const key = (f: string) => path.relative(p.verifierDir, path.resolve(p.verifierDir, f)).split(path.sep).join("/");
     /** The same, case-folded on every platform: only to catch a collision (a duplicate, a shared file), which is stricter. */
@@ -1063,6 +1108,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         meter.count(credits);
         if (r.status === "nothing") throw new EvolveFailed(`Kane added no test to ${uc}: ${r.note}`);
         if (r.status === "error") throw new EvolveFailed(`Kane's evolve of ${uc} failed: ${r.message}`);
+        // a question of Kane's own is never answered here: nothing it wrote is kept
+        if (r.status === "paused") throw new EvolveDisputed(questionText(r.questions));
         const g = await deps.kane.readGraph(cwd);
         const minted = r.minted.map((m) => m.test);
         // one entry per test id and per file, or the graph says two things at once: a tamper
@@ -1156,6 +1203,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         if (e instanceof LedgerTampered || e instanceof KaneCapReached) throw e;
         await rollBack(copy);
         if (e instanceof EvolveStray) return { stray: e.paths, credits };
+        if (e instanceof EvolveDisputed) return { disputed: e.message, credits };
         return { failed: e instanceof EvolveFailed ? e.message : `Kane failed during the evolve of ${uc}: ${errText(e)}`, credits };
       }
     });

@@ -432,14 +432,37 @@ describe("maintain evolve (R40)", () => {
     expect(await designTests(cwd, "uc-1", {})).toMatchObject({ status: "refused", message: expect.stringContaining("--message only rides a resume") });
   });
 
-  it("never answers a question other than its own re-design gate", async () => {
+  it("never answers a question other than its own re-design gate: the evolve is paused, with Kane's question", async () => {
     const other = textFixture(
       '{"type":"evolve_paused","v":1,"verb":"evolve","pending_questions":[{"id":"q-scope","header":"Scope?","text":"Also re-design uc-2?","risk":"high","options":[{"label":"yes"},{"label":"no"}],"recommended_index":0,"allow_free_text":false}]}\n' +
+        '{"type":"usage","v":1,"verb":"evolve","credits":2.5}\n' +
         '{"type":"done","v":1,"verb":"evolve","status":"paused","exit_code":3}\n',
     );
     sequence(other);
     const r = await evolve(cwd, "uc-1", BECAUSE);
-    expect(r).toMatchObject({ status: "error", message: expect.stringContaining("Also re-design uc-2?") });
+    expect(r).toMatchObject({ status: "paused", questions: [{ id: "q-scope", text: "Also re-design uc-2?" }], credits: 2.5 });
     expect(argvs()).toHaveLength(1);
+  });
+
+  it("live (pantry run, uc-1): after its re-design gate, the evolve's design session paused on Kane's own questions: paused, with them, never answered", async () => {
+    sequence(fx("14-evolve-paused.ndjson"), fx("21-evolve-design-paused.ndjson"));
+    const r = await evolve(cwd, "uc-1", BECAUSE);
+    expect(argvs()).toHaveLength(2); // the gate's answer, and nothing after it
+    expect(argvs()[1]!.slice(-2)).toEqual(["--answer", "evolve:uc-1=1"]);
+    expect(r).toMatchObject({
+      status: "paused",
+      questions: [
+        { id: "q1", text: expect.stringMatching(/^For a household of one with no benefit and \$568 weekly income, should the result be Eligible\./) },
+        { id: "q2", text: expect.stringContaining("truncated") },
+      ],
+    });
+    // the paused design session's usage (the gate's call reports none)
+    expect(r.credits).toBe(11.25);
+  });
+
+  it("a gate asked again after Holdback answered it is an error, never answered twice", async () => {
+    sequence(fx("14-evolve-paused.ndjson"), fx("14-evolve-paused.ndjson"));
+    expect(await evolve(cwd, "uc-1", BECAUSE)).toMatchObject({ status: "error", message: expect.stringMatching(/paused the evolve again/) });
+    expect(argvs()).toHaveLength(2);
   });
 });

@@ -28,6 +28,10 @@ export function reduce(events: LedgerEvent[]): LedgerState {
   // metered batches: balance drops (per-run sums where unreadable), and the per-run credits they cover
   let metered = 0;
   let covered = 0;
+  // per criterion, the surviving planted bug that made it vacuous and the status it had before (a dispute puts it back)
+  const vacuousBy = new Map<string, { mutant: string; was: AcState["status"]; reason?: string }>();
+  // survivors counted as such: a dispute counts each once as invalid instead
+  const survivedIds = new Set<string>();
 
   const allPass = (ac: AcState): boolean => {
     const m = latest.get(ac.id);
@@ -66,7 +70,10 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         break;
       case "design": {
         for (const t of e.tests) unsure.delete(t.id); // a re-designed test starts over
-        for (const ac of e.acs) latest.delete(ac.id); // AC may move between use cases: drop stale results
+        for (const ac of e.acs) {
+          latest.delete(ac.id); // AC may move between use cases: drop stale results
+          vacuousBy.delete(ac.id);
+        }
         for (const old of Object.values(state.acs)) {
           if (old.useCase === e.useCase) {
             delete state.acs[old.id];
@@ -157,7 +164,10 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         state.breakerUsd += e.usd;
         if (e.verdict === "killed") state.mutants.killed += 1;
         else if (e.verdict === "invalid") state.mutants.invalid += 1;
-        else state.mutants.survived += 1;
+        else {
+          state.mutants.survived += 1;
+          survivedIds.add(e.id);
+        }
         const ac = state.acs[e.ac];
         if (!ac) break;
         const green = ac.status === "passing" || ac.status === "proved";
@@ -179,7 +189,27 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           }
         } else if (e.verdict !== "invalid") {
           // only a green AC can be vacuous; never mask owed/regressed (would open the gate)
-          if (green) ac.status = "vacuous";
+          if (green) {
+            vacuousBy.set(ac.id, { mutant: e.id, was: ac.status, ...(ac.reason !== undefined ? { reason: ac.reason } : {}) });
+            ac.status = "vacuous";
+          }
+        }
+        break;
+      }
+      case "falsify.disputed": {
+        // Kane disputes the planted bug (its evolve paused on a question): it proves nothing, counted
+        // as invalid, and the criterion it made vacuous gets back the status it had before it
+        if (survivedIds.delete(e.mutant)) {
+          state.mutants.survived -= 1;
+          state.mutants.invalid += 1;
+        }
+        const ac = state.acs[e.ac];
+        const by = vacuousBy.get(e.ac);
+        if (ac && by?.mutant === e.mutant && ac.status === "vacuous") {
+          ac.status = by.was;
+          if (by.reason !== undefined) ac.reason = by.reason;
+          else delete ac.reason;
+          vacuousBy.delete(e.ac);
         }
         break;
       }

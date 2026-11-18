@@ -282,8 +282,10 @@ export type EvolvePair = { scenario: string; test: string };
  * What `kane-cli maintain evolve` did. `complete`: Kane re-designed the use case and minted at
  * least one new test (`done` complete, exit 0, a non-empty `evolve_diff.minted`, a `commit` with a
  * test). Its new set replaces the use case's old one: `superseded` pairs are retired, whatever the
- * reason said (live, 2026-11-15). `nothing`: it ran but minted no test. `error`: it failed or asked
- * something Holdback does not answer on its own.
+ * reason said (live, 2026-11-15). `nothing`: it ran but minted no test. `paused`: it stopped on
+ * questions of Kane's own (`questions`) that Holdback does not answer on its own: on the evolve itself
+ * (`evolve_paused`, other than the re-design gate) or in the design session it started
+ * (`session_paused`, the evolve `done` paused). Nothing was minted. `error`: it failed.
  */
 export type EvolveResult =
   | {
@@ -297,7 +299,25 @@ export type EvolveResult =
       credits: number;
     }
   | { status: "nothing"; note: string; credits: number }
+  | { status: "paused"; questions: PendingQuestion[]; credits: number }
   | { status: "error"; message: string; code?: string; credits: number };
+
+const questionsOf = (e: KaneEvent | undefined): PendingQuestion[] =>
+  arr(e?.pending_questions)
+    .map(pendingQuestion)
+    .filter((q): q is PendingQuestion => q !== null && q.text !== "");
+
+/**
+ * The questions an evolve run stopped on, when it ended paused on some (its `done` paused, or an
+ * `evolve_paused`): the evolve's own, but `gate` (the re-design question Holdback answers itself),
+ * else its design session's (`session_paused`). Undefined when it did not pause on a question.
+ */
+function pausedOn(r: RunKaneResult, gate: string): PendingQuestion[] | undefined {
+  const own = r.events.find((e) => e.type === "evolve_paused");
+  if (!own && doneStatus(r) !== "paused") return undefined;
+  const qs = [...questionsOf(own).filter((q) => q.id !== gate), ...questionsOf(r.events.find((e) => e.type === "session_paused"))];
+  return qs.length > 0 ? qs : undefined;
+}
 
 const pairs = (v: unknown): EvolvePair[] =>
   arr(v)
@@ -325,25 +345,27 @@ function evolveOutcome(r: RunKaneResult, credits: number): EvolveResult {
 /**
  * `kane-cli maintain evolve <useCase> --because <because> --mode agent`, run in the verifier. Kane
  * pauses on its own re-design gate (`evolve_paused`, question `evolve:<useCase>`, exit 3); Holdback
- * answers it with the same argv plus `--answer evolve:<useCase>=<proceed>`. Any other question is
- * never answered (an `error`). The credits are both calls' `usage`.
+ * answers it with the same argv plus `--answer evolve:<useCase>=<proceed>`. Any other question, on
+ * the evolve or in the design session it starts, is never answered: the result is `paused`, with
+ * Kane's questions (live, 2026-11-18: it asked whether the reason it was given contradicts the spec).
+ * The credits are both calls' `usage`.
  */
 export async function evolve(cwd: string, useCase: string, because: string): Promise<EvolveResult> {
   const args = ["maintain", "evolve", useCase, "--because", because, "--mode", "agent"];
+  const gate = `evolve:${useCase}`;
   const first = await runKane(args, { cwd, timeoutMs: AI_TIMEOUT_MS });
   let credits = sumCredits(first.events);
+  const asked = pausedOn(first, gate);
+  if (asked) return { status: "paused", questions: asked, credits };
   const paused = first.events.find((e) => e.type === "evolve_paused");
   if (!paused) return evolveOutcome(first, credits);
-  const gate = `evolve:${useCase}`;
-  const qs = arr(paused.pending_questions)
-    .map(pendingQuestion)
-    .filter((q): q is PendingQuestion => q !== null);
-  if (qs.length !== 1 || qs[0]!.id !== gate) {
-    return { status: "error", message: `Kane asked something Holdback does not answer on its own: ${qs.map((q) => q.text).join(" / ") || "(no question)"}`, credits };
-  }
+  const qs = questionsOf(paused);
+  if (qs.length !== 1 || qs[0]!.id !== gate) return { status: "error", message: "Kane paused the evolve without a question", credits };
   const proceed = qs[0]!.options.findIndex((o) => o.label === "proceed");
   const second = await runKane([...args, "--answer", `${gate}=${proceed >= 0 ? proceed + 1 : 1}`], { cwd, timeoutMs: AI_TIMEOUT_MS });
   credits = Math.round((credits + sumCredits(second.events)) * 1e4) / 1e4;
+  const again = pausedOn(second, gate);
+  if (again) return { status: "paused", questions: again, credits };
   if (second.events.some((e) => e.type === "evolve_paused")) return { status: "error", message: "Kane paused the evolve again after Holdback answered its re-design question", credits };
   return evolveOutcome(second, credits);
 }
