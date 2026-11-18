@@ -120,6 +120,20 @@ describe("veniceChat", () => {
     expect((await veniceChat(opts)).json).toEqual({ patch: "x", rationale: "y" });
   });
 
+  it("sends a temperature and a schema name only when the call gives them (the referee: 0 and `referee`)", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", async (_u: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init!.body)) as Record<string, unknown>);
+      return reply('{"patch":"p","rationale":"r"}');
+    });
+    await veniceChat(opts);
+    await veniceChat({ ...opts, temperature: 0, schemaName: "referee" });
+    expect(bodies.map((b) => [b.temperature, (b.response_format as { json_schema: { name: string } }).json_schema.name])).toEqual([
+      [undefined, "patch"],
+      [0, "referee"],
+    ]);
+  });
+
   it("charges a reply without usage as the worst case", async () => {
     vi.stubGlobal("fetch", async () => reply('{"patch":"x","rationale":"y"}', null));
     expect((await veniceChat(opts)).usage).toEqual({ prompt_tokens: Math.ceil("Say hi as JSON.".length / 4), completion_tokens: 2048 });

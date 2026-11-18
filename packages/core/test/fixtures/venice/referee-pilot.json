@@ -1,0 +1,32 @@
+[
+  {
+    "mutant": "m-ac-53-1",
+    "recorded": "live pilot, 2026-11-18, deepseek-v4-flash, temperature 0",
+    "reply": {
+      "verdict": "no-change",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "The patch only changes whitespace in a template literal (removing a space after the closing tag), which does not affect the rendered HTML or the behavior of the page."
+    },
+    "usage": {
+      "prompt_tokens": 730,
+      "completion_tokens": 66
+    }
+  },
+  {
+    "mutant": "m-ac-4-1",
+    "recorded": "live pilot, 2026-11-18, deepseek-v4-flash, temperature 0",
+    "reply": {
+      "verdict": "violates",
+      "input": "household size 1",
+      "expected": "$2,461",
+      "observed": "$2,460",
+      "reason": "The patch changes the first element of BASE from 2461 to 2460, so for a household of size 1 the app now displays $2,460 instead of the required $2,461."
+    },
+    "usage": {
+      "prompt_tokens": 946,
+      "completion_tokens": 88
+    }
+  }
+]

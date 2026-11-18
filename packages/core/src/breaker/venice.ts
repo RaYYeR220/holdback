@@ -24,6 +24,10 @@ export type VeniceChatOptions = {
   apiKey: string;
   /** Completion-token cap of this call. Default `MAX_TOKENS`. */
   maxTokens?: number;
+  /** Sampling temperature; left out, Venice's default. The referee asks for 0. */
+  temperature?: number;
+  /** The reply schema's name. Default `patch` (the breaker's). */
+  schemaName?: string;
 };
 export type VeniceChatResult = { json: unknown; usage: Usage };
 
@@ -160,7 +164,8 @@ export async function veniceChat(opts: VeniceChatOptions): Promise<VeniceChatRes
         messages: opts.messages,
         max_tokens: maxTokens,
         ...(effort === undefined ? {} : { reasoning_effort: effort }),
-        response_format: { type: "json_schema", json_schema: { name: "patch", schema: opts.schema, strict: true } },
+        ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
+        response_format: { type: "json_schema", json_schema: { name: opts.schemaName ?? "patch", schema: opts.schema, strict: true } },
         venice_parameters: { include_venice_system_prompt: false },
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
