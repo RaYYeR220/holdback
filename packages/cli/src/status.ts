@@ -18,10 +18,15 @@ function agentState(state: LedgerState): Record<string, unknown> {
 
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
 
-/** A planted bug set aside, in one line: the referee's reason, or Kane's question (never what a confirmed survivor slipped past, I-4). */
+/**
+ * A planted bug set aside, as `status` shows it: by id only. Kane's question is built from what it was
+ * told slipped through (the target of a hidden test) and the referee's reason says what was probed;
+ * the agent may read `status` with or without `CLAUDECODE` (I-4), so both stay in the ledger, the
+ * token-gated dashboard and the human's `holdback run`.
+ */
 export function setAsideLine(a: SetAside): string {
-  if (a.by === "kane") return `Kane disputed: ${a.ac} (${a.mutant}${a.uc ? `, ${a.uc}` : ""}): ${a.why}`;
-  return `${a.by === "referee" ? "Rejected by the referee" : "Set aside"}: ${a.ac} (${a.mutant}): ${a.why}`;
+  const label = a.by === "kane" ? "Kane disputed" : a.by === "referee" ? "Rejected by the referee" : "Set aside, changes no code";
+  return `${label}: ${a.ac} (${a.mutant})`;
 }
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -73,7 +78,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
           specChanged: s.specChanged,
           evolved,
           retired,
-          setAside: aside,
+          setAside: aside.map(({ ac, mutant, by }) => ({ ac, mutant, by })),
         },
         null,
         2,
@@ -120,7 +125,7 @@ export async function statusCmd(caller: Ctx, o: { json?: boolean }): Promise<num
     ctx.out(`${e.uc} evolved${e.followUp ? " again, to cover criteria its tests had lost" : ""}: ${tests(e.minted.length)} minted, ${e.retired.length} retired (${e.credits} credits)`);
   }
   if (retired.length > 0) ctx.out(`Retired by Kane's evolve (still sealed, never run): ${retired.join(", ")}`);
-  for (const a of aside) ctx.out(oneLine(setAsideLine(a)));
+  for (const a of aside) ctx.out(setAsideLine(a));
   if (s.specChanged.length > 0) ctx.out(`The spec changed since the last seal (${s.specChanged.join(", ")}): \`holdback run\` runs drift first.`);
   if (s.tamper !== null) {
     ctx.err(s.tamper);
