@@ -715,6 +715,27 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/got past the new tests too/) });
   });
 
+  it("an earlier survivor whose patch changes no code is refuted on its re-check: the criterion keeps its status, never vacuous (live demo m-ac-53-1)", async () => {
+    const same = ["--- a/src/eligibility.js", "+++ b/src/eligibility.js", "@@ -3,3 +3,3 @@", '   if (snap) return "Eligible.";', '-  return income <= LIMITS[size] ? "Eligible." : "Not eligible.";', '+  return income <= LIMITS[size] ? "Eligible." : "Not eligible.";', " }", ""].join("\n");
+    await setup({
+      before: async () => {
+        await evolvedEarlier();
+        // the ledger's survivor of ac-3 was a line replaced with itself (a ledger from before the no-op filter)
+        const all = await readEvents(p.ledgerFile);
+        const m = all.find((e) => e.t === "mutant" && e.id === "m-ac-3-1") as Extract<LedgerEvent, { t: "mutant" }>;
+        m.patch = same;
+        writeFileSync(p.ledgerFile, all.map((e) => JSON.stringify(e)).join("\n") + "\n");
+      },
+    });
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], invalid: ["ac-3"], vacuous: [], reason: "done" });
+    expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
+    const m = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3");
+    expect(m).toMatchObject({ recheck: "m-ac-3-1", verdict: "invalid", refuted: "no-op" });
+    expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("passing");
+  });
+
   it("when the code moved under the survivor's patch, the breaker plants the same bug in the code as it is now, once (R40)", async () => {
     await setup({ before: evolvedEarlier });
     writeFileSync(join(appDir, "src", "eligibility.js"), SRC.replace(': "Not eligible."', ': "Not eligible!"'));
@@ -1700,6 +1721,28 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(calls.tests).toEqual([]);
     const m = (await readEvents(p.ledgerFile)).find((e) => e.t === "mutant");
     expect(m).toMatchObject({ verdict: "invalid", note: expect.stringContaining("SyntaxError: Unexpected token") });
+  });
+
+  it("a patch that changes no code is invalid before any replay: no app started, no Kane run, the criterion keeps its status (live demo m-ac-53-1)", async () => {
+    await setup();
+    // ac-1: a line replaced with itself, as m-ac-53-1 did; ac-3: a comment, which leaves the tokens as they were
+    const same = ["--- a/src/eligibility.js", "+++ b/src/eligibility.js", "@@ -2,3 +2,3 @@", " export function check(size, income, snap) {", '-  if (snap) return "Eligible.";', '+  if (snap) return "Eligible.";', '   return income <= LIMITS[size] ? "Eligible." : "Not eligible.";', ""].join("\n");
+    const comment = ["--- a/src/eligibility.js", "+++ b/src/eligibility.js", "@@ -3,2 +3,3 @@", '   if (snap) return "Eligible.";', "+  // at or below the limit", '   return income <= LIMITS[size] ? "Eligible." : "Not eligible.";', ""].join("\n");
+    const { deps, io, calls } = fakes({ patch: (ac) => (ac === "ac-1" ? same : comment), mutantRun: (ac, files) => files.map(pass) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: [], survived: [], invalid: ["ac-1", "ac-3"], vacuous: [], redesigned: [], reason: "done" });
+    expect(r.refuted).toEqual([
+      { ac: "ac-1", mutant: "m-ac-1-1", by: "no-op", why: "changes no code: every line it changes is the same line once whitespace is normalised" },
+      { ac: "ac-3", mutant: "m-ac-3-1", by: "no-op", why: "changes no code: it leaves the code's tokens as they were: only whitespace or comments change" },
+    ]);
+    expect(calls.apps).toEqual([]);
+    expect(calls.tests).toEqual([]);
+    expect(calls.evolve).toEqual([]);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "mutant" && e.ac === "ac-1")).toMatchObject({ verdict: "invalid", refuted: "no-op", note: expect.stringMatching(/^changes no code: /) });
+    const s = reduce(all);
+    expect([s.acs["ac-1"]!.status, s.acs["ac-3"]!.status]).toEqual(["passing", "passing"]);
+    expect(s.mutants).toEqual({ killed: 0, survived: 0, invalid: 2 });
   });
 
   it("refuses the breaker call once the budget is spent, and logs no mutant", async () => {

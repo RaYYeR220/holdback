@@ -225,6 +225,129 @@ export function checkPatch(patch: string, allowed: string[], maxLines = MAX_PATC
   return { strip, changed };
 }
 
+/** Files whose leading whitespace is code (indentation): only trailing whitespace is ignored there. */
+const INDENTED = /(\.(py|pyw|ya?ml|coffee|pug|jade|haml|sass|slim)|(^|\/)Makefile)$/i;
+/** Files whose token stream Holdback reads (whitespace and comments outside strings are not code there). */
+const TOKENIZED = /\.(m?[jt]sx?|c[jt]s|css|json)$/i;
+
+/**
+ * A changed line as code: runs of whitespace outside quotes become one space, and the line is
+ * trimmed (its leading whitespace kept in an indentation-significant file). Inside quotes nothing
+ * changes: that is text the page may show.
+ */
+function codeLine(line: string, indented: boolean): string {
+  const lead = indented ? (/^\s*/.exec(line)?.[0] ?? "") : "";
+  let out = "";
+  let quote: string | undefined;
+  let space = false;
+  for (let i = lead.length; i < line.length; i++) {
+    const c = line[i]!;
+    if (quote) {
+      out += c;
+      if (c === "\\" && i + 1 < line.length) out += line[++i];
+      else if (c === quote) quote = undefined;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      space = true;
+      continue;
+    }
+    if (space && out !== "") out += " ";
+    space = false;
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    out += c;
+  }
+  return lead + out;
+}
+
+/**
+ * True when every block of lines the patch changes adds back exactly the lines it removes, as code
+ * (`codeLine`), blank lines left out: m-ac-53-1 in the live demo replaced a line with itself.
+ */
+function sameLines(patch: string): boolean {
+  let file = "";
+  let blocks = 0;
+  let rm: string[] = [];
+  let add: string[] = [];
+  let same = true;
+  const close = () => {
+    if (rm.length === 0 && add.length === 0) return;
+    blocks++;
+    const ind = INDENTED.test(file);
+    const norm = (l: string[]) => l.map((x) => codeLine(x, ind)).filter((x) => x.trim() !== "");
+    const [a, b] = [norm(rm), norm(add)];
+    if (a.length !== b.length || a.some((x, i) => x !== b[i])) same = false;
+    rm = [];
+    add = [];
+  };
+  const lines = patch.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]!;
+    if (l.startsWith("--- ") && lines[i + 1]?.startsWith("+++ ")) {
+      close();
+      file = lines[i + 1]!.slice(4).split("\t")[0]!.trim();
+      i++;
+    } else if (l.startsWith("-")) rm.push(l.slice(1));
+    else if (l.startsWith("+")) add.push(l.slice(1));
+    else if (!l.startsWith("\\")) close();
+  }
+  close();
+  return blocks > 0 && same;
+}
+
+/** A source file's tokens: whitespace and comments outside strings left out, every string literal whole. */
+function tokens(file: string, src: string): string[] {
+  const lineComments = !/\.css$/i.test(file);
+  const out: string[] = [];
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    const c = src[i]!;
+    if (/\s/.test(c)) i++;
+    else if (c === "/" && src[i + 1] === "/" && lineComments) {
+      while (i < n && src[i] !== "\n") i++;
+    } else if (c === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end < 0 ? n : end + 2;
+    } else if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < n && src[j] !== c && (c === "`" || src[j] !== "\n")) j += src[j] === "\\" ? 2 : 1;
+      out.push(src.slice(i, j + 1));
+      i = j + 1;
+    } else if (/[\w$]/.test(c)) {
+      let j = i;
+      while (j < n && /[\w$]/.test(src[j]!)) j++;
+      out.push(src.slice(i, j));
+      i = j;
+    } else {
+      out.push(c);
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Why a breaker patch changes no code, or undefined when it does (or Holdback cannot tell). A mutant
+ * that changes no code proves nothing either way: it is never replayed. Two checks: every changed
+ * line is the line it replaces once whitespace outside quotes is normalised (the patch alone), or,
+ * for a JavaScript, TypeScript, CSS or JSON file, the file's tokens are the same before and after
+ * (`before`/`after`: the patched files' contents): a comment, a line split in two.
+ */
+export function noOpReason(patch: string, before: SourceFile[], after: SourceFile[]): string | undefined {
+  if (sameLines(patch)) return "every line it changes is the same line once whitespace is normalised";
+  const files = patchedFiles(patch);
+  if (files.length === 0) return undefined;
+  for (const f of files) {
+    const a = before.find((x) => x.path === f);
+    const b = after.find((x) => x.path === f);
+    if (!a || !b || !TOKENIZED.test(f)) return undefined;
+    const [ta, tb] = [tokens(f, a.content.replace(/\r\n/g, "\n")), tokens(f, b.content.replace(/\r\n/g, "\n"))];
+    if (ta.length !== tb.length || ta.some((t, i) => t !== tb[i])) return undefined;
+  }
+  return "it leaves the code's tokens as they were: only whitespace or comments change";
+}
+
 const SYSTEM = [
   "You are the breaker in a mutation test of a web app.",
   "Browser tests check that the app meets one acceptance criterion (AC). Write the smallest change to the app's source that makes the running app violate exactly this AC, so that a correct test of the AC fails, while the app still starts and everything else keeps working as before.",

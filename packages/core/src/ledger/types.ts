@@ -92,9 +92,16 @@ export type LedgerEvent = { at: string } & (
       slip?: Slip;
       /**
        * The id of the surviving mutant this one re-plants after Kane evolved the use case (R40): it
-       * must now be killed; any other verdict leaves the criterion vacuous.
+       * must now be killed; any other verdict leaves the criterion vacuous, but a refuted one.
        */
       recheck?: string;
+      /**
+       * The planted bug was set aside before it could count (verdict `invalid`, the why in `note`):
+       * `no-op`, its patch changes no code (never replayed); `referee`, it got past the tests but the
+       * referee found no input where it visibly breaks this criterion. The criterion keeps its status,
+       * on a re-check too: the bug that got past the old tests was never a real one.
+       */
+      refuted?: "no-op" | "referee";
     }
   /**
    * A planted bug survived every test of use case `uc`, and Kane evolved it (`maintain evolve`, R40):

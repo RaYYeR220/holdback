@@ -1,0 +1,198 @@
+[
+  {
+    "from": "pantry demo run, 2026-11-18",
+    "mutant": "m-ac-53-1",
+    "ac": {
+      "id": "ac-53",
+      "text": "The Volunteer list contains no visits whose date is not today in the pantry's local time.",
+      "useCase": "uc-2",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L97-L97",
+          "quote": "The volunteer list shows today's visits only, below the line \"Visits for {today's date}\"."
+        },
+        {
+          "source": "prd",
+          "anchor": "L3-L3",
+          "quote": "Volunteers at the door use the volunteer list to see today's visits and mark each pickup."
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -248,7 +248,7 @@ function volunteerPage() {\n   const t = today();\n   const visits = db.prepare('SELECT * FROM visits WHERE visit_date = ? ORDER BY visit_time, id').all(t);\n   const section = (title, list, withButton) => {\n-    const head = `<h2>${title}</h2>`;\n+    const head = `<h2>${title}</h2>`;\n     if (!list.length) return `${head}<p>No visits.</p>`;\n     const rows = list\n       .map(\n",
+    "slip": {
+      "behaviour": "The volunteer list displays visits from all dates, not just today, and the heading still says 'Visits for {today's date}'.",
+      "inputs": "Navigate to /volunteer-list when there are visits on other dates.",
+      "expected": "Only visits with visit_date equal to today's date should appear.",
+      "observed": "All visits from any date appear in the list."
+    }
+  },
+  {
+    "from": "pantry demo run, 2026-11-18",
+    "mutant": "m-ac-20-1",
+    "ac": {
+      "id": "ac-20",
+      "text": "A phone number without exactly ten digits produces 'Enter a 10-digit phone number.'.",
+      "useCase": "uc-3",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L114-L117",
+          "quote": "| \"Phone number\" does not contain exactly 10 digits | Enter a 10-digit phone number. | | No \"Visit time\" is chosen | Choose a visit time. | | The household already has a visit in the month of the chosen visit time | This household already has a visit booked in that month. | | The chosen visit time already has 6 visits | That visit time is full. Choose another time. |"
+        },
+        {
+          "source": "prd",
+          "anchor": "L79-L81",
+          "quote": "\"Phone number\" must contain exactly 10 digits; spaces, dashes, dots and parentheses are ignored, so (215) 555-0101 and 215-555-0101 are the same household."
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -244,7 +244,7 @@ const bookPost = async (c) => {\n   const form = { phone: str(body.phone), slot: str(body.slot), proxy: str(body.proxy) };\n   const errors = [];\n   const digits = form.phone.replace(/[\\s\\-.()]/g, '');\n-  const phoneOk = /^\\d{10}$/.test(digits);\n+  const phoneOk = /^\\d{10}$/.test(form.phone.replace(/[\\s\\-.()]/g, ''));\n   if (!phoneOk) errors.push('Enter a 10-digit phone number.');\n   const slot = listSlots().find((s) => s.value === form.slot);\n   if (!slot) {\n",
+    "slip": {
+      "behaviour": "When a user enters a phone number with formatting characters (e.g., '123-456-7890'), the page shows 'Enter a 10-digit phone number.' even though the number has exactly ten digits.",
+      "inputs": "Phone number: '123-456-7890', Visit time: any valid slot",
+      "expected": "The visit is booked successfully.",
+      "observed": "The page displays 'Enter a 10-digit phone number.' and the visit is not booked."
+    }
+  },
+  {
+    "from": "pantry demo run, 2026-11-18",
+    "mutant": "m-ac-36-1",
+    "ac": {
+      "id": "ac-36",
+      "text": "An income-decided result displays the income counted for its applicable period.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L28-L29",
+          "quote": "Every other household in our ZIP codes is eligible when its income is at or below the income limit for its household size, and not eligible when its income is above that limit."
+        },
+        {
+          "source": "prd",
+          "anchor": "L60-L62",
+          "quote": "For income received every two weeks, {income} is the amount entered multiplied by 26; otherwise it is the amount entered."
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -83,7 +83,7 @@\n   else [col, period, counted] = [0, 'year', incomeCents * 26];\n   const limit = limitFor(size, col);\n   const eligible = counted <= limit * 100;\n-  return {\n+    return { eligible: false,\n     lines: [\n       eligible ? 'Eligible.' : 'Not eligible.',\n       `Income counted: ${fmtMoneyCents(counted)} per ${period}.`,\n",
+    "slip": {
+      "behaviour": "A user whose income qualifies as at or below the limit is told 'Not eligible' instead of 'Eligible'.",
+      "inputs": "Household size = 1, income = $29526, frequency = Yearly, ZIP = 19104, no benefits selected",
+      "expected": "Page displays 'Eligible.' and the correct income and limit details.",
+      "observed": "Page displays 'Not eligible.' and the same income and limit details."
+    }
+  },
+  {
+    "from": "pantry demo run, 2026-11-18",
+    "mutant": "m-ac-26-1",
+    "ac": {
+      "id": "ac-26",
+      "text": "Without a checked benefit, income at or below the size-and-frequency-specific published limit produces 'Eligible.'.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L28-L29",
+          "quote": "Every other household in our ZIP codes is eligible when its income is at or below the income limit for its household size, and not eligible when its income is above that limit."
+        },
+        {
+          "source": "prd",
+          "anchor": "L110-L113",
+          "quote": "| \"Household size\" is empty or not a whole number of 1 or more | Enter a household size of 1 or more. | | \"Household income ($)\" is empty, negative or not a number | Enter the household income in dollars. | | No option is chosen for \"How often is this income received?\" | Choose how often this income is received. | | \"ZIP code\" is not exactly 5 digits | Enter a 5-digit ZIP code. |"
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -97,7 +97,7 @@ function evaluate(form) {\n   if (form.benefits.length) {\n     return {\n       lines: ['Eligible.', 'Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.'],\n-      eligible: true,\n+      eligible: false,\n       size,\n     };\n   }\n",
+    "slip": {
+      "behaviour": "When a user checks any benefit box and enters an income that is at or below the published limit for their household size, the page incorrectly shows 'Not eligible' instead of 'Eligible.'",
+      "inputs": "Household size: 1, Income: $500, Frequency: Weekly, Benefits: SNAP checked, ZIP: 19104",
+      "expected": "The result shows 'Eligible.' because income ($500 weekly) is below the limit ($568/week) and the reasoning mentions the benefit.",
+      "observed": "The result shows 'Not eligible.' even though income is below the limit and a benefit is checked."
+    }
+  },
+  {
+    "from": "pantry demo run, 2026-11-18",
+    "mutant": "m-ac-37-1",
+    "ac": {
+      "id": "ac-37",
+      "text": "An income-decided result displays the published limit for the household's size and applicable period.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L28-L29",
+          "quote": "Every other household in our ZIP codes is eligible when its income is at or below the income limit for its household size, and not eligible when its income is above that limit."
+        },
+        {
+          "source": "prd",
+          "anchor": "L60-L62",
+          "quote": "For income received every two weeks, {income} is the amount entered multiplied by 26; otherwise it is the amount entered."
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -118,7 +118,7 @@ function limitFor(size, col) {\n   if (size <= 8) return LIMITS[size][col];\n   return LIMITS[8][col] + EXTRA[col] * (size - 8);\n }\n-\n+\n function evaluate(form) {\n   const errors = [];\n   const sizeRaw = (form.size ?? '').trim();\n@@ -145,7 +145,7 @@ function evaluate(form) {\n   if (!ZIPS.includes(zip)) {\n     return { lines: ['Outside our service area.', 'We serve ZIP codes 19104, 19139 and 19143 only.'], eligible: false };\n   }\n-  if (form.benefits.length) {\n+  if (0) {\n     return {\n       lines: ['Eligible.', 'Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.'],\n       eligible: true,\n",
+    "slip": {
+      "behaviour": "When the user checks a box for SNAP, TANF, SSI, or Medicaid (benefit), instead of being told they are eligible immediately, the page shows income-based eligibility (e.g., \"Not eligible.\" or \"Eligible.\" depending on income) and entirely omits the benefit-based reason line.",
+      "inputs": "Household size: 1; Income: 30000; Frequency: Yearly; Benefits: SNAP (checked); ZIP: 19104",
+      "expected": "The page shows: Eligible. Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.",
+      "observed": "The page shows income-based lines, e.g., Not eligible. Income counted: $30,000 per year. Limit applied: $29,526 per year for a household of 1."
+    }
+  },
+  {
+    "from": "pantry demo run, 2026-11-18",
+    "mutant": "m-ac-27-1",
+    "ac": {
+      "id": "ac-27",
+      "text": "Without a checked benefit, income above the size-and-frequency-specific published limit produces 'Not eligible.'.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L28-L29",
+          "quote": "Every other household in our ZIP codes is eligible when its income is at or below the income limit for its household size, and not eligible when its income is above that limit."
+        },
+        {
+          "source": "prd",
+          "anchor": "L110-L113",
+          "quote": "| \"Household size\" is empty or not a whole number of 1 or more | Enter a household size of 1 or more. | | \"Household income ($)\" is empty, negative or not a number | Enter the household income in dollars. | | No option is chosen for \"How often is this income received?\" | Choose how often this income is received. | | \"ZIP code\" is not exactly 5 digits | Enter a 5-digit ZIP code. |"
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -107,7 +107,7 @@\n   if (!ZIPS.includes(zip)) {\n     return { lines: ['Outside our service area.', 'We serve ZIP codes 19104, 19139 and 19143 only.'], eligible: false };\n   }\n-  if (form.benefits.length) {\n+  if (form.benefits.length || incomeCents === 0) {\n     return {\n       lines: ['Eligible.', 'Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.'],\n       eligible: true,\n",
+    "slip": {
+      "behaviour": "A user who enters a very low income with no benefit selected sees 'Eligible.' instead of 'Not eligible.' when their income is above the limit for their household size.",
+      "inputs": "Household size: 1, Income: 568, How often: Weekly, Benefits: none checked, ZIP: 19104",
+      "expected": "Not eligible. (income $568/week equals the limit for a household of 1)",
+      "observed": "Eligible."
+    }
+  },
+  {
+    "from": "rehearsal",
+    "mutant": "m-ac-4-1",
+    "ac": {
+      "id": "ac-4",
+      "text": "The monthly limit stated in the result for household sizes 1 through 8 matches the effective July 1, 2026 table: 1=$2,461; 2=$3,337; 3=$4,212; 4=$5,088; 5=$5,964; 6=$6,839; 7=$7,715; 8=$8,591, including when SNAP qualifies the household.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L11-L11",
+          "quote": "Monthly limits (TEFAP, 185% of poverty, effective July 1, 2026): household of 1: $2,461; 2: $3,337; 3: $4,212; 4: $5,088; 5: $5,964; 6: $6,839; 7: $7,715; 8: $8,591. For each additional member above 8, add $876."
+        },
+        {
+          "source": "prd",
+          "anchor": "L10-L10",
+          "quote": "A household is eligible when its monthly income is at or below the monthly limit for its size."
+        }
+      ]
+    },
+    "patch": "--- a/server.js\n+++ b/server.js\n@@ -1,5 +1,5 @@\n const http = require('http');\n-const BASE = [2461, 3337, 4212, 5088, 5964, 6839, 7715, 8591];\n+const BASE = [2460, 3337, 4212, 5088, 5964, 6839, 7715, 8591];\n const limitFor = n => n <= 8 ? BASE[n - 1] : 8591 + 876 * (n - 8);\n const fmt = n => '$' + n.toLocaleString('en-US');\n const esc = s => String(s).replace(/[&<>\"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\n",
+    "slip": {
+      "behaviour": "For a household of size 1, the page shows a monthly limit of $2,460 instead of the correct $2,461.",
+      "inputs": "Household size = 1, monthly income = $2,460, SNAP unchecked",
+      "expected": "Monthly limit: $2,461",
+      "observed": "Monthly limit: $2,460"
+    }
+  }
+]

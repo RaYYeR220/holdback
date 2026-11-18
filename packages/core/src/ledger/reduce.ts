@@ -164,6 +164,9 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         if (e.verdict === "killed") {
           if (ac.status === "passing") ac.status = "proved";
           delete ac.reason;
+        } else if (e.refuted !== undefined) {
+          // a planted bug that changes no code, or that the referee found off target, proves nothing
+          // either way, a re-check's too: the bug that got past the old tests was never a real one
         } else if (e.recheck !== undefined) {
           // R40: the planted bug that got past the old tests, re-planted against Kane's evolved ones,
           // must now be killed; anything else (it survived, or it proved nothing) fails closed

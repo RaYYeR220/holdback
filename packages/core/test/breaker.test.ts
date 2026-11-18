@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { acKeywords, BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, pickFiles, proposeMutant, PATCH_SCHEMA } from "../src/breaker/mutate.js";
+import { acKeywords, BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, noOpReason, pickFiles, proposeMutant, PATCH_SCHEMA } from "../src/breaker/mutate.js";
 import { Budget, estimateUsd, PRICES, REASONING_EFFORT, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
 import type { AcState } from "../src/ledger/types.js";
 
@@ -414,5 +414,54 @@ describe("proposeMutant", () => {
     const chat = vi.fn(ok);
     await expect(proposeMutant(AC3, files, { model: "deepseek-v4-flash", apiKey: "k", budget: tight, chat, maxTokens: 4096 })).rejects.toBeInstanceOf(BudgetRefused);
     expect(chat).not.toHaveBeenCalled();
+  });
+});
+
+/** The planted bugs the live demo counted as survivors, and the rehearsal's real one (sanitized: no paths). */
+type LiveSurvivor = { mutant: string; ac: { id: string; text: string; useCase: string; cites: AcState["cites"] }; patch: string };
+const LIVE: LiveSurvivor[] = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "breaker", "survivors.json"), "utf8"));
+const live = (id: string) => LIVE.find((s) => s.mutant === id)!;
+
+describe("noOpReason", () => {
+  const src = (path: string, content: string) => ({ path, content });
+
+  it("refuses the demo's m-ac-53-1, whose one changed line is the line it replaces, before any file is read", () => {
+    expect(noOpReason(live("m-ac-53-1").patch, [], [])).toMatch(/^every line it changes is the same line/);
+  });
+
+  it("passes every other live survivor on: each changes code (whether it breaks its criterion is the referee's call)", () => {
+    for (const id of ["m-ac-20-1", "m-ac-36-1", "m-ac-26-1", "m-ac-37-1", "m-ac-27-1", "m-ac-4-1"]) expect(noOpReason(live(id).patch, [], []), id).toBeUndefined();
+  });
+
+  it("normalises whitespace inside a changed line; an indentation-significant file keeps its leading whitespace", () => {
+    const p = (file: string, a: string, b: string) => [`--- a/${file}`, `+++ b/${file}`, "@@ -1,1 +1,1 @@", `-${a}`, `+${b}`, ""].join("\n");
+    expect(noOpReason(p("src/a.js", "  const x  =  1;", "const x = 1;   "), [], [])).toBeDefined();
+    expect(noOpReason(p("src/a.html", "<p>Not  eligible.</p>", "<p>Not eligible.</p>"), [], [])).toBeDefined();
+    // a blank line added or removed changes nothing
+    expect(noOpReason(["--- a/src/a.js", "+++ b/src/a.js", "@@ -1,1 +1,2 @@", "-const x = 1;", "+", "+const x = 1;", ""].join("\n"), [], [])).toBeDefined();
+    // whitespace inside a quoted string is the page's text: kept
+    expect(noOpReason(p("src/a.js", "const t = 'Not  eligible.';", "const t = 'Not eligible.';"), [], [])).toBeUndefined();
+    expect(noOpReason(p("app.py", "    return 1", "return 1"), [], [])).toBeUndefined();
+    expect(noOpReason(p("app.py", "    return 1", "    return 1  "), [], [])).toBeDefined();
+    // a line moved inside a hunk is a change: blocks are compared where they stand
+    const moved = ["--- a/src/a.js", "+++ b/src/a.js", "@@ -1,3 +1,3 @@", "-a();", " b();", "+a();", ""].join("\n");
+    expect(noOpReason(moved, [], [])).toBeUndefined();
+  });
+
+  it("refuses a patch that leaves the file's token stream unchanged: a comment, or a line split in two", () => {
+    const before = "export function check(size, income) {\n  return income <= LIMITS[size] ? 'Eligible.' : 'Not eligible.';\n}\n";
+    const comment = before.replace("  return", "  // at or below the limit\n  return");
+    const split = before.replace(" ? 'Eligible.'", "\n    ? 'Eligible.'");
+    const patch = (after: string) => ["--- a/src/e.js", "+++ b/src/e.js", "@@ -1,3 +1,4 @@", ...before.split("\n").slice(0, 3).map((l) => `-${l}`), ...after.split("\n").slice(0, 4).map((l) => `+${l}`), ""].join("\n");
+    expect(noOpReason(patch(comment), [src("src/e.js", before)], [src("src/e.js", comment)])).toMatch(/tokens/);
+    expect(noOpReason(patch(split), [src("src/e.js", before)], [src("src/e.js", split)])).toMatch(/tokens/);
+    // whitespace inside a string literal is the page's text: a change
+    const spaced = before.replace("'Not eligible.'", "'Not  eligible.'");
+    expect(noOpReason(patch(spaced), [src("src/e.js", before)], [src("src/e.js", spaced)])).toBeUndefined();
+    // a real change, and a file whose tokens Holdback does not read, are never refused on tokens
+    const real = before.replace("<=", "<");
+    expect(noOpReason(patch(real), [src("src/e.js", before)], [src("src/e.js", real)])).toBeUndefined();
+    const py = (s: string) => s.replace("src/e.js", "app.py");
+    expect(noOpReason(py(patch(comment)), [src("app.py", before)], [src("app.py", comment)])).toBeUndefined();
   });
 });

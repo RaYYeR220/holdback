@@ -3,7 +3,7 @@ import { lstat, mkdir, readdir, readFile, readlink, rm, stat, symlink, unlink, w
 import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
-import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
+import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, noOpReason, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, evolve, gapsOf, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
@@ -101,6 +101,8 @@ export type FalsifyResult = {
   survivors?: { ac: string; mutant: string; slip: string; recheck?: true; earlier?: true }[];
   /** Survivors whose use case Kane did not evolve in this pass, and why (R44). */
   notEvolved?: { uc: string; acs: string[]; why: string }[];
+  /** Planted bugs set aside in this pass before they could count (their ACs are among `invalid`): no code changed, or the referee found them off target. */
+  refuted?: { ac: string; mutant: string; by: "no-op" | "referee"; why: string }[];
 };
 
 const MUT_DIR = "mut";
@@ -660,7 +662,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     let rationale = "";
     let logged = false;
     let stopNote = "results discarded: the pass stopped";
-    const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = [], again: TestRunResult[] = []) => {
+    const finish = async (verdict: Verdict, note?: string, results: TestRunResult[] = [], again: TestRunResult[] = [], set: { refuted?: "no-op" | "referee" } = {}) => {
       logged = true;
       out.usd += usd;
       await emit({
@@ -674,14 +676,17 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         ...(note === undefined ? {} : { note }),
         ...(slip ? { slip } : {}),
         ...(recheck ? { recheck: recheck.id } : {}),
+        ...(set.refuted ? { refuted: set.refuted } : {}),
       });
       for (const r of results) await emit({ t: "run", kind: "falsify", mutantId: id, result: r });
       for (const r of again) await emit({ t: "run", kind: "falsify", mutantId: id, result: r, confirm: true });
       (verdict === "killed" ? out.killed : verdict === "invalid" ? out.invalid : out.survived).push(ac.id);
+      if (set.refuted) (out.refuted ??= []).push({ ac: ac.id, mutant: id, by: set.refuted, why: note ?? "" });
       const survived = verdict === "survived" || verdict === "survived-by-heal";
       if (survived) named(ac.id, id, slip, rationale, recheck ? { recheck: true } : {});
       // a re-checked survivor never goes back to Kane: killed proves it, anything else leaves it vacuous
-      if (recheck && verdict !== "killed") {
+      // (but a refuted one: the bug that got past the old tests was never a real one)
+      if (recheck && verdict !== "killed" && !set.refuted) {
         out.vacuous.push(ac.id);
         if (survived) notEvolved(ac.useCase, [ac.id], RECHECK_SURVIVED);
       } else if (survived) survivors.push({ ac, id, patch, rationale, ...(slip ? { slip } : {}) });
@@ -783,6 +788,12 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       }
       if (failure !== undefined) {
         await finish("invalid", failure);
+        return "done";
+      }
+      // a patch that changes no code proves nothing either way: never started, never replayed
+      const noop = noOpReason(patch, shown, await readSources(dir, patchedFiles(patch)));
+      if (noop !== undefined) {
+        await finish("invalid", `changes no code: ${noop}`, [], [], { refuted: "no-op" });
         return "done";
       }
 
