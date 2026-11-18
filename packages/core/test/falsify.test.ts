@@ -45,6 +45,8 @@ const fxKane = join(here, "fixtures", "kane");
 const fxTests = join(fxKane, "tests");
 const at = "2026-11-15T00:00:00.000Z";
 const MODEL = "deepseek-v4-flash";
+/** The referee's model by default: another family than the breaker's (eval/referee/RESULTS.md). */
+const REFEREE_MODEL = "z-ai-glm-5-3-flash";
 const USD_PER_CALL = (1500 * 0.138 + 300 * 0.275) / 1e6;
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -645,7 +647,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
   describe("the referee: a survivor counts only once it confirms the planted bug visibly breaks its criterion", () => {
     const off = (reason: string) => ({ verdict: "off-target", input: "", expected: "", observed: "", reason });
-    const REF_USD = (1000 * 0.138 + 100 * 0.275) / 1e6;
+    // priced as the referee's own model, not the breaker's
+    const REF_USD = (1000 * 0.15 + 100 * 0.5) / 1e6;
 
     it("asks once per survivor, never for a kill: its confirmation is on the ledger, its spend in the mutant's and under the cap, and Kane is told its account", async () => {
       await setup();
@@ -655,7 +658,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const r = await runFalsify(p, deps, io, log);
       expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], redesigned: ["uc-1"], reason: "done" });
       expect(calls.referee.map((c) => c.ac)).toEqual(["ac-3"]);
-      expect(calls.referee[0]!.o).toMatchObject({ model: MODEL, temperature: 0, schemaName: "referee" });
+      expect(calls.referee[0]!.o).toMatchObject({ model: REFEREE_MODEL, temperature: 0, schemaName: "referee" });
       expect(calls.referee[0]!.o.messages[1]!.content).toContain(PATCH["ac-3"]!);
       const all = await readEvents(p.ledgerFile);
       expect(all.find((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({
@@ -669,6 +672,14 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(calls.evolve[0]!.because).toContain(said.input);
       expect(calls.evolve[0]!.because).not.toContain(SLIP["ac-3"]!.inputs);
       expect(calls.evolve[0]!.because).toContain(SLIP["ac-3"]!.behaviour);
+    });
+
+    it("asks on `breaker.refereeModel`, which a project may set apart from the breaker's model", async () => {
+      await setup({ config: { breaker: { refereeModel: "claude-haiku-5-5" } } });
+      const { deps, io, calls } = fakes({ mutantRun: survives3 });
+      await runFalsify(p, deps, io, log);
+      expect(calls.referee.map((c) => c.o.model)).toEqual(["claude-haiku-5-5"]);
+      expect(new Set(calls.chat.map((c) => c.o.model))).toEqual(new Set([MODEL]));
     });
 
     it("a survivor it does not confirm is invalid with its words: never sent to Kane, the criterion keeps its status (live demo m-ac-27-1, m-ac-20-1)", async () => {
@@ -742,7 +753,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
   describe("a survivor logged before the referee existed is judged by it first, at the start of the next pass", () => {
     const off = (reason: string) => ({ verdict: "off-target", input: "", expected: "", observed: "", reason });
-    const REF_USD = (1000 * 0.138 + 100 * 0.275) / 1e6;
+    const REF_USD = (1000 * 0.15 + 100 * 0.5) / 1e6;
     const refereeUsage = { prompt_tokens: 1000, completion_tokens: 100 };
     /** An earlier pass's survivor of ac-3 with no judgment of the referee's (that pass came before it), never sent to Kane. */
     const unjudged = () => log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"] });
@@ -760,7 +771,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       // the prompt, caps and model of a pass's referee: the criterion and its spec quote from the design, the patch from the `mutant` event
       expect(calls.referee).toHaveLength(1);
       const asked = calls.referee[0]!.o;
-      expect(asked).toMatchObject({ model: MODEL, temperature: 0, schemaName: "referee", maxTokens: REFEREE_MAX_TOKENS });
+      expect(asked).toMatchObject({ model: REFEREE_MODEL, temperature: 0, schemaName: "referee", maxTokens: REFEREE_MAX_TOKENS });
       expect(asked.messages[0]!.content).toMatch(/^You are the referee/);
       for (const part of [`AC ac-3: ${AC3.text}`, `"${AC3.cites[0]!.quote}"`, PATCH["ac-3"]!]) expect(asked.messages[1]!.content).toContain(part);
       expect(asked.messages[1]!.content).not.toContain(SLIP["ac-3"]!.behaviour);

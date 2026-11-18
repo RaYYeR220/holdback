@@ -16,8 +16,10 @@ export type HoldbackConfig = {
    * kill, the closing replay of the real build) run at once, apart from `kane.parallel` (the build
    * checks). Default 1: in the live rehearsal, replays run side by side raced Kane's own navigation to
    * the start URL and failed for no fault of the app.
+   * `refereeModel`: the model that judges a planted bug Kane's replay let through, a different family
+   * from the breaker's by default, so the two do not share one misreading (eval/referee/RESULTS.md).
    */
-  breaker: { model: string; capUsd: number; parallel: number };
+  breaker: { model: string; refereeModel: string; capUsd: number; parallel: number };
   /**
    * denyWeb: remove WebFetch/WebSearch from the agent (eval arms run without web access).
    * appendClarifications: "spec-only" appends answers to PRD.md only in the spec stage; the answers of
@@ -33,7 +35,7 @@ const DEFAULTS: HoldbackConfig = {
   agent: { kind: "claude", maxTurnsPerCall: 60 },
   // timeoutS bounds each step: Kane is killed after timeoutS x steps (+30 s), so a hang costs minutes, not an hour (M14)
   kane: { parallel: 3, timeoutS: 120, designMax: 5, capCredits: null },
-  breaker: { model: "deepseek-v4-flash", capUsd: 2, parallel: 1 },
+  breaker: { model: "deepseek-v4-flash", refereeModel: "z-ai-glm-5-3-flash", capUsd: 2, parallel: 1 },
   loop: { maxTurns: 15, appendClarifications: "always" },
 };
 

@@ -853,7 +853,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       if (v.verdict !== "survived" && v.verdict !== "survived-by-heal") return { ...v, set: {} };
       if (recheck?.referee?.confirmed && patch === recheck.patch) return { ...v, set: {} };
       try {
-        const f = await refereeMutant(ac, patch, { model: p.config.breaker.model, apiKey, budget, chat: deps.chat });
+        const f = await refereeMutant(ac, patch, { model: p.config.breaker.refereeModel, apiKey, budget, chat: deps.chat });
         usd += f.usd;
         const referee = recordOf(f);
         const why = refereeNote(f);
@@ -1462,7 +1462,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       if (!ac) continue;
       const said = (outcome: "rejected" | "confirmed" | "unanswered", why: string) => void (out.rejudged ??= []).push({ ac: m.ac, mutant: m.id, outcome, why });
       try {
-        const f = await refereeMutant(ac, m.patch, { model: p.config.breaker.model, apiKey, budget, chat: deps.chat });
+        const f = await refereeMutant(ac, m.patch, { model: p.config.breaker.refereeModel, apiKey, budget, chat: deps.chat });
         out.usd += f.usd;
         const e = rejudgedEvent(m, f);
         await emit(e);

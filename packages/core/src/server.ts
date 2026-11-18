@@ -201,7 +201,7 @@ function configSummary(p: Project) {
     start: { port: c.start.port, readyPath: c.start.readyPath },
     agent: { model: c.agent.model ?? null },
     kane: { parallel: c.kane.parallel, timeoutS: c.kane.timeoutS, designMax: c.kane.designMax, capCredits: c.kane.capCredits ?? null },
-    breaker: { model: c.breaker.model, capUsd: c.breaker.capUsd, parallel: c.breaker.parallel },
+    breaker: { model: c.breaker.model, refereeModel: c.breaker.refereeModel, capUsd: c.breaker.capUsd, parallel: c.breaker.parallel },
     loop: { maxTurns: c.loop.maxTurns },
   };
 }

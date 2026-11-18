@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, stat, symlink } from "node:fs/promises";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { loadProject, seal, checkSeal, sealRecordings, checkRecordings } from "../src/index.js";
+import { loadProject, seal, checkSeal, sealRecordings, checkRecordings, PRICES } from "../src/index.js";
 
 let tmp: string;
 let prevHome: string | undefined;
@@ -79,9 +79,16 @@ describe("loadProject", () => {
       start: { cmd: "npm start", port: 3100, readyPath: "/" },
       agent: { kind: "claude", maxTurnsPerCall: 60 },
       kane: { parallel: 3, timeoutS: 120, designMax: 5, capCredits: null },
-      breaker: { model: "deepseek-v4-flash", capUsd: 2, parallel: 1 },
+      breaker: { model: "deepseek-v4-flash", refereeModel: "z-ai-glm-5-3-flash", capUsd: 2, parallel: 1 },
       loop: { maxTurns: 15, appendClarifications: "always" },
     });
+  });
+
+  it("defaults the referee to a priced model of another family than the breaker's (eval/referee/RESULTS.md)", async () => {
+    const { breaker } = (await loadProject(await mkApp("r"))).config;
+    expect(breaker.refereeModel).not.toBe(breaker.model);
+    expect(breaker.refereeModel.split("-")[0]).not.toBe(breaker.model.split("-")[0]);
+    expect(PRICES[breaker.refereeModel]).toBeDefined();
   });
 
   it("deep-merges user config over defaults", async () => {
