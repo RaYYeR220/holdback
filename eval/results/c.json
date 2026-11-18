@@ -1,0 +1,213 @@
+{
+  "arm": "C",
+  "appDir": "holdback-pantry",
+  "head": "aad35d5",
+  "today": "2026-11-19",
+  "now": "08:00",
+  "examTotal": 22,
+  "examPassed": 22,
+  "inconclusive": 0,
+  "kaneCredits": 1009.0009,
+  "perRunCredits": 897.8251,
+  "scoredAt": "2026-11-18T11:21:59.396Z",
+  "cases": [
+    {
+      "id": "e-01",
+      "file": "e-01-one-person-at-monthly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 21.9237,
+      "durationS": 85.762
+    },
+    {
+      "id": "e-02",
+      "file": "e-02-one-person-over-monthly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 20.4063,
+      "durationS": 89.949
+    },
+    {
+      "id": "e-03",
+      "file": "e-03-one-person-at-weekly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 24.2418,
+      "durationS": 97.524
+    },
+    {
+      "id": "e-04",
+      "file": "e-04-one-person-over-weekly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 24.8269,
+      "durationS": 79.15
+    },
+    {
+      "id": "e-05",
+      "file": "e-05-one-person-every-two-weeks-over_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 19.6312,
+      "durationS": 76.023
+    },
+    {
+      "id": "e-06",
+      "file": "e-06-one-person-every-two-weeks-under_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 21.2588,
+      "durationS": 81.74
+    },
+    {
+      "id": "e-07",
+      "file": "e-07-eight-person-at-monthly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 23.1892,
+      "durationS": 100.362
+    },
+    {
+      "id": "e-08",
+      "file": "e-08-nine-person-at-monthly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 21.8499,
+      "durationS": 84.978
+    },
+    {
+      "id": "e-09",
+      "file": "e-09-nine-person-over-monthly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 20.0958,
+      "durationS": 79.792
+    },
+    {
+      "id": "e-10",
+      "file": "e-10-ten-person-at-yearly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 22.0844,
+      "durationS": 91.638
+    },
+    {
+      "id": "e-11",
+      "file": "e-11-ssi-eligible-regardless-of-income_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 20.8057,
+      "durationS": 82.843
+    },
+    {
+      "id": "e-12",
+      "file": "e-12-medicaid-eligible-regardless-of-income_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 21.8709,
+      "durationS": 85.845
+    },
+    {
+      "id": "e-13",
+      "file": "e-13-zip-19103-outside-service-area_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 21.5774,
+      "durationS": 85.402
+    },
+    {
+      "id": "e-14",
+      "file": "e-14-second-visit-same-month-refused_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 50.2085,
+      "durationS": 165.484
+    },
+    {
+      "id": "e-15",
+      "file": "e-15-visit-next-month-allowed_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 47.702,
+      "durationS": 162.685
+    },
+    {
+      "id": "e-16",
+      "file": "e-16-full-visit-time-refused_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 195.1393,
+      "durationS": 662.758
+    },
+    {
+      "id": "e-17",
+      "file": "e-17-proxy-on-volunteer-list_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 40.2605,
+      "durationS": 127.829
+    },
+    {
+      "id": "e-18",
+      "file": "e-18-mark-picked-up-moves-visit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 56.6311,
+      "durationS": 162.668
+    },
+    {
+      "id": "e-19",
+      "file": "e-19-snap-outside-service-area_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 22.6789,
+      "durationS": 93.465
+    },
+    {
+      "id": "e-20",
+      "file": "e-20-four-person-at-weekly-limit_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 20.1389,
+      "durationS": 80.457
+    },
+    {
+      "id": "e-21",
+      "file": "e-21-three-person-every-two-weeks-over_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 20.1132,
+      "durationS": 86.055
+    },
+    {
+      "id": "e-22",
+      "file": "e-22-sixth-household-fits_test.md",
+      "status": "passed",
+      "passed": true,
+      "healTriggered": false,
+      "credits": 161.1907,
+      "durationS": 535.534
+    }
+  ]
+}

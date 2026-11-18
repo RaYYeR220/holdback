@@ -1,0 +1,25 @@
+{
+  "arm": "A",
+  "appDir": "arm-a",
+  "model": "opus",
+  "calls": 1,
+  "retries": 0,
+  "turns": 18,
+  "agentUsd": 0.71,
+  "breakerUsd": 0,
+  "wallMin": 3.02,
+  "claimedDone": true,
+  "stopReason": "done",
+  "kaneCredits": 0,
+  "head": "cf3cb43",
+  "dirty": false,
+  "prdSha256": "616f975d600b9c968b5a6f5a968cd38b0761f869a28fe09953b395d721100dc5",
+  "stackSha256": "bfa02f18cfe7a65a234226eff725f3d88acaa005b80ef124220aef1267cc191b",
+  "caps": {
+    "maxCalls": 3,
+    "maxTurnsPerCall": 60,
+    "timeoutMs": 5400000,
+    "maxRetries": 6
+  },
+  "recordedAt": "2026-11-18T07:11:56.165Z"
+}

@@ -1,0 +1,43 @@
+{
+  "A": {
+    "examPassed": 22,
+    "examTotal": 22,
+    "inconclusive": 0,
+    "claimedDone": true,
+    "turns": 18,
+    "kaneCredits": 0,
+    "agentUsd": 0.71,
+    "breakerUsd": 0,
+    "wallMin": 3.02,
+    "stopReason": "done"
+  },
+  "B": {
+    "examPassed": 22,
+    "examTotal": 22,
+    "inconclusive": 0,
+    "claimedDone": true,
+    "turns": 22,
+    "kaneCredits": 65,
+    "agentUsd": 0.93,
+    "breakerUsd": 0,
+    "wallMin": 11.75,
+    "stopReason": "done",
+    "assuranceCallsUsed": 0
+  },
+  "C": {
+    "examPassed": 22,
+    "examTotal": 22,
+    "inconclusive": 0,
+    "claimedDone": false,
+    "turns": 218,
+    "kaneCredits": 5135.54,
+    "agentUsd": 6.37,
+    "breakerUsd": 0.03,
+    "wallMin": 2268.16,
+    "stopReason": "holdback",
+    "specCredits": 98.4,
+    "specMinutes": 81.03,
+    "kaneUnmeasured": 0,
+    "turnsWithoutCost": 0
+  }
+}
