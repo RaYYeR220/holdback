@@ -172,8 +172,15 @@ function recentChanges(events: LedgerEvent[]): string[] {
  * count; the Kane credit cap still bounds them all.
  */
 export const MAX_EVOLVES = 2;
-/** The longest `--because` Holdback sends Kane. */
+/** The longest `--because` Holdback sends Kane, unless one whole account alone is longer. */
 const MAX_BECAUSE = 1500;
+/**
+ * The longest `--because` Kane's command line can take: Windows caps a whole command line at 32,767
+ * characters (Holdback runs Kane with no shell), and the rest of the argv is short.
+ */
+export const KANE_ARG_MAX = 30_000;
+/** Why a survivor stays vacuous when even one whole account of it is longer than Kane's command line takes. */
+export const TOO_LONG = "the account of what slipped is too long to hand Kane whole";
 /** Why a survivor stays vacuous when Kane's evolve adds no test (plain words, for the human). */
 export const NO_TEST = "Kane could not add a test that catches this planted bug";
 /** Why a criterion an evolve left without a test needs the spec. */
@@ -211,45 +218,36 @@ function questionText(qs: { text: string }[]): string {
 /** What Kane is told about one survivor. */
 type Told = Pick<Survivor, "ac" | "patch" | "rationale" | "slip" | "referee">;
 
-/** At most `max` characters, cut at a word boundary and marked with an ellipsis when longer. */
-function shortened(s: string, max: number): string {
-  if (s.length <= max) return s;
-  const cut = s.slice(0, Math.max(1, max - 1));
-  const at = cut.lastIndexOf(" ");
-  return `${(at > max / 2 ? cut.slice(0, at) : cut).trimEnd()}…`;
-}
-
 /**
- * One survivor as Kane is told it: in full (the criterion's text, what a user sees go wrong), or
- * short (the criterion by id, the inputs and the two results); `fieldMax` shortens each field a model
- * wrote, the last resort when one short account alone is over the limit.
+ * One survivor as Kane is told it, always whole: in full (the criterion's text, what a user sees go
+ * wrong), or short (the criterion by id, the inputs and the two results).
  */
-function account(s: Told, short: boolean, fieldMax?: number): string {
+function account(s: Told, short: boolean): string {
   const head = short ? s.ac.id : `${s.ac.id} ("${s.ac.text}")`;
-  const f = (x: string) => (fieldMax === undefined ? x : shortened(oneLine(x), fieldMax));
   const r = s.referee?.confirmed ? { inputs: s.referee.input, expected: s.referee.expected, observed: s.referee.observed } : s.slip;
   if (r) {
     const behaviour = !short && s.slip?.behaviour ? `${s.slip.behaviour} ` : "";
-    return oneLine(`${head}: ${behaviour}With ${f(r.inputs)}, the page should show ${f(r.expected)}, but it showed ${f(r.observed)}.`);
+    return oneLine(`${head}: ${behaviour}With ${r.inputs}, the page should show ${r.expected}, but it showed ${r.observed}.`);
   }
   const changed = s.patch
     .split("\n")
     .filter((l) => /^[-+]/.test(l) && !/^(---|\+\+\+) /.test(l))
     .slice(0, 8)
     .join(" | ");
-  return oneLine(`${head}: ${f(s.rationale || "a planted change")}. The planted change: ${f(changed)}.`);
+  return oneLine(`${head}: ${s.rationale || "a planted change"}. The planted change: ${changed}.`);
 }
 
 /**
  * What Kane is told slipped through (R40): each surviving bug in a user's terms, the inputs that show
  * it, and what the page should show against what it showed: the referee's confirmed account (checked
  * against the criterion and its spec quotes), else the breaker's own (else its rationale and the lines
- * it changed). Kane is the verifier and may see it; the builder never does. Never cut mid-text (live,
- * Kane asked what the cut-off end meant): over `limit`, fewer whole accounts, and it says how many
- * were left out; then the short form of each; only when one short account alone is over the limit
- * are its fields shortened, each marked with an ellipsis.
+ * it changed). Kane is the verifier and may see it; the builder never does. Never cut (live, Kane
+ * asked what the cut-off end meant): within `limit`, the whole accounts that fit, in order, and how
+ * many were left out; then the same in the short form; when no account fits alone, the first one
+ * whole, as long as Kane's command line takes it (`hardLimit`). Undefined when not even that fits:
+ * the account is too long to hand Kane whole.
  */
-export function becauseText(list: Told[], limit = MAX_BECAUSE): string {
+export function becauseText(list: Told[], limit = MAX_BECAUSE, hardLimit = KANE_ARG_MAX): string | undefined {
   const n = list.length;
   if (n === 0) return "";
   const intro = n === 1 ? "A planted bug got past every test of this use case." : `${n} planted bugs got past every test of this use case.`;
@@ -260,17 +258,15 @@ export function becauseText(list: Told[], limit = MAX_BECAUSE): string {
     return oneLine(`${intro}${note} ${parts.join(" ")} Add a test that catches ${k === 1 ? "it" : "each"}.`);
   };
   for (const short of [false, true]) {
-    const parts = list.map((s) => account(s, short));
-    for (let k = n; k >= 1; k--) {
-      const t = compose(parts.slice(0, k));
-      if (t.length <= limit) return t;
-    }
+    const chosen: string[] = [];
+    for (const one of list.map((s) => account(s, short))) if (compose([...chosen, one]).length <= limit) chosen.push(one);
+    if (chosen.length > 0) return compose(chosen);
   }
-  for (let max = 400; max >= 20; max -= 20) {
-    const t = compose([account(list[0]!, true, max)]);
-    if (t.length <= limit) return t;
+  for (const short of [false, true]) {
+    const t = compose([account(list[0]!, short)]);
+    if (t.length <= hardLimit) return t;
   }
-  return shortened(compose([account(list[0]!, true, 20)]), limit);
+  return undefined;
 }
 
 /** The least room the account of what slipped through gets in a follow-up's reason. */
@@ -280,18 +276,21 @@ const MIN_ROOM = 500;
  * The follow-up evolve's reason (R40): the criteria the first evolve left without a test, to cover
  * again, and the account of what slipped through, both whole, within `limit`: the criteria with their
  * text, else by id, else the first ones by id and how many more; the account gets the rest
- * (`becauseText`).
+ * (`becauseText`). Undefined when the account is too long to hand Kane whole.
  */
-export function coverText(left: { id: string; text: string }[], list: Told[], limit = MAX_BECAUSE): string {
+export function coverText(left: { id: string; text: string }[], list: Told[], limit = MAX_BECAUSE): string | undefined {
   const glue = ", and keep a test that catches what slipped through before: ";
   const heads = [`cover ${left.map((a) => `${a.id} ("${a.text}")`).join(", ")} again`, `cover ${left.map((a) => a.id).join(", ")} again (criteria of this use case, by id)`];
   for (let k = left.length - 1; k >= 1; k--) heads.push(`cover ${left.slice(0, k).map((a) => a.id).join(", ")} and the other ${left.length - k} criteria of this use case without a test again`);
-  for (const head of heads) {
+  heads.push("cover this use case's criteria without a test again");
+  for (const [i, head] of heads.entries()) {
     const h = oneLine(head);
     const room = limit - h.length - glue.length;
-    if (room >= MIN_ROOM) return `${h}${glue}${becauseText(list, room)}`;
+    if (room < MIN_ROOM && i < heads.length - 1) continue;
+    const b = becauseText(list, room, KANE_ARG_MAX - h.length - glue.length);
+    return b === undefined ? undefined : `${h}${glue}${b}`;
   }
-  return shortened(`cover this use case's criteria without a test again${glue}${becauseText(list, limit - 120)}`, limit);
+  return undefined;
 }
 
 /**
@@ -1028,9 +1027,11 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       return undefined;
     };
     if (spent >= MAX_EVOLVES) return giveUp(`Kane already evolved ${uc} ${MAX_EVOLVES} times in this run`, 0, EVOLVE_BOUND);
+    // never cut: an account Kane's command line cannot take whole is not handed to Kane at all
+    const because = becauseText(list);
+    if (because === undefined) return giveUp(TOO_LONG, 0, TOO_LONG);
     // R44: only this survivor-triggered evolve counts toward the run's bound; its follow-up does not
     evolves.set(uc, spent + 1);
-    const because = becauseText(list);
     // the verifier before any evolve of this use case: what an evolve that cannot be sealed goes back to
     const ucCopy = await copySealed(p);
     const first = await evolveOnce(uc, because, list);
@@ -1045,9 +1046,10 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     if (left.length > 0) {
       // measured as the ledger will be once this evolve is logged
       const capped = capCredits !== undefined && reduce([...events, ...(out_ as LedgerEvent[])]).kaneCredits >= capCredits;
+      const cover = capped ? undefined : coverText(left, list);
       if (capped) why = `${UNCOVERED}; no follow-up evolve: the Kane credit cap is reached`;
+      else if (cover === undefined) why = `${UNCOVERED}; no follow-up evolve: ${TOO_LONG}`;
       else {
-        const cover = coverText(left, list);
         // the follow-up may retire what the first evolve minted, as it may the sealed tests
         const minted1 = g.tests.filter((t) => first.minted.includes(t.id));
         // at the cap the follow-up never starts (m-1): the first evolve stands

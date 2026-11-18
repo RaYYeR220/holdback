@@ -14,7 +14,7 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
-import { becauseText, coverText, falsifyVerdict, killsAc, pendingRecheck, runFalsify, unevolvedSurvivors, type FalsifyDeps } from "../src/loop/falsify.js";
+import { becauseText, coverText, falsifyVerdict, KANE_ARG_MAX, TOO_LONG, killsAc, pendingRecheck, runFalsify, unevolvedSurvivors, type FalsifyDeps } from "../src/loop/falsify.js";
 import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -1420,6 +1420,21 @@ describe("runFalsify", { timeout: 60_000 }, () => {
     expect(tl.indexOf("falsify.evolved")).toBeLessThan(tl.indexOf("redesign.dropped"));
   });
 
+  it("a survivor whose account is too long to hand Kane whole is never cut: its evolve is skipped with the reason, and it stays vacuous", async () => {
+    const giant: Slip = { ...SLIP["ac-3"]!, inputs: "household size 1 ".repeat(3000) };
+    // a survivor an earlier pass logged (before the referee) but never got to Kane
+    await setup({ before: async () => void (await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: giant })) });
+    const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
+    const r = await runFalsify(p, deps, io, log);
+    expect(r).toMatchObject({ killed: ["ac-1"], vacuous: ["ac-3"], redesigned: [], reason: "done" });
+    expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-3"], why: TOO_LONG }]);
+    expect(calls.evolve).toEqual([]);
+    const all = await readEvents(p.ledgerFile);
+    expect(all.find((e) => e.t === "redesign.dropped")).toMatchObject({ useCases: ["uc-1"], credits: 0, acs: ["ac-3"], reason: TOO_LONG });
+    expect(reduce(all).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: TOO_LONG });
+    expect(TOO_LONG).toBe("the account of what slipped is too long to hand Kane whole");
+  });
+
   describe("Kane disputes a planted bug: its evolve pauses on a question, which Holdback never answers", () => {
     const Q = "For a household of one with $2,461 monthly income, should the result be Eligible. as the published at-or-below rule says, or Not eligible. as the bug report says?";
     const paused = (credits: number, ...texts: string[]): EvolveResult => ({
@@ -2205,7 +2220,7 @@ describe("what Kane is told (--because): never cut mid-text", () => {
 
   it("the demo's four uc-1 survivors, cut at 1,500 characters mid-sentence live, now go as whole accounts with the count of those left out", () => {
     const uc1 = ["m-ac-26-1", "m-ac-27-1", "m-ac-36-1", "m-ac-37-1"].map((id) => survivor(LIVE.find((l) => l.mutant === id)!));
-    const t = becauseText(uc1);
+    const t = becauseText(uc1)!;
     expect(t.length).toBeLessThanOrEqual(1500);
     expect(t).not.toMatch(/…/);
     expect(t.startsWith("4 planted bugs got past every test of this use case.")).toBe(true);
@@ -2220,34 +2235,47 @@ describe("what Kane is told (--because): never cut mid-text", () => {
   });
 
   it("all of them when they fit, with no note", () => {
-    const t = becauseText([long("ac-1", 1), long("ac-2", 1)]);
+    const t = becauseText([long("ac-1", 1), long("ac-2", 1)])!;
     expect(t).toContain('ac-1 ("');
     expect(t).toContain('ac-2 ("');
     expect(t).not.toContain("left out");
   });
 
-  it("an account too long on its own goes in its short form, the criterion by id; shortened fields only as a last resort, marked", () => {
+  it("an account too long on its own goes in its short form, the criterion by id; still too long, that one account goes whole, never cut, while Kane's command line can take it", () => {
     const one = long("ac-7", 60);
-    const t = becauseText([one]);
+    const t = becauseText([one])!;
     expect(t.length).toBeLessThanOrEqual(1500);
     expect(t).toBe(`A planted bug got past every test of this use case. ac-7: With ${one.slip.inputs}, the page should show Eligible., but it showed Not eligible.. Add a test that catches it.`);
-    const huge = { ...one, slip: { ...one.slip, inputs: "x ".repeat(2000) } };
-    const h = becauseText([huge]);
-    expect(h.length).toBeLessThanOrEqual(1500);
-    expect(h).toMatch(/…/);
+    // over the 1,500-character limit in every form: the whole accounts that fit go, the rest are counted
+    const huge = { ...one, slip: { ...one.slip, inputs: `household size 1 ${"and ".repeat(1000)}income $2,462` } };
+    const both = becauseText([huge, long("ac-8", 1)])!;
+    expect(both.length).toBeLessThanOrEqual(1500);
+    expect(both).toContain('ac-8 ("');
+    expect(both).not.toContain("ac-7");
+    expect(both).toContain("the other 1 is left out of this message on purpose");
+    // none fits: the first account alone, whole
+    const h = becauseText([huge])!;
+    expect(h.length).toBeGreaterThan(1500);
+    expect(h.length).toBeLessThanOrEqual(KANE_ARG_MAX);
+    expect(h).not.toMatch(/…/);
+    expect(h).toContain(`With ${huge.slip.inputs}, the page should show Eligible., but it showed Not eligible..`);
     expect(h.endsWith("Add a test that catches it.")).toBe(true);
+    // over what Kane's command line takes: nothing to send
+    const giant = { ...one, slip: { ...one.slip, inputs: "x ".repeat(KANE_ARG_MAX) } };
+    expect(becauseText([giant])).toBeUndefined();
+    expect(coverText([{ id: "ac-1", text: "t" }], [giant])).toBeUndefined();
   });
 
   it("the follow-up names every criterion it must cover again, and the account of what slipped through stays whole (live demo uc-3: it ended on an unfinished “ac”)", () => {
     const left = Array.from({ length: 21 }, (_, i) => ({ id: `ac-${i + 1}`, text: `A visit time with six visits remains listed with the suffix ' — Full' (${i + 1}).` }));
     const s20 = survivor(LIVE.find((l) => l.mutant === "m-ac-20-1")!);
-    const t = coverText(left, [s20]);
+    const t = coverText(left, [s20])!;
     expect(t.length).toBeLessThanOrEqual(1500);
     for (const a of left) expect(t).toMatch(new RegExp(`${a.id}(?!\\d)`));
     expect(t).toContain(`With ${s20.slip!.inputs}, the page should show ${s20.slip!.expected}, but it showed ${s20.slip!.observed}.`);
     expect(t.endsWith("Add a test that catches it.")).toBe(true);
     // short enough, the criteria keep their text
-    const few = coverText(left.slice(0, 2), [s20]);
+    const few = coverText(left.slice(0, 2), [s20])!;
     expect(few.startsWith(`cover ac-1 ("${left[0]!.text}"), ac-2 ("${left[1]!.text}") again`)).toBe(true);
   });
 });
