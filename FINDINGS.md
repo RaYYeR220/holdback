@@ -25,8 +25,9 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 ## 4. The graph view renders gap titles as `[object Object]`
 
 - **Seen:** the three gap nodes of `context view --json` have `"title":"[object Object]"`, and so does their rendered panel (`packages/core/test/fixtures/kane/context-view.json`).
-- **Holdback now:** shows the gap's id instead (the ledger's `design` event: gap-1 to gap-3).
-- **Suggestion:** render the gap's text.
+- **What it means:** the gap's content is an object. Kane keeps it in its own store, in the commit that minted the gap and in `.context/derived/nodes/<2>/<rest of the cid>.json`: `kind` (`budget-evicted`, `incomplete`, `invariant-unexercised`), the use case's cid, and `question: {header, prompt, options}`, its options as `{label, detail}` objects in one run and as plain strings in another (`packages/core/test/fixtures/kane/context-commits/`).
+- **Holdback now:** reads each gap's kind and question from Kane's store, keeps a design's gaps to its own use case, prints them after `holdback spec` and shows them on the dashboard; a gap the store says nothing about keeps its id (the first live run's `design` event: gap-1 to gap-3) (`packages/core/src/kane/assurance.ts`, `packages/core/test/assurance.test.ts`).
+- **Suggestion:** render the gap's header and question as its title, and document the gap kinds.
 
 ## 5. `--answer q=<label>` is accepted when free text is not allowed
 
@@ -98,5 +99,19 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 - **What it means:** one verdict is not enough to call a planted bug caught: an automation verdict can hide a real catch, and an application verdict can come from the replay itself.
 - **Holdback now:** a planted bug counts as caught only when the failing replay's family is `application_issue` on the attacked criterion and a second replay of the same test, on the same planted bug started afresh, fails it again (`killsAc` and the second replay in `packages/core/src/loop/falsify.ts`). Disagreement is inconclusive: never a catch, never a miss. The second replay weeds out a flaky verdict, not a repeatable one: an error Kane makes again on a fresh start (m-ac-8-2's step order replays the same recording, so it would likely recur) still counts as a catch. A replay that fails is billed for Kane's verdict (2.9998 credits for the m-ac-7-1 catch, line 24), so the second replay of a catch costs about as much again.
 - **Suggestion:** an exact-text mode for label assertions, and the step order in a verdict's evidence, so a caller can tell a replay that skipped a step.
+
+## 15. Variables `design tests` leaves empty are sealed and run as they are, unless the caller fills them
+
+- **Seen:** in the second live run (2026-11-17, the pantry spec with bookings), `design tests` declared 12 owner-supplied variables in `.testmuai/variables/assurance.json` with an empty `value` and a description of what goes there: `primary_phone` ("Unused ten-digit household test phone, supplied as digits only"), `primary_phone_formatted` ("Same ten digits as primary_phone with permitted punctuation in a different format"), `proxy_name`, `slot_phone_1` to `slot_phone_7` ("Distinct unused ten-digit phone for full-slot household N"), `invalid_phone` ("Test phone input consisting of exactly nine digits") and `spare_phone` (`packages/core/test/fixtures/kane/variables-declared-empty.json`, as Kane wrote it; Holdback had filled `start_url`). Its `incomplete` gaps said the same: "Leave {{slot_phone_1}} through {{slot_phone_7}} for the owner to fill". Nothing stopped a caller from sealing and running the tests as they were: Holdback filled only `start_url`, and 11 of the 22 tests failed with an `automation_bug` verdict, typing empty values. The human then filled the file by hand.
+- **What it means:** a design is not runnable until someone fills its variables, and neither `design tests` nor `testmd run` says so; the run fails as Kane's own automation, so a loop records it as inconclusive, never as the app's failure, and pays for it on every turn.
+- **Holdback now:** never seals a test that types an empty variable. In `holdback spec` and `holdback drift` it asks the human for each, with a test value it derives from the description (a distinct `215555` number for each phone, the same digits punctuated for a "formatted" one, nine digits for "nine digits", a test name for a person's name); a secret is asked for with no suggestion. After Kane's evolve it writes those suggestions itself, or, for a secret or a variable it has no suggestion for, does not seal the evolve (`packages/core/src/loop/variables.ts`, `spec.ts`, `drift.ts`, `falsify.ts`; `packages/core/test/variables.test.ts`, `spec.test.ts`, `drift.test.ts`, `falsify.test.ts`).
+- **Suggestion:** fail `testmd run` before it starts when a variable a test uses is empty, and let `design tests` propose fixture values (or say in its summary which variables the owner must fill).
+
+## 16. On Windows an `@import` can be written as an absolute path after `./`
+
+- **Seen:** in the second live run, Kane 0.10.4 on Windows designed a test that imports another as `@import ./C:\Users\…\verifier\.testmuai\tests\book-an-available-visit-and-confirm-proxy-and-schedule_test.md`: the absolute path of the imported test joined after `./` (`packages/core/test/fixtures/kane/import-absolute-windows_test.md`, its home path renamed). `testmd run` stopped on it with "@import path not found". The human changed the line to `@import ./book-an-available-visit-and-confirm-proxy-and-schedule_test.md`, the file next to it.
+- **What it means:** a test that imports another may never run on Windows, whatever the app does.
+- **Holdback now:** in `holdback spec`, before the human approves the tests, records (`spec.repaired`) and then rewrites such an import to the file of that name in the tests folder, and shows it on the test in the approval; one it cannot repair that way, and any import that resolves to no file, is flagged there (`packages/core/src/loop/imports.ts`, `packages/core/test/variables.test.ts`).
+- **Suggestion:** write imports relative to the test's folder (`path.relative`, with `/`), and check that each import resolves when the design is committed.
 
 Not filed upstream yet.

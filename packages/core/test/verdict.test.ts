@@ -32,6 +32,54 @@ describe("verdict", () => {
     });
   });
 
+  it("a stalled run says which of Kane's reports are disputed and which runs proved nothing, and what falsify did with the gate shut; Kane's own seal keeps the stall, a turn that changes code ends it (R48, live demo)", () => {
+    const at = "2026-11-17T10:00:00.000Z";
+    const design: LedgerEvent = {
+      at,
+      t: "design",
+      useCase: "uc-1",
+      acs: ["ac-1", "ac-2"].map((id) => ({ id, text: id, useCase: "uc-1", cites: [], trust: "derived" })),
+      tests: [
+        { id: "t-1", title: "one", file: "t1.md", verifies: ["ac-1"] },
+        { id: "t-2", title: "two", file: "t2.md", verifies: ["ac-2"] },
+      ],
+      gaps: [],
+      credits: 0,
+    };
+    const run = (test: string, status: "passed" | "failed"): LedgerEvent => ({
+      at,
+      t: "run",
+      kind: "build",
+      turn: 1,
+      result: { testFile: `${test}.md`, testId: test, status, steps: [], criteriaPassed: [], criteriaFailed: [], credits: 0, replayDecisions: 0, authorDecisions: 0, healTriggered: false, durationS: 1, ...(status === "failed" ? { verdict: { bugTitle: "No volunteer link" } } : {}) },
+    });
+    const events: LedgerEvent[] = [
+      design,
+      { at, t: "seal", manifest: {} },
+      run("t-1", "passed"),
+      run("t-2", "failed"),
+      { at, t: "build.stalled", turns: [2, 3], disputed: [{ ac: "ac-2", test: "t-2", title: "No volunteer link" }], inconclusive: [{ test: "t-9", reason: "timeout" }] },
+      // Kane's seal after an evolve in the falsify pass that follows keeps the stall's names (M2)
+      { at, t: "seal", manifest: {}, by: "kane" },
+      {
+        at,
+        t: "run.end",
+        stop: "stalled",
+        exit: 3,
+        detail: "Falsified 1 passing criterion (1 proved, 0 vacuous, 0 skipped on budget); the gate stays shut: …",
+        falsified: { criteria: 1, proved: 1, vacuous: 0, skipped: 0 },
+      },
+    ];
+    const v = verdict(reduce(events));
+    const stall = "the run stalled after 2 unchanged turns: Kane's report on ac-2 disputed, review it; 1 Kane run inconclusive";
+    expect(v).toMatchObject({ released: false, exit: 3, headline: `Held back — 1/2 green, 1 owed, falsified 1 passing criterion (1 proved, 0 vacuous, 0 skipped on budget), ${stall}` });
+    expect(v.stops).toEqual([stall]);
+    // a human re-seal or a drift's seal re-plans the tests: the stall is over; so is a turn that changes code
+    expect(reduce([...events, { at, t: "seal", manifest: {} }]).stalled).toBeUndefined();
+    const after = reduce([...events, { at, t: "turn.start", n: 4, owed: ["ac-2"] }, { at, t: "turn.end", n: 4, commit: "def", filesChanged: ["src/app.js"], durationMs: 1, appUp: true, agentExit: 0 }]);
+    expect(after.stalled).toBeUndefined();
+  });
+
   it("is released only when every criterion not turned down is proved or passing and the gate is open", () => {
     const v = verdict(state([ac("ac-1", "proved"), ac("ac-2", "passing"), ac("ac-3", "rejected", [])]));
     expect(v).toMatchObject({ state: "released", released: true, word: "Released", headline: "Released — 2/2 green, 1/2 proved", exit: 0 });

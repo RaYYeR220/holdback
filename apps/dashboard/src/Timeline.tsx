@@ -1,4 +1,4 @@
-import { fmtClock, fmtCredits, fmtDuration, fmtUsd, type Item, type Segment } from "./model";
+import { fmtClock, fmtCredits, fmtDuration, fmtUsd, turnsText, type Item, type Segment } from "./model";
 import { Ring, Thumb, runVerdict } from "./ui";
 
 function Glyph({ item }: { item: Item }) {
@@ -16,6 +16,7 @@ function Glyph({ item }: { item: Item }) {
     case "tamper":
     case "regression":
     case "stopped":
+    case "stalled":
       return <i className="g g-alarm" aria-hidden="true" />;
     default:
       return <Ring status="needs-spec" />;
@@ -140,6 +141,15 @@ function Row({ item, live }: { item: Item; live: boolean }) {
     case "stopped":
       title = `The run stopped (exit ${item.exit}): held back`;
       detail = item.detail ?? item.reason;
+      break;
+    case "stalled":
+      title = `The build loop stalled: ${turnsText(item.turns)} changed nothing on code Kane had checked`;
+      detail = [
+        item.disputed.length > 0 ? `disputed, review them: ${item.disputed.map((d) => `${d.ac} (${d.test}): “${d.title}”`).join(" · ")}` : null,
+        item.inconclusive.length > 0 ? `inconclusive: ${item.inconclusive.map((u) => `${u.test}: ${u.reason}`).join(" · ")}` : null,
+      ]
+        .filter(Boolean)
+        .join(" — ");
       break;
     case "dropped":
       title = `Kane's change rolled back (${item.useCases.join(", ")})`;

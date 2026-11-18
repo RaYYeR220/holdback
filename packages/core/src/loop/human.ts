@@ -3,12 +3,23 @@ import { createInterface, type Interface } from "node:readline";
 import type { PendingQuestion } from "../kane/assurance.js";
 import { escapeControls } from "../text.js";
 
-export type ApprovalItem = { ref: string; title: string; kind: string };
+/** `note`: what Holdback did to the item, or found wrong with it, for the human to see as they approve (a repaired import). */
+export type ApprovalItem = { ref: string; title: string; kind: string; note?: string };
+
+/**
+ * A test variable Kane declared but left empty, which an approved test types (`{{name}}`). Holdback
+ * asks the human for its value: `suggested` is a test value Holdback derived from the description
+ * (taken as is on Enter), `placeholder` only an example the human must replace, `sameAs` the variable
+ * whose digits a formatted one repeats. A secret has neither, and its value is never shown back.
+ */
+export type VariableAsk = { name: string; description: string; secret: boolean; suggested?: string; placeholder?: string; sameAs?: string; usedBy: string[] };
 
 /** The human in the loop. No implementation approves anything on its own. */
 export interface HumanIO {
   answer(qs: PendingQuestion[]): Promise<Record<string, string>>;
   approve(items: ApprovalItem[]): Promise<string[]>;
+  /** A value for each variable, by name; "" (or a name left out) leaves it empty, which stops the spec stage before its seal. */
+  values(asks: VariableAsk[]): Promise<Record<string, string>>;
   /** A person answers at the moment (the terminal, the dashboard), not a file: a drift they approve starts a fresh spec-provenance window (I-2). */
   readonly interactive?: boolean;
 }
@@ -65,15 +76,37 @@ export class LineReader {
     rl.close();
   }
 
-  /** Writes `prompt` and returns the next line, trimmed; null when the input ended first. */
-  async ask(prompt: string): Promise<string | null> {
+  /**
+   * Writes `prompt` and returns the next line, trimmed; null when the input ended first. `muted` (a
+   * secret): on a terminal, the line is read with its echo off (raw mode, for that line only), a
+   * backspace takes back a character, and Ctrl-C stops the prompt; a line typed ahead was echoed already.
+   */
+  async ask(prompt: string, opts: { muted?: boolean } = {}): Promise<string | null> {
     this.open();
     this.output.write(prompt);
     const queued = this.lines.shift();
     if (queued !== undefined) return queued.trim();
     if (this.ended) return null;
-    const l = await new Promise<string | null>((res) => this.waiting.push(res));
-    return l === null ? null : l.trim();
+    const tty = this.input as NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (on: boolean) => unknown };
+    const mute = opts.muted === true && tty.isTTY === true && typeof tty.setRawMode === "function";
+    if (mute) tty.setRawMode!(true);
+    let l: string | null;
+    try {
+      l = await new Promise<string | null>((res) => this.waiting.push(res));
+    } finally {
+      if (mute) {
+        tty.setRawMode!(false);
+        this.output.write("\n"); // the Enter was not echoed either
+      }
+    }
+    if (l === null || !mute) return l === null ? null : l.trim();
+    let typed = "";
+    for (const c of l) {
+      if (c === "\x03") throw new Error("the prompt was interrupted (Ctrl-C)");
+      if (c === "\x7f" || c === "\b") typed = typed.slice(0, -1);
+      else typed += c;
+    }
+    return typed.trim();
   }
 }
 
@@ -122,13 +155,13 @@ export class CliHumanIO implements HumanIO {
     this.reader.release();
   }
 
-  private async ask(prompt: string): Promise<string> {
+  private async ask(prompt: string, opts: { muted?: boolean } = {}): Promise<string> {
     // the session holds the reader from its first prompt until `close`
     if (!this.holding) {
       this.holding = true;
       this.reader.hold();
     }
-    const l = await this.reader.ask(prompt);
+    const l = await this.reader.ask(prompt, opts);
     if (l === null) throw new Error("CliHumanIO: input closed before an answer was given");
     return l;
   }
@@ -153,15 +186,33 @@ export class CliHumanIO implements HumanIO {
   }
 
   async approve(items: ApprovalItem[]): Promise<string[]> {
-    this.output.write("\nApprove:\n" + escapeControls(items.map((i) => `  ${i.ref} [${i.kind}] ${i.title}`).join("\n")) + "\n");
+    this.output.write("\nApprove:\n" + escapeControls(items.map((i) => `  ${i.ref} [${i.kind}] ${i.title}${i.note ? `\n      ${i.note}` : ""}`).join("\n")) + "\n");
     const raw = await this.ask("Enter = approve all, or type ids to REJECT (space/comma separated): ");
     const reject = new Set(raw.split(/[\s,]+/).filter(Boolean));
     return items.map((i) => i.ref).filter((r) => !reject.has(r));
   }
+
+  async values(asks: VariableAsk[]): Promise<Record<string, string>> {
+    this.output.write("\nKane's tests type these values, and Kane left them empty. A test runs with exactly what you give here:\n");
+    const out: Record<string, string> = {};
+    for (const a of asks) {
+      const same = a.sameAs ? ` (same digits as ${a.sameAs})` : "";
+      this.output.write(escapeControls(`\n  {{${a.name}}} ${a.description} (used by ${a.usedBy.join(", ")})${same}`) + "\n");
+      const how = a.secret
+        ? "secret: never printed or logged; Enter leaves it empty"
+        : a.suggested !== undefined
+          ? `Enter = ${a.suggested}`
+          : `no suggestion${a.placeholder ? `, e.g. ${a.placeholder}` : ""}; Enter leaves it empty`;
+      // a secret is typed with the terminal's echo off
+      const raw = await this.ask(escapeControls(`  value (${how}): `), { muted: a.secret });
+      out[a.name] = raw === "" && !a.secret ? (a.suggested ?? "") : raw;
+    }
+    return out;
+  }
 }
 
-/** A human's scripted answers and approvals, as read (once) from their file. */
-export type HumanScript = { answers: Record<string, string>; recommended: boolean; approve: "all" | string[] };
+/** A human's scripted answers, approvals and test variable values, as read (once) from their file. */
+export type HumanScript = { answers: Record<string, string>; recommended: boolean; approve: "all" | string[]; variables: Record<string, string> };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -180,15 +231,24 @@ export function parseHumanScript(text: string, file: string): HumanScript {
   if (doc.default !== undefined && doc.default !== "recommended") throw bad(`"default" must be "recommended", got ${JSON.stringify(doc.default)}`);
   const approve = doc.approve ?? [];
   if (approve !== "all" && !(Array.isArray(approve) && approve.every((r) => typeof r === "string"))) throw bad('"approve" must be "all" or a list of ids');
-  return { answers: { ...(answers as Record<string, string>) }, recommended: doc.default === "recommended", approve: approve === "all" ? "all" : [...(approve as string[])] };
+  const variables = doc.variables ?? {};
+  if (!isRecord(variables) || Object.values(variables).some((v) => typeof v !== "string")) throw bad('"variables" must map test variable names to strings');
+  return {
+    answers: { ...(answers as Record<string, string>) },
+    recommended: doc.default === "recommended",
+    approve: approve === "all" ? "all" : [...(approve as string[])],
+    variables: { ...(variables as Record<string, string>) },
+  };
 }
 
 /**
  * Answers + approvals from a JSON file the human wrote, for reproducible runs:
- * `{ "answers": { "<question text or id>": "<answer>" }, "default": "recommended", "approve": "all" | [ids] }`.
+ * `{ "answers": { "<question text or id>": "<answer>" }, "default": "recommended", "approve": "all" | [ids], "variables": { "<name>": "<value>" } }`.
  * Kane writes its questions at run time, so `default: "recommended"` (the human's standing choice)
  * takes Kane's recommended option for any question the file does not name; without it an
- * unnamed question fails the run.
+ * unnamed question fails the run. It takes Holdback's suggested value for a test variable the file
+ * does not name, too (never for a secret, which has none); a variable with no value stays empty, and
+ * the spec stage stops before its seal.
  * The file is read and validated once, up front (`fromFile`), before any agent turn: a later
  * approval (a drift mid-run) answers from that snapshot, never from the file again.
  */
@@ -218,6 +278,11 @@ export class ScriptedHumanIO implements HumanIO {
     const { approve } = this.script;
     if (approve === "all") return items.map((i) => i.ref);
     return items.map((i) => i.ref).filter((r) => approve.includes(r));
+  }
+
+  async values(asks: VariableAsk[]): Promise<Record<string, string>> {
+    const { variables, recommended } = this.script;
+    return Object.fromEntries(asks.map((a) => [a.name, variables[a.name] ?? (recommended && !a.secret ? a.suggested : undefined) ?? ""]));
   }
 
   /** Nothing to release: the file was read once, up front. */

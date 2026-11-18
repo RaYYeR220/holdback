@@ -119,7 +119,7 @@ function Dashboard({ snap, stream, summary, live }: { snap: Snapshot; stream: st
       <main className="wrap" id="main">
         <Head snap={snap} />
         <Notices api={api} />
-        {snap.mode === "live" && live && <HumanPanel pending={api.pending} answer={live.answer} approve={live.approve} />}
+        {snap.mode === "live" && live && <HumanPanel pending={api.pending} answer={live.answer} approve={live.approve} values={live.values} />}
         <Section
           id="criteria"
           title="Criteria"

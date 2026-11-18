@@ -56,7 +56,19 @@ export type AcNode = {
   trust: string;
 };
 export type TestNode = { id: string; title: string; file: string; verifies: string[] };
-export type GapNode = { id: string; title: string; kind: string; acs: string[] };
+/**
+ * A gap Kane left in a design: what it did not cover, and why (`kind`: "budget-evicted" when the
+ * design cap left it out, "incomplete" when the sources lack what a test needs, ...), with the
+ * question Kane would ask about it. `useCase`: the use case it is about, when Kane's store says.
+ */
+export type GapNode = {
+  id: string;
+  title: string;
+  kind: string;
+  acs: string[];
+  useCase?: string;
+  question?: { header: string; prompt: string; options: { label: string; detail?: string }[] };
+};
 export type Graph = { useCases: UseCaseNode[]; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[] };
 
 export type ReconcileRow = { kind: "ADD" | "MODIFY" | "ARCHIVE" | "REMOVE"; ref: string; why: string };
@@ -532,6 +544,8 @@ export async function readGraph(cwd: string): Promise<Graph> {
 
   const derives = readDerives(cwd);
   const testFiles = readTestFiles(cwd);
+  let commitGaps: Map<string, unknown> | undefined;
+  const commitNodes = () => (commitGaps ??= readCommitGaps(cwd));
 
   // ac cid -> use case node (scoped_to edges)
   const ucOfAc = new Map<string, ViewNode>();
@@ -574,14 +588,77 @@ export async function readGraph(cwd: string): Promise<Graph> {
           verifies: tf && tf.verifies.length > 0 ? tf.verifies : (verifiesByTest.get(n.cid) ?? []),
         };
       }),
-    // Kane 0.10.4 renders gap titles as "[object Object]"; fall back to the id.
+    // Kane 0.10.4 renders gap titles as "[object Object]": the gap's own content (kind, question)
+    // is read from Kane's store; a gap with none falls back to its id
     gaps: nodes
       .filter((n) => n.label === "gap")
-      .map((n) => ({
-        id: n.slug,
-        title: n.title && !n.title.includes("[object Object]") ? n.title : n.slug,
-        kind: "gap",
-        acs: [],
-      })),
+      .map((n) => {
+        const c = gapContent(cwd, n.cid, commitNodes);
+        const question = c?.question;
+        const uc = c?.uc ? byCid.get(c.uc) : undefined;
+        return {
+          id: n.slug,
+          title: n.title && !n.title.includes("[object Object]") ? n.title : question?.header || n.slug,
+          kind: c?.kind || "gap",
+          acs: [],
+          ...(uc?.label === "usecase" ? { useCase: uc.slug } : {}),
+          ...(question ? { question } : {}),
+        };
+      }),
   };
+}
+
+/** The gaps of a graph that are about use case `uc`, and those Kane's store does not tie to one. */
+export const gapsOf = (g: Pick<Graph, "gaps">, uc: string): GapNode[] => g.gaps.filter((x) => x.useCase === undefined || x.useCase === uc);
+
+type GapContent = { kind: string; uc: string; question?: NonNullable<GapNode["question"]> };
+
+/** A gap node's content as Kane stores it: `{ kind, uc, question: { header, prompt, options } }`. */
+function gapFrom(content: unknown): GapContent | null {
+  if (!isObj(content)) return null;
+  const q = isObj(content.question) ? content.question : null;
+  const options = arr(q?.options)
+    .map((o) => (typeof o === "string" ? { label: o } : isObj(o) ? (typeof o.detail === "string" ? { label: str(o.label), detail: o.detail } : { label: str(o.label) }) : null))
+    .filter((o): o is { label: string; detail?: string } => o !== null && o.label !== "");
+  const question = q && (str(q.header) || str(q.prompt)) ? { header: str(q.header), prompt: str(q.prompt), options } : undefined;
+  return { kind: str(content.kind), uc: str(content.uc), ...(question ? { question } : {}) };
+}
+
+/** Every gap node's content in Kane's commits under `.context/commits/`, by cid; empty when there are none. */
+function readCommitGaps(cwd: string): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  try {
+    const dir = join(cwd, ".context", "commits");
+    for (const name of readdirSync(dir).filter((n) => n.endsWith(".json")).sort()) {
+      let commit: unknown;
+      try {
+        commit = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      } catch {
+        continue;
+      }
+      if (!isObj(commit)) continue;
+      for (const n of arr(commit.nodes).filter(isObj)) if (n.label === "gap" && str(n.cid)) out.set(str(n.cid), n.content);
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
+
+/**
+ * A gap's content: its derived node file (`.context/derived/nodes/<2>/<rest>.json`, by its cid's
+ * hex), else the commit that minted it. Kane's store is not a stable contract: anything unreadable
+ * is no content.
+ */
+function gapContent(cwd: string, cid: string, commits: () => Map<string, unknown>): GapContent | null {
+  const hex = cid.replace(/^sha256:/, "");
+  if (/^[0-9a-f]{3,}$/i.test(hex)) {
+    try {
+      const node: unknown = JSON.parse(readFileSync(join(cwd, ".context", "derived", "nodes", hex.slice(0, 2), `${hex.slice(2)}.json`), "utf8"));
+      if (isObj(node) && node.label === "gap") return gapFrom(node.content);
+    } catch {
+      /* not there: the commits */
+    }
+  }
+  return gapFrom(commits().get(cid));
 }

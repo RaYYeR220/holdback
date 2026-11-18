@@ -5,7 +5,7 @@ import { open, readFile, realpath, stat, type FileHandle } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import type { PendingQuestion } from "./kane/assurance.js";
-import type { ApprovalItem, HumanIO } from "./loop/human.js";
+import type { ApprovalItem, HumanIO, VariableAsk } from "./loop/human.js";
 import { EVIDENCE_DIR } from "./loop/build.js";
 import type { Project } from "./project.js";
 import { readEvents } from "./ledger/store.js";
@@ -20,11 +20,17 @@ const HEAD_BYTES = 64;
 /** What the dashboard shows the human while a run waits for them. */
 export type PendingPrompt =
   | { sid: string; kind: "answer"; questions: PendingQuestion[] }
-  | { sid: string; kind: "approve"; items: ApprovalItem[] };
+  | { sid: string; kind: "approve"; items: ApprovalItem[] }
+  /** Test variables Kane left empty, with Holdback's suggestions (a secret has none). */
+  | { sid: string; kind: "values"; vars: VariableAsk[] };
 
 type Waiter =
   | { prompt: Extract<PendingPrompt, { kind: "answer" }>; resolve: (a: Record<string, string>) => void; reject: (e: Error) => void }
-  | { prompt: Extract<PendingPrompt, { kind: "approve" }>; resolve: (r: string[]) => void; reject: (e: Error) => void };
+  | { prompt: Extract<PendingPrompt, { kind: "approve" }>; resolve: (r: string[]) => void; reject: (e: Error) => void }
+  | { prompt: Extract<PendingPrompt, { kind: "values" }>; resolve: (v: Record<string, string>) => void; reject: (e: Error) => void };
+
+/** The routes the dashboard answers a pending prompt on, and the kind of prompt each answers. */
+const POST_ROUTES: Record<string, PendingPrompt["kind"]> = { "/api/answer": "answer", "/api/approve": "approve", "/api/values": "values" };
 
 export class PromptRejected extends Error {
   constructor(readonly status: number, message: string) {
@@ -59,6 +65,32 @@ export class DashboardHumanIO implements HumanIO {
     return new Promise((resolve, reject) => {
       this.waiters.push({ prompt: { sid: randomBytes(8).toString("hex"), kind: "approve", items }, resolve, reject });
     });
+  }
+
+  values(vars: VariableAsk[]): Promise<Record<string, string>> {
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ prompt: { sid: randomBytes(8).toString("hex"), kind: "values", vars }, resolve, reject });
+    });
+  }
+
+  /** Fills the pending variables `sid`: each value a string, only names it asked about; one left out is empty. */
+  submitValues(sid: unknown, values: unknown): void {
+    const i = this.waiters.findIndex((w) => w.prompt.kind === "values" && w.prompt.sid === sid);
+    const w = this.waiters[i];
+    if (!w || w.prompt.kind !== "values") throw new PromptRejected(409, "no pending variables with that sid");
+    if (typeof values !== "object" || values === null || Array.isArray(values)) throw new PromptRejected(400, "values must be an object");
+    const rec = values as Record<string, unknown>;
+    const asked = new Set(w.prompt.vars.map((v) => v.name));
+    const unknown = Object.keys(rec).filter((k) => !asked.has(k));
+    if (unknown.length > 0) throw new PromptRejected(400, `unknown variables: ${unknown.join(", ")}`);
+    const out: Record<string, string> = {};
+    for (const v of w.prompt.vars) {
+      const a = rec[v.name] ?? "";
+      if (typeof a !== "string") throw new PromptRejected(400, `the value of ${v.name} must be a string`);
+      out[v.name] = a;
+    }
+    this.waiters.splice(i, 1);
+    (w.resolve as (v: Record<string, string>) => void)(out);
   }
 
   /** Answers the pending question set `sid`; every question must be answered with a string. */
@@ -390,13 +422,15 @@ export async function serve(p: Project, opts: ServeOptions): Promise<Served> {
     if (route.startsWith("/api/") && !tokenOk(req, url)) return json(res, 403, { error: "missing or wrong x-holdback-token" });
 
     if (req.method === "POST") {
-      if (route !== "/api/answer" && route !== "/api/approve") return json(res, 404, { error: "not found" });
+      const kind = Object.hasOwn(POST_ROUTES, route) ? POST_ROUTES[route] : undefined;
+      if (kind === undefined) return json(res, 404, { error: "not found" });
       // a 409 for "nothing pending" comes before the body is looked at
       const pending = human.pending();
-      if (!pending.some((x) => x.kind === (route === "/api/answer" ? "answer" : "approve"))) return json(res, 409, { error: "nothing is pending" });
+      if (!pending.some((x) => x.kind === kind)) return json(res, 409, { error: "nothing is pending" });
       const body = (await readBody(req)) as Record<string, unknown> | null;
       if (typeof body !== "object" || body === null) return json(res, 400, { error: "body must be an object" });
-      if (route === "/api/answer") human.submitAnswer(body.sid, body.answers);
+      if (kind === "answer") human.submitAnswer(body.sid, body.answers);
+      else if (kind === "values") human.submitValues(body.sid, body.values);
       else human.submitApproval(body.refs);
       return json(res, 200, { ok: true });
     }

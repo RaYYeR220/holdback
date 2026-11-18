@@ -151,13 +151,29 @@ describe("LIVE: the build `holdback serve` serves, against the real server", () 
 
     // an approval: untick one, approve the rest
     const approved = srv.human.approve([
-      { ref: "t-1", title: "Income above limit returns Not eligible without SNAP", kind: "test" },
+      { ref: "t-1", title: "Income above limit returns Not eligible without SNAP", kind: "test", note: "Holdback repaired a broken import Kane wrote (line 12): @import ./C:\\x\\t0_test.md -> @import ./t0_test.md" },
       { ref: "t-2", title: "SNAP overrides above-limit income", kind: "test" },
     ]);
     await page.waitForSelector("[data-testid=human]");
+    await expect(page.locator(".appr-note").allTextContents()).resolves.toEqual(["Holdback repaired a broken import Kane wrote (line 12): @import ./C:\\x\\t0_test.md -> @import ./t0_test.md"]);
     await page.locator("label", { hasText: "SNAP overrides above-limit income" }).locator("input").uncheck();
     await page.getByRole("button", { name: "Approve 1 of 2" }).click();
     await expect(approved).resolves.toEqual(["t-1"]);
+    await page.waitForSelector("[data-testid=human]", { state: "detached" });
+
+    // test variables Kane left empty: Holdback's suggestion is filled in, a secret is typed, never suggested
+    const filled = srv.human.values([
+      { name: "primary_phone", description: "Unused ten-digit household test phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] },
+      { name: "login_password", description: "Password of the test account.", secret: true, usedBy: ["t-2"] },
+    ]);
+    await page.waitForSelector("[data-testid=human]");
+    await expect(page.locator("#human-h").textContent()).resolves.toBe("Kane's tests need values");
+    await expect(page.getByLabel("primary_phone").inputValue()).resolves.toBe("2155550101");
+    await expect(page.getByLabel("login_password").getAttribute("type")).resolves.toBe("password");
+    expect(await page.getByRole("button", { name: "Save 2 values" }).isDisabled()).toBe(true);
+    await page.getByLabel("login_password").fill("hunter2");
+    await page.getByRole("button", { name: "Save 2 values" }).click();
+    await expect(filled).resolves.toEqual({ primary_phone: "2155550101", login_password: "hunter2" });
     await page.close();
   });
 });

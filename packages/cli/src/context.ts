@@ -216,6 +216,7 @@ async function openDashboard(ctx: Ctx, p: Project, portRaw: string | undefined):
   return {
     answer: (qs) => srv.human.answer(qs),
     approve: (items) => srv.human.approve(items),
+    values: (asks) => srv.human.values(asks),
     close: () => void srv.close(),
   };
 }
@@ -347,7 +348,8 @@ export function parseKaneCap(raw: string | undefined): number | undefined {
 
 /**
  * Prints why a command failed. A tamper (on record or just found) is reported as one and exits 2;
- * the Kane credit cap reached, or a spec that changed during the spec stage, is a stop (exit 3), not an error.
+ * the Kane credit cap reached, a spec that changed during the spec stage, or a test variable left
+ * empty at its seal, is a stop (exit 3), not an error.
  */
 export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise<number> {
   const msg = e instanceof Error ? e.message : String(e);
@@ -355,7 +357,7 @@ export async function explainFailure(ctx: Ctx, e: unknown, p?: Project): Promise
     ctx.err(tamperMessage(msg));
     return EXIT.tamper;
   }
-  if (e instanceof Error && (e.name === "KaneCapReached" || e.name === "SpecChangedDuringStage")) {
+  if (e instanceof Error && (e.name === "KaneCapReached" || e.name === "SpecChangedDuringStage" || e.name === "VariablesMissing" || e.name === "VariablesUnchecked")) {
     ctx.err(msg);
     return EXIT.unfinished;
   }

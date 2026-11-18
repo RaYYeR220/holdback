@@ -54,6 +54,15 @@ export function reduce(events: LedgerEvent[]): LedgerState {
           }
         }
         state.tampered = false;
+        // a human's seal may re-plan the tests a stall was about; Kane's seal after an evolve keeps its names (M2)
+        if (e.by !== "kane") delete state.stalled;
+        break;
+      case "build.stalled":
+        state.stalled = { turns: [...e.turns], disputed: e.disputed.map((d) => ({ ...d })), inconclusive: e.inconclusive.map((u) => ({ ...u })) };
+        break;
+      case "turn.end":
+        // the agent changed code: what stalled is Kane's to check again
+        if (e.filesChanged.length > 0) delete state.stalled;
         break;
       case "design": {
         for (const t of e.tests) unsure.delete(t.id); // a re-designed test starts over
@@ -172,7 +181,7 @@ export function reduce(events: LedgerEvent[]): LedgerState {
         break;
       }
       case "run.end":
-        if (e.stop) state.stopped = { reason: e.stop, exit: e.exit ?? 1, ...(e.detail !== undefined ? { detail: e.detail } : {}) };
+        if (e.stop) state.stopped = { reason: e.stop, exit: e.exit ?? 1, ...(e.detail !== undefined ? { detail: e.detail } : {}), ...(e.falsified ? { falsified: { ...e.falsified } } : {}) };
         else delete state.stopped;
         break;
       case "redesign.dropped":

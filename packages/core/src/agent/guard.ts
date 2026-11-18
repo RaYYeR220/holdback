@@ -28,6 +28,22 @@ function msys(n: string): string | undefined {
   return m ? `/${m[1]}/${n.slice(3)}` : undefined;
 }
 
+/**
+ * True when `needle` occurs in `text` (both lowercased, `/` slashes) and the character right after
+ * it is not a letter, a digit or `_`: an identifier that only starts with the name
+ * (`process.env.HOLDBACK_TODAY`, `env.holdback_now`, `obj.testmuai_id`) is another name, not a path
+ * to the folder. Live demo, 2026-11-17: a plain substring match denied the code the agent wrote the
+ * env var its STACK.md asks the app to read. Whatever comes before the needle is never looked at: a
+ * path can follow anything (`-C.holdback`, `$D.holdback`, `/cygdrive/c/…`, `-ccore.hookspath`).
+ */
+function hasSegment(text: string, needle: string): boolean {
+  for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1)) {
+    if (!/[a-z0-9_]/.test(text[i + needle.length] ?? "")) return true;
+  }
+  return false;
+}
+
+/** Holdback's and Kane's folders, by name and by Holdback's own paths (`hasSegment`). */
 function needles(ctx: GuardContext): string[] {
   const out = new Set<string>([".holdback", ".testmuai"]);
   for (const p of [ctx.home, ctx.verifierDir]) {
@@ -83,7 +99,7 @@ const HOLDBACK_ENTRY = /(?:^|[/\\])(?:cli|holdback)[/\\]dist[/\\]index\.[cm]?js$
 /** Subcommands only the human runs. `status` and `owed` only read, and stay open to the agent. */
 const HUMAN_COMMANDS = new Set(["reseal", "spec", "run", "drift", "watch", "init", "clean", "serve", "hook"]);
 
-/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes). */
+/** Shell text that reaches into the repo's hooks or git config (lowercased, backslashes as slashes; `hasSegment`). */
 const GIT_INTERNALS = [".git/hooks", ".git/config", "core.hookspath"];
 
 // References to the user's home directory from a shell. A tilde must stand alone as a word.
@@ -333,14 +349,14 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
   const ns = needles(ctx);
   for (const s of strings(toolInput)) {
     const n = s.toLowerCase().replace(/\\/g, "/");
-    if (ns.some((x) => n.includes(x))) return { allow: false, reason: DENY_FILES };
+    if (ns.some((x) => hasSegment(n, x))) return { allow: false, reason: DENY_FILES };
     if (/\bkane-cli\b/i.test(s)) return { allow: false, reason: DENY_KANE };
   }
   if (ctx.specFiles && editsSpec(String(input.tool_name ?? ""), toolInput, ctx)) return { allow: false, reason: DENY_SPEC, spec: "edit" };
   for (const s of shellStrings(String(input.tool_name ?? ""), toolInput)) {
     if (HOME_REFS.some((re) => re.test(s))) return { allow: false, reason: DENY_HOME_REF };
     const n = s.toLowerCase().replace(/[\\/]+/g, "/"); // `.git\\hooks` (escaped) counts too
-    if (GIT_INTERNALS.some((x) => n.includes(x))) return { allow: false, reason: DENY_GIT_INTERNALS };
+    if (GIT_INTERNALS.some((x) => hasSegment(n, x))) return { allow: false, reason: DENY_GIT_INTERNALS };
     const g = gitViolation(s);
     if (g) return { allow: false, reason: g };
     if (humanCommand(s)) return { allow: false, reason: DENY_HUMAN };
@@ -357,7 +373,7 @@ export function guardPayload(payload: unknown, ctx: GuardContext): GuardDecision
   const ns = needles(ctx);
   for (const s of strings(p)) {
     const n = s.toLowerCase().replace(/\\/g, "/");
-    if (ns.some((x) => n.includes(x))) return { allow: false, reason: DENY_FILES };
+    if (ns.some((x) => hasSegment(n, x))) return { allow: false, reason: DENY_FILES };
   }
   return guardDecision({ tool_name: p.tool_name, tool_input: p.tool_input as Record<string, unknown> }, ctx);
 }
@@ -390,9 +406,11 @@ function protectRules(p: { appDir: string; files: string[] }): string[] {
 
 /**
  * `"<abs node>" "<guard-main.js>" --home "<home>" --verifier "<verifierDir>" [--spec "<file>"]…
- * [--log "<file>"]`: every path quoted. `log`: where the guard appends its decisions (debugging).
+ * [--log "<file>"] [--edits "<file>"]`: every path quoted. `log`: where the guard appends its
+ * decisions (debugging). `edits`: where it records each Edit and Write it allows (the build loop's
+ * record of a change git may not see, R48).
  */
-export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath, log?: string): string {
+export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: string = process.execPath, log?: string, edits?: string): string {
   const q = (s: string) => `"${s}"`;
   return [
     q(nodeBin),
@@ -404,6 +422,7 @@ export function guardHookCommand(ctx: GuardContext, guardMain: string, nodeBin: 
     ...(ctx.appDir !== undefined ? ["--app", q(ctx.appDir)] : []),
     ...(ctx.specFiles ?? []).flatMap((f) => ["--spec", q(f)]),
     ...(log ? ["--log", q(log)] : []),
+    ...(edits ? ["--edits", q(edits)] : []),
   ].join(" ");
 }
 

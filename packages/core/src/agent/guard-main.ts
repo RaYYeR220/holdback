@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse hook entry point:
-//   node guard-main.js --home <home> --verifier <verifierDir> [--app <appDir>] [--spec <file>]... [--log <file>]
+//   node guard-main.js --home <home> --verifier <verifierDir> [--app <appDir>] [--spec <file>]... [--log <file>] [--edits <file>]
 // Reads the hook JSON on stdin. Exit 0 = allow; exit 2 + reason on stderr = deny.
 // Any failure (bad args, bad stdin, crash) is a deny: exit 1 would let the call through.
 import { appendFileSync } from "node:fs";
@@ -87,6 +87,17 @@ async function main(): Promise<void> {
       }
     }
     deny(d.reason);
+  }
+  // the build loop's record of the agent's Edit and Write calls: a change to a git-ignored file is still a change (R48)
+  const edits = arg("--edits");
+  if (edits && /^(Edit|MultiEdit|Write|NotebookEdit)$/.test(tool)) {
+    const input = (payload as { tool_input?: Record<string, unknown> }).tool_input ?? {};
+    const target = input.file_path ?? input.notebook_path ?? input.path;
+    try {
+      appendFileSync(edits, JSON.stringify({ tool, path: typeof target === "string" ? target : "" }) + "\n");
+    } catch {
+      /* the call is allowed either way */
+    }
   }
   process.exit(0);
 }

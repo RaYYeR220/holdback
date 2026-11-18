@@ -1,5 +1,5 @@
 import { decidesStatus, eventCredits, gate as coreGate, killsAc, notAnAppFailure, reduce, retiredTests, verdict as coreVerdict } from "@holdback/core/browser";
-import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, TestRunResult, Verdict } from "@holdback/core/browser";
+import type { AcState, AcStatus, LedgerEvent, LedgerState, PendingPrompt, Stall, TestRunResult, Verdict } from "@holdback/core/browser";
 
 /* ------------------------------------------------------------------ the wire: GET /api/state */
 
@@ -380,7 +380,9 @@ export type Item =
   /** N-1: a `holdback run` that stopped short of a clean finish, and its exit code. */
   | { kind: "stopped"; at: string; reason: string; exit: number; detail?: string }
   /** R40: a planted bug got past every test of `uc`, and Kane evolved it: what it was told, what it minted and retired. */
-  | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean };
+  | { kind: "evolved"; at: string; uc: string; because: string; minted: string[]; retired: string[]; credits: number; followUp: boolean }
+  /** R48: the build loop stalled: `turns` changed nothing on code Kane checked; Kane's reports the agent did not act on, and the runs that proved nothing. */
+  | ({ kind: "stalled"; at: string } & Stall);
 
 export type Segment = {
   key: string;
@@ -394,6 +396,13 @@ export type Segment = {
 };
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+/** `turns 2, 3 and 4`. */
+export function turnsText(turns: number[]): string {
+  if (turns.length <= 1) return `turn ${turns.join("")}`;
+  return `turns ${turns.slice(0, -1).join(", ")} and ${turns.at(-1)}`;
+}
+const oneLine = (t: string) => t.replace(/\s+/g, " ").trim();
 
 /** The ledger as the loop ran it: the spec stage, then one segment per agent turn and the checks after it. */
 export function timeline(events: LedgerEvent[]): Segment[] {
@@ -448,6 +457,33 @@ export function timeline(events: LedgerEvent[]): Segment[] {
           title: `Kane designed ${e.useCase}: ${plural(e.acs.length, "criterion", "criteria")}, ${plural(e.tests.length, "test")}`,
           detail: e.tests.map((t) => `${t.id} ${t.title}`).join(" · "),
           credits: e.credits,
+        });
+        {
+          // the gaps Kane left, with its kind and question (a gap with its id alone says nothing: left out)
+          const gaps = e.gaps.filter((g) => g.question);
+          if (gaps.length > 0) {
+            seg.items.push({
+              kind: "spec",
+              at: e.at,
+              title: `Kane left ${plural(gaps.length, "gap")} in ${e.useCase}'s design`,
+              detail: gaps.map((g) => `${g.id} [${g.kind}] ${oneLine(`${g.question!.header || g.title}${g.question!.prompt ? `: ${g.question!.prompt}` : ""}`)}`).join(" · "),
+            });
+          }
+        }
+        break;
+      case "spec.repaired":
+        seg.items.push({ kind: "spec", at: e.at, title: "Holdback repaired a broken import Kane wrote", detail: `${e.file} line ${e.line}: ${e.from} -> ${e.to}` });
+        break;
+      case "spec.variables":
+        seg.items.push({
+          kind: "spec",
+          at: e.at,
+          // R46: with no human there (Kane's evolve), Holdback's own suggestions
+          title:
+            e.filledBy === "suggested"
+              ? `Holdback filled ${plural(e.names.length, "test variable")} Kane's new tests left empty with its ${e.names.length === 1 ? "suggestion" : "suggestions"}`
+              : `A human filled ${plural(e.names.length, "test variable")} Kane left empty`,
+          detail: e.names.join(", "),
         });
         break;
       case "seal":
@@ -526,6 +562,9 @@ export function timeline(events: LedgerEvent[]): Segment[] {
         break;
       case "falsify.evolved":
         seg.items.push({ kind: "evolved", at: e.at, uc: e.uc, because: e.because, minted: e.minted, retired: e.retired, credits: e.credits, followUp: e.followUp === true });
+        break;
+      case "build.stalled":
+        seg.items.push({ kind: "stalled", at: e.at, turns: e.turns, disputed: e.disputed, inconclusive: e.inconclusive });
         break;
       default:
         break; // recordings: Holdback's own baseline, nothing to show

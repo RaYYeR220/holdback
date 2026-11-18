@@ -1,6 +1,18 @@
-import { LedgerTampered, loadProject, type BuildResult, type FalsifyResult, type HumanIO, type LedgerEvent, type Project, type RunStop, type Verdict } from "@holdback/core";
+import {
+  falsifiedText,
+  LedgerTampered,
+  loadProject,
+  type BuildResult,
+  type FalsifyResult,
+  type GateShutFalsify,
+  type HumanIO,
+  type LedgerEvent,
+  type Project,
+  type RunStop,
+  type Verdict,
+} from "@holdback/core";
 import { EXIT, explainFailure, humanView, ledgerLog, openHumanIO, parseKaneCap, refuseInsideClaudeCode, scrubAgentEnv, snapshot, withCheckLock, type Ctx } from "./context.js";
-import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, tamperMessage, unverifiedDrift } from "./messages.js";
+import { driftStop, inconclusiveLine, inconclusiveStop, kaneCreditsText, stallShort, stalledStop, tamperMessage, unverifiedDrift } from "./messages.js";
 import { reviewSpecChange, specMovedStop } from "./specchange.js";
 
 export type RunOptions = {
@@ -24,7 +36,7 @@ const MAX_ROUNDS = 4;
  * Where a stopped run ended up, as an exit code, the line that says why and, but for a tamper (on
  * record on its own), the stop logged on the ledger, which the verdict reads (N-1).
  */
-type Stop = { code: number; why: string; reason?: RunStop };
+type Stop = { code: number; why: string; reason?: RunStop; falsified?: GateShutFalsify };
 
 function buildStop(b: BuildResult): Stop {
   switch (b.reason) {
@@ -35,6 +47,9 @@ function buildStop(b: BuildResult): Stop {
     case "inconclusive":
       // Kane's to redo, not the agent's: more turns would not help
       return { code: EXIT.unfinished, why: inconclusiveStop(b.inconclusive ?? []), reason: "inconclusive" };
+    case "stalled":
+      // R48: more turns would change nothing; a human reviews Kane's reports, Kane does not check unchanged code again
+      return { code: EXIT.unfinished, why: stalledStop(b.stalled), reason: "stalled" };
     case "budget":
       return { code: EXIT.unfinished, why: b.error ?? "Kane credit cap reached", reason: "kane-budget" };
     case "drift":
@@ -67,6 +82,26 @@ function falsifyStop(f: FalsifyResult): Stop | undefined {
     default:
       return undefined;
   }
+}
+
+/** A build stop that leaves the gate shut for a reason more turns would not fix, in a few words; undefined for any other stop. */
+function shutBy(b: BuildResult): string | undefined {
+  if (b.reason === "inconclusive") {
+    const k = (b.inconclusive ?? []).length;
+    return `${k} Kane run${k === 1 ? "" : "s"} inconclusive`;
+  }
+  if (b.reason === "stalled") return stallShort(b.stalled);
+  return undefined;
+}
+
+/** What a falsify pass found that the human hears about (R44): the planted bugs that got through, and why Kane did not evolve their use case. */
+function reportFalsify(ctx: Ctx, f: FalsifyResult): void {
+  // the human's own output, never `status` (I-4)
+  for (const v of f.survivors ?? []) {
+    const tag = v.recheck ? ", re-checked" : v.earlier ? ", from an earlier pass" : "";
+    ctx.out(`A planted bug got past the tests: ${v.ac} (${v.mutant}${tag}): ${v.slip}`);
+  }
+  for (const n of f.notEvolved ?? []) ctx.out(`Not sent to Kane: ${n.acs.join(", ")} (${n.uc}): ${n.why}`);
 }
 
 /**
@@ -133,7 +168,11 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
     if (ended || s?.code === EXIT.tamper) return;
     ended = true;
     const why = s ? s.why.replace(/\s+/g, " ").trim() : "";
-    const e: LedgerEvent = { at: new Date().toISOString(), t: "run.end", ...(s ? { stop: s.reason ?? "error", exit: s.code, ...(why ? { detail: why.slice(0, 300) } : {}) } : {}) };
+    const e: LedgerEvent = {
+      at: new Date().toISOString(),
+      t: "run.end",
+      ...(s ? { stop: s.reason ?? "error", exit: s.code, ...(why ? { detail: why.slice(0, 300) } : {}), ...(s.falsified ? { falsified: s.falsified } : {}) } : {}),
+    };
     try {
       await log(e);
     } catch (err) {
@@ -211,19 +250,39 @@ async function pipeline(caller: Ctx, p: Project, io: HumanIO, signal: AbortSigna
       if (b.reason !== "gate-open") {
         stop = buildStop(b);
         if (b.reason === "drift") on.drifted?.(b.specChange?.duringAgentTurn === true);
+        // the gate stays shut for a reason more turns would not fix (Kane's own runs proved nothing,
+        // or the loop stalled): what passes is falsified all the same (live demo)
+        const shut = shutBy(b);
+        const passing = shut === undefined || o.falsify === false ? 0 : Object.values((await snapshot(p)).state.acs).filter((a) => a.status === "passing").length;
+        if (shut !== undefined && passing > 0) {
+          const what = `${passing} passing ${passing === 1 ? "criterion" : "criteria"}`;
+          ctx.out(`The gate is shut (${shut}): falsifying the ${what} anyway`);
+          const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err, evolves, gateShut: true, ...capped });
+          falsified = f;
+          reportFalsify(ctx, f);
+          if (f.reason === "drift") on.drifted?.(f.specChange?.duringAgentTurn === true);
+          // a stop of the falsify pass (a tamper, the cap, an error) is the run's
+          const fs = falsifyStop(f);
+          if (fs) stop = fs;
+          else {
+            if (f.redesigned.length > 0) {
+              ctx.out(`Kane evolved the tests of ${f.redesigned.join(", ")} after a planted bug got past them: the next \`holdback run\` builds them`);
+              for (const e of f.evolved ?? []) ctx.out(`  ${e.uc}${e.followUp ? " (follow-up)" : ""}, Kane was told: ${e.because}`);
+            }
+            // what it attacked: the budget's skips apart (I3, M1)
+            const counts: GateShutFalsify = { criteria: f.killed.length + f.survived.length + f.invalid.length, proved: f.killed.length, vacuous: f.vacuous.length, skipped: f.skipped.length };
+            const said = falsifiedText(counts);
+            stop = { ...stop, falsified: counts, why: `${said.charAt(0).toUpperCase()}${said.slice(1)}; the gate stays shut: ${shut}.\n${stop.why}` };
+          }
+        }
         break;
       }
       if (o.falsify === false) break;
       ctx.out("Gate open: falsifying the passing criteria with planted bugs");
       const f = await ctx.deps.runFalsify(p, ctx.deps.falsifyDeps, io, log, { signal, warn: ctx.err, evolves, ...capped });
       falsified = f;
-      // every planted bug that got past the tests, and why Kane did not evolve its use case (R44):
-      // the human's own output, never `status` (I-4)
-      for (const v of f.survivors ?? []) {
-        const tag = v.recheck ? ", re-checked" : v.earlier ? ", from an earlier pass" : "";
-        ctx.out(`A planted bug got past the tests: ${v.ac} (${v.mutant}${tag}): ${v.slip}`);
-      }
-      for (const n of f.notEvolved ?? []) ctx.out(`Not sent to Kane: ${n.acs.join(", ")} (${n.uc}): ${n.why}`);
+      // every planted bug that got past the tests, and why Kane did not evolve its use case (R44)
+      reportFalsify(ctx, f);
       stop = falsifyStop(f);
       if (f.reason === "drift") on.drifted?.(f.specChange?.duringAgentTurn === true);
       if (stop) break;

@@ -191,6 +191,29 @@ describe("server", () => {
       expect(await approved).toEqual(["ac-2"]);
       expect(((await (await fetch(`${base}/api/state`)).json()) as any).pending).toEqual([]);
     });
+
+    it("test variables resolve a pending dashboard prompt: every value a string, no name it did not ask about", async () => {
+      const { base, s } = await start();
+      expect((await post(base, "/api/values", { sid: "x", values: {} }, s.token)).status).toBe(409);
+      const asks = [
+        { name: "primary_phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] },
+        { name: "login_password", description: "Password of the test account.", secret: true, usedBy: ["t-2"] },
+      ];
+      const filled = s.human.values(asks);
+      const state = (await (await fetch(`${base}/api/state`)).json()) as any;
+      expect(state.pending).toEqual([{ sid: expect.any(String), kind: "values", vars: asks }]);
+      const sid = state.pending[0].sid;
+      expect((await post(base, "/api/values", { sid: "stale", values: {} }, s.token)).status).toBe(409);
+      expect((await post(base, "/api/values", { sid, values: { nope: "1" } }, s.token)).status).toBe(400);
+      expect((await post(base, "/api/values", { sid, values: { primary_phone: 2155550101 } }, s.token)).status).toBe(400);
+      expect((await post(base, "/api/values", { sid, values: { primary_phone: "2155550199", login_password: "hunter2" } }, s.token)).status).toBe(200);
+      expect(await filled).toEqual({ primary_phone: "2155550199", login_password: "hunter2" });
+      // a name left out comes back empty: the spec stage then stops before the seal
+      const partial = s.human.values(asks);
+      const sid2 = ((await (await fetch(`${base}/api/state`)).json()) as any).pending[0].sid;
+      expect((await post(base, "/api/values", { sid: sid2, values: { primary_phone: "2155550101" } }, s.token)).status).toBe(200);
+      expect(await partial).toEqual({ primary_phone: "2155550101", login_password: "" });
+    });
   });
 
   it("404s an unknown route", async () => {

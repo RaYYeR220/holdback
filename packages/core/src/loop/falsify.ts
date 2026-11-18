@@ -6,7 +6,7 @@ import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
-import { balance, evolve, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
+import { balance, evolve, gapsOf, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
 import { inconclusiveNote, killsAc, notAnAppFailure, runSettled, runTests, type TestRunResult } from "../kane/testmd.js";
 
 export { killsAc };
@@ -23,6 +23,7 @@ import { byAcId } from "./brief.js";
 import { logMarkedTamper, recordTamperIn } from "./session.js";
 import { assertTestsSealed, EVIDENCE_DIR, filesOf, lastSeal, startFailureText, testFileMap } from "./build.js";
 import type { HumanIO } from "./human.js";
+import { fillSuggested } from "./variables.js";
 import { appMovedFrom, appPinOf, appSealFiles, classifySpecChange, driftHint, isSpecKey, reseal, specFileOf, type AppPin, type Warn } from "./spec.js";
 
 type Log = (e: LedgerEvent) => Promise<void>;
@@ -169,6 +170,8 @@ const MAX_BECAUSE = 1500;
 export const NO_TEST = "Kane could not add a test that catches this planted bug";
 /** Why a criterion an evolve left without a test needs the spec. */
 const UNCOVERED = "Kane's evolved tests no longer cover it";
+/** Why a survivor stays vacuous when Kane's new test types a variable only a human can fill (R46): the names follow. */
+export const NEEDS_HUMAN = "Kane's new test needs a value only you can give";
 
 /** A survivor of this pass: what Kane is told about it if its use case is evolved. */
 type Survivor = { ac: AcState; id: string; patch: string; rationale: string; slip?: Slip };
@@ -492,6 +495,12 @@ export type FalsifyOptions = {
    * `holdback run` passes one map to each of its falsify passes. Default: this pass's own.
    */
   evolves?: Map<string, number>;
+  /**
+   * The build loop's gate is shut (Kane's own inconclusive runs, or the agent disputes Kane's report):
+   * the passing criteria are falsified all the same, but the closing replay runs only the tests of
+   * the criteria this pass attacked, never the owed ones: the agent did not change that code.
+   */
+  gateShut?: boolean;
 };
 
 /**
@@ -521,6 +530,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   let kaneWindow = false;
   /** A Kane batch ran against a mutant in this pass (its coverage now sits in Kane's project store). */
   let attacked = false;
+  /** The criteria whose tests ran against a mutant in this pass. */
+  const attackedAcs = new Set<string>();
   let running: RunningApp | undefined;
   /** This pass's surviving mutants, for Kane's evolve (R40). */
   const survivors: Survivor[] = [];
@@ -790,6 +801,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       return await meter.batch("falsify", async () => {
         kaneWindow = true;
         attacked = true;
+        attackedAcs.add(ac.id);
         const fileId = testIdsByFile();
         const attribute = (r: TestRunResult, file: string): TestRunResult => (r.testId == null ? { ...r, testId: fileId.get(file) ?? null } : r);
         let results: TestRunResult[];
@@ -877,11 +889,14 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     // R44: only this survivor-triggered evolve counts toward the run's bound; its follow-up does not
     evolves.set(uc, spent + 1);
     const because = becauseText(list);
+    // the verifier before any evolve of this use case: what an evolve that cannot be sealed goes back to
+    const ucCopy = await copySealed(p);
     const first = await evolveOnce(uc, because, list);
     if ("stray" in first) return strayTamper(uc, first.stray, first.credits);
     if ("failed" in first) return giveUp(first.failed, first.credits);
     const out_: EventBody[] = [{ t: "falsify.evolved", uc, because, minted: first.minted, retired: first.retired, credits: first.credits, mutants }];
     let g = first.graph;
+    const mintedAll = [...first.minted];
     let left = uncoveredIn(g, uc);
     let why = UNCOVERED;
     if (left.length > 0) {
@@ -905,11 +920,26 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         } else {
           out_.push({ t: "falsify.evolved", uc, because: oneLine(cover).slice(0, MAX_BECAUSE), minted: again.minted, retired: again.retired, credits: again.credits, mutants, followUp: true });
+          mintedAll.push(...again.minted);
           g = again.graph;
           left = uncoveredIn(g, uc);
           why = `${UNCOVERED}; a follow-up evolve did not cover it either`;
         }
       }
+    }
+    // R46: no test of Kane's is sealed typing a variable it left empty. With no human here, Holdback
+    // writes its own suggestions; a value only a human can give (a secret, or one Holdback has no
+    // suggestion for) and the evolve is not sealed: rolled back, its survivors stay vacuous with why
+    const fill = await fillSuggested(cwd, g.tests.filter((t) => mintedAll.includes(t.id)));
+    if ("needsHuman" in fill) {
+      await rollBack(ucCopy);
+      const spentHere = out_.reduce((n, e) => n + (e.t === "falsify.evolved" || e.t === "redesign.dropped" ? e.credits : 0), 0);
+      const names = fill.needsHuman.join(", ");
+      return giveUp(`Kane's evolve of ${uc} minted a test that types ${names}, which Kane left empty: nothing was sealed`, Math.round(spentHere * 1e4) / 1e4, `${NEEDS_HUMAN}: ${names}`);
+    }
+    if (fill.filled.length > 0) {
+      for (const f of fill.files) allowedPaths.add(f);
+      out_.push({ t: "spec.variables", names: fill.filled, filledBy: "suggested" });
     }
     // the use case as Kane now has it: every criterion owed again; one left without a test needs the spec
     const prev = events.findLast((e): e is Extract<LedgerEvent, { t: "design" }> => e.t === "design" && e.useCase === uc);
@@ -923,7 +953,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       useCase: uc,
       acs,
       tests,
-      gaps: g.gaps,
+      gaps: gapsOf(g, uc),
       credits: 0,
       ...(rejected.length > 0 ? { rejected } : {}),
       ...(Object.keys(notes).length > 0 ? { notes } : {}),
@@ -1127,7 +1157,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   const replayRealBuild = async (): Promise<"tamper" | "done"> => {
     const state = reduce(events);
     const acs = Object.values(state.acs)
-      .filter((a) => a.tests.length > 0)
+      .filter((a) => a.tests.length > 0 && (!opts.gateShut || attackedAcs.has(a.id)))
       .sort(byAcId);
     const files = filesOf(acs, testFileMap(events, p.verifierDir));
     if (files.length === 0) return "done";

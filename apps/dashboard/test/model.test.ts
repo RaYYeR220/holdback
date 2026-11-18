@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerEvent, TestRunResult } from "@holdback/core/browser";
 import { parseEvents } from "@holdback/core/browser";
-import { board, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline } from "../src/model";
+import { board, COLUMNS, driftRows, lede, runVerdict, fmtCredits, fmtDuration, fmtUsd, gateLabel, meters, parseEvalSummary, patchOneLiner, retiredLine, stateFromLedger, timeline, turnsText } from "../src/model";
 import { artifactUrl } from "../src/source";
 import { fixtureText, REHEARSAL } from "./helpers";
 import { readFileSync } from "node:fs";
@@ -165,6 +165,45 @@ describe("timeline", () => {
       { title: "The spec changed after an agent turn: origin unverified", detail: "PRD.md" },
       { title: "The spec changed", detail: "PRD.md" },
     ]);
+  });
+
+  it("shows Kane's design gaps with their kind and question, an import Holdback repaired, and the variables a human filled (names only)", () => {
+    const events = [
+      ev({
+        ...design(["ac-1"], [["t-1", ["ac-1"]]]),
+        gaps: [
+          { id: "gap-1", title: "Pantry page URL", kind: "incomplete", acs: [], question: { header: "Pantry page URL", prompt: "What product URL should {{start_url}} contain?", options: [] } },
+          { id: "gap-2", title: "Eight-person equality", kind: "budget-evicted", acs: [], question: { header: "Eight-person equality", prompt: "Raise the ceiling?", options: [] } },
+          { id: "gap-3", title: "gap-3", kind: "gap", acs: [] },
+        ],
+      }),
+      ev({ t: "spec.repaired", file: ".testmuai/tests/t2_test.md", line: 12, from: "@import ./C:\\x\\t1_test.md", to: "@import ./t1_test.md" }),
+      ev({ t: "spec.variables", names: ["primary_phone", "proxy_name"], filledBy: "human" }),
+    ];
+    const items = timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "spec");
+    expect(items).toMatchObject([
+      { title: "Kane designed uc-1: 1 criterion, 1 test" },
+      {
+        title: "Kane left 2 gaps in uc-1's design",
+        detail: "gap-1 [incomplete] Pantry page URL: What product URL should {{start_url}} contain? · gap-2 [budget-evicted] Eight-person equality: Raise the ceiling?",
+      },
+      { title: "Holdback repaired a broken import Kane wrote", detail: ".testmuai/tests/t2_test.md line 12: @import ./C:\\x\\t1_test.md -> @import ./t1_test.md" },
+      { title: "A human filled 2 test variables Kane left empty", detail: "primary_phone, proxy_name" },
+    ]);
+    // a design whose gaps carry nothing but an id (the first live run's) adds no row
+    expect(timeline([design(["ac-1"], [["t-1", ["ac-1"]]])]).flatMap((s) => s.items)).toHaveLength(1);
+    // with no human there (Kane's evolve), Holdback's own suggestions filled them (R46)
+    expect(timeline([ev({ t: "spec.variables", names: ["guest_phone"], filledBy: "suggested" })]).flatMap((s) => s.items)).toMatchObject([
+      { kind: "spec", title: "Holdback filled 1 test variable Kane's new tests left empty with its suggestion", detail: "guest_phone" },
+    ]);
+  });
+
+  it("shows a stall: the agent changed nothing on code Kane checked, with Kane's disputed reports and the runs that proved nothing (R48, live demo)", () => {
+    const stalled = { turns: [2, 3, 4], disputed: [{ ac: "ac-5", test: "t-7", title: "Volunteer list link missing" }], inconclusive: [{ test: "t-3", reason: "timeout" }] };
+    const events = [ev({ t: "turn.start", n: 2, owed: ["ac-5"] }), ev({ t: "build.stalled", ...stalled })];
+    expect(timeline(events).flatMap((s) => s.items).filter((i) => i.kind === "stalled")).toEqual([{ kind: "stalled", at, ...stalled }]);
+    expect(turnsText([2, 3, 4])).toBe("turns 2, 3 and 4");
+    expect(turnsText([2, 3])).toBe("turns 2 and 3");
   });
 
   it("shows Kane's evolve after a surviving planted bug as a loop event: minted, retired, the because and its credits (R40)", () => {

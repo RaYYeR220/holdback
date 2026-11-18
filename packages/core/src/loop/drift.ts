@@ -10,6 +10,7 @@ import {
   reconcile,
   resumeSession,
   review,
+  gapsOf,
   type ListedNode,
   type ReconcileRow,
 } from "../kane/assurance.js";
@@ -25,6 +26,7 @@ import { checkRecordingsAnchor, markTampered, tamperMarker } from "../tamper.js"
 import { lastSeal } from "./build.js";
 import { changedTests, copySealed, restoreSealed, stateDiffersFrom, verifierDiffersFrom } from "./falsify.js";
 import type { HumanIO } from "./human.js";
+import { fillVariables, liveTests, VariablesMissing, VariablesUnchecked } from "./variables.js";
 import {
   appPinOf,
   appMovedFrom,
@@ -323,7 +325,7 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
         const kaneAcs = g.acs.filter((a) => a.useCase === uc);
         const kaneIds = new Set(kaneAcs.map((a) => a.id));
         const notes = designNotes(kaneAcs, g.tests.filter((t) => t.verifies.some((v) => kaneIds.has(v))), p.config.kane.designMax, rejected);
-        designs.push({ t: "design", useCase: uc, acs, tests, gaps: g.gaps, credits: credits.design.get(uc) ?? 0, ...(notes ? { notes } : {}) });
+        designs.push({ t: "design", useCase: uc, acs, tests, gaps: gapsOf(g, uc), credits: credits.design.get(uc) ?? 0, ...(notes ? { notes } : {}) });
       }
       // the seal hashes whatever is on disk: every test byte Kane wrote must be one the human approved
       const approvedFiles = new Set(
@@ -333,6 +335,15 @@ export async function runDrift(p: Project, io: HumanIO, log: Log, deps: DriftDep
       if (unapproved.length > 0) throw new DriftDropped(`Kane changed test files nobody approved: ${unapproved.join(", ")}`);
       const moved = await recordingsMoved();
       if (moved.length > 0) throw new DriftTamper(`${moved.join(", ")} changed while Kane ran`);
+      // R46, the variables gate: no live test is sealed typing a variable Kane left empty. The human gives
+      // each one a value; one left empty (or a test Holdback finds no file for) drops the drift
+      const stamp = new Date().toISOString();
+      try {
+        await fillVariables(cwd, liveTests([...events, ...designs.map((d) => ({ at: stamp, ...d }) as LedgerEvent)]), io, emit);
+      } catch (e) {
+        if (e instanceof VariablesMissing || e instanceof VariablesUnchecked) throw new DriftDropped(e.message);
+        throw e;
+      }
       // what is sealed next is what the human reviewed and the config as drift found it (N-I2, I-1):
       // a config that moved is a tamper; a spec that moved is not re-planned. Checked before Kane
       // hears of the approval, and again after it, right before the events and the seal

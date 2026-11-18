@@ -18,6 +18,8 @@ import {
   ScriptedHumanIO,
   seal,
   serve,
+  VariablesMissing,
+  VariablesUnchecked,
   type BuildResult,
   type DriftResult,
   type FalsifyResult,
@@ -126,7 +128,7 @@ const notCalled = (name: string) => async () => {
 
 /** Fake IO that records `close`. */
 function fakeIO() {
-  const io = { closed: 0, answer: async () => ({}), approve: async () => [], close() { io.closed++; } };
+  const io = { closed: 0, answer: async () => ({}), approve: async () => [], values: async () => ({}), close() { io.closed++; } };
   return io;
 }
 
@@ -517,6 +519,98 @@ describe("spec", () => {
     expect(r.err).toContain("Kane is not logged in");
     expect(io.closed).toBe(1);
   });
+
+  it("a spec stage stopped by a test variable left empty exits 3 and names it", async () => {
+    await fixture({ seal: false });
+    const io = fakeIO();
+    const r = await cli(["spec"], {
+      humanIO: () => io as never,
+      runSpecStage: async () => {
+        throw new VariablesMissing(["proxy_name", "spare_phone"]);
+      },
+    });
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("proxy_name, spare_phone");
+    expect(r.err).toContain("holdback spec");
+    expect(r.err).not.toContain("error:");
+    expect(io.closed).toBe(1);
+    // an approved test whose file Holdback cannot find: its variables are unchecked, the stage stops the same way (fix round 1)
+    const unchecked = await cli(["spec"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async () => {
+        throw new VariablesUnchecked(["t-3"]);
+      },
+    });
+    expect(unchecked.code).toBe(3);
+    expect(unchecked.err).toContain("t-3");
+  });
+
+  it("prints Kane's design gaps, the variables a human filled and the imports Holdback repaired", async () => {
+    await fixture({ seal: false });
+    const ac = (id: string) => ({ id, text: `criterion ${id}`, useCase: "uc-2", cites: [], trust: "derived" as const });
+    const r = await cli(["spec"], {
+      humanIO: () => fakeIO() as never,
+      runSpecStage: async (_p, _io, logFn) => {
+        await logFn({
+          at,
+          t: "design",
+          useCase: "uc-2",
+          acs: [ac("ac-3")],
+          tests: [{ id: "t-3", title: "three", file: ".testmuai/tests/t3_test.md", verifies: ["ac-3"] }],
+          gaps: [
+            { id: "gap-1", title: "Pantry page URL", kind: "incomplete", acs: [], question: { header: "Pantry page URL", prompt: "What product URL should\n{{start_url}} contain?", options: [] } },
+            { id: "gap-2", title: "gap-2", kind: "gap", acs: [] },
+          ],
+          credits: 1,
+        });
+        await logFn({ at, t: "spec.repaired", file: ".testmuai/tests/t3_test.md", line: 12, from: "@import ./C:\\x\\t1_test.md", to: "@import ./t1_test.md" });
+        await logFn({ at, t: "spec.variables", names: ["primary_phone", "proxy_name"], filledBy: "human" });
+        await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Kane left 1 gap in its design (nothing tests it):");
+    expect(r.out).toContain("  gap-1 [incomplete] Pantry page URL: What product URL should {{start_url}} contain?");
+    expect(r.out).not.toContain("gap-2"); // its id alone says nothing
+    expect(r.out).toContain("Holdback repaired 1 broken import Kane wrote: .testmuai/tests/t3_test.md line 12 (@import ./t1_test.md).");
+    expect(r.out).toContain("You filled 2 test variables Kane left empty: primary_phone, proxy_name.");
+  });
+
+  it("--dashboard asks for test variables in the browser: a POST to /api/values fills them", async () => {
+    await fixture({ seal: false });
+    let filled: Record<string, string> | undefined;
+    const out: string[] = [];
+    const run = main(["spec", "--dashboard", "--port", "0"], {
+      cwd: appDir,
+      out: (l) => out.push(l),
+      err: () => {},
+      deps: {
+        env: {},
+        runSpecStage: async (_p, io, logFn) => {
+          filled = await io.values([{ name: "primary_phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] }]);
+          await logFn({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+        },
+      },
+    });
+    let m: RegExpExecArray | null = null;
+    for (let i = 0; i < 200 && !m; i++) {
+      for (const l of out) m ??= /http:\/\/127\.0\.0\.1:(\d+)\/#token=([0-9a-f]+)/.exec(l);
+      if (!m) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(m).not.toBeNull();
+    const base = `http://127.0.0.1:${m![1]}`;
+    const headers = { "x-holdback-token": m![2]! };
+    let state: { pending: { kind: string; sid: string }[] } = { pending: [] };
+    for (let i = 0; i < 200 && state.pending.length === 0; i++) {
+      state = (await (await fetch(`${base}/api/state`, { headers })).json()) as typeof state;
+      if (state.pending.length === 0) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(state.pending[0]?.kind).toBe("values");
+    const res = await fetch(`${base}/api/values`, { method: "POST", headers, body: JSON.stringify({ sid: state.pending[0]!.sid, values: { primary_phone: "2155550199" } }) });
+    expect(res.status).toBe(200);
+    expect(await run).toBe(0);
+    expect(filled).toEqual({ primary_phone: "2155550199" });
+  });
 });
 
 describe("--answers", () => {
@@ -583,6 +677,57 @@ describe("--answers", () => {
     stdin.write("yes\n");
     expect(await last).toBe(true);
     expect(stdin.isPaused()).toBe(true);
+  }, 10_000);
+
+  it("the terminal asks for each empty test variable: Enter takes Holdback's suggestion, a typed value replaces it, a secret is never shown", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    let shown = "";
+    stdout.on("data", (b: Buffer) => (shown += b.toString("utf8")));
+    const io = new CliHumanIO(stdin, stdout);
+    const got = io.values([
+      { name: "primary_phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1", "t-2"] },
+      { name: "primary_phone_formatted", description: "Same digits, punctuated.", secret: false, suggested: "(215) 555-0101", sameAs: "primary_phone", usedBy: ["t-2"] },
+      { name: "coupon", description: `A coupon code${String.fromCharCode(0x202e)}.`, secret: false, placeholder: "<coupon>", usedBy: ["t-3"] },
+      { name: "login_password", description: "Password of the test account.", secret: true, usedBy: ["t-4"] },
+    ]);
+    stdin.write("\n(215) 555 0101\nSAVE10\nhunter2\n");
+    expect(await got).toEqual({ primary_phone: "2155550101", primary_phone_formatted: "(215) 555 0101", coupon: "SAVE10", login_password: "hunter2" });
+    expect(shown).toContain("{{primary_phone}} Unused ten-digit phone. (used by t-1, t-2)");
+    expect(shown).toContain("value (Enter = 2155550101): ");
+    expect(shown).toContain("(same digits as primary_phone)");
+    expect(shown).toContain("value (no suggestion, e.g. <coupon>; Enter leaves it empty): ");
+    expect(shown).toContain("A coupon code\\u202E."); // Kane wrote it: escaped
+    expect(shown).toContain("value (secret: never printed or logged; Enter leaves it empty): ");
+    expect(shown).not.toContain("hunter2");
+
+    // an approval shows what Holdback did to a test, under it
+    const approved = io.approve([{ ref: "t-2", title: "two", kind: "test", note: "Holdback repaired a broken import Kane wrote (line 12): a -> b" }]);
+    stdin.write("\n");
+    expect(await approved).toEqual(["t-2"]);
+    expect(shown).toContain("  t-2 [test] two\n      Holdback repaired a broken import Kane wrote (line 12): a -> b\n");
+    io.close();
+  }, 10_000);
+
+  it("a secret is read with the terminal's echo off: raw mode for that line only, a backspace honoured (fix round 1)", async () => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+    const stdout = new PassThrough();
+    let shown = "";
+    stdout.on("data", (b: Buffer) => (shown += b.toString("utf8")));
+    const io = new CliHumanIO(stdin, stdout);
+    const got = io.values([
+      { name: "login_password", description: "Password of the test account.", secret: true, usedBy: ["t-4"] },
+      { name: "phone", description: "Unused ten-digit phone.", secret: false, suggested: "2155550101", usedBy: ["t-1"] },
+    ]);
+    await new Promise((r) => setImmediate(r));
+    expect(stdin.setRawMode.mock.calls).toEqual([[true]]); // only while the secret is typed
+    stdin.write("hunterX\x7f2\r");
+    await new Promise((r) => setTimeout(r, 150)); // past readline's CRLF window
+    stdin.write("2155550199\n");
+    expect(await got).toEqual({ login_password: "hunter2", phone: "2155550199" });
+    expect(stdin.setRawMode.mock.calls).toEqual([[true], [false]]);
+    expect(shown).not.toContain("hunter");
+    io.close();
   }, 10_000);
 
   it("refuses an answers file inside the app folder, also through a linked folder, before anything runs", async () => {
@@ -694,6 +839,98 @@ describe("run", () => {
     expect(r.err).toContain("holdback status");
     expect(r.err).not.toMatch(/max-turns|maxTurns/);
     expect(r.out).toContain("Gate: ");
+  });
+
+  describe("the gate stays shut, the passing criteria are falsified anyway (live demo, 2026-11-17)", () => {
+    const inconclusive = [{ test: "t-9", turn: 3, reason: "timeout" }];
+    const stuck: BuildResult = { allowStop: false, turns: 3, reason: "inconclusive", inconclusive };
+
+    it("a build loop stopped on Kane's own inconclusive runs: falsify runs over the passing criteria, with its replay kept to them, then the run stops held back (exit 3), and the verdict says what it falsified", async () => {
+      await greenFixture();
+      const s = stages({ build: [stuck] });
+      s.deps.runFalsify = async (_p, _d, _io, _log, opts) => {
+        s.calls.push("falsify");
+        s.seen.falsify.push(opts);
+        await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "killed" });
+        // ac-2 was skipped on the breaker's budget: not counted as falsified
+        return { ...falsifyOk, killed: ["ac-1"], skipped: ["ac-2"] };
+      };
+      const r = await cli(["run"], s.deps);
+      expect(r.code).toBe(3);
+      expect(s.calls).toEqual(["build", "falsify"]);
+      expect(s.seen.falsify[0]).toMatchObject({ gateShut: true });
+      expect(r.out).toContain("The gate is shut (1 Kane run inconclusive): falsifying the 2 passing criteria anyway");
+      const falsified = "Falsified 1 passing criterion (1 proved, 0 vacuous, 1 skipped on budget)";
+      expect(r.err).toContain(`${falsified}; the gate stays shut: 1 Kane run inconclusive`);
+      expect(r.err).toContain("t-9 (turn 3): timeout");
+      const headline = /Verdict: (.*)/.exec(r.out)?.[1] ?? "";
+      expect(headline).toMatch(/^Held back — 2\/2 green, falsified 1 passing criterion \(1 proved, 0 vacuous, 1 skipped on budget\), the last run stopped: Kane could not finish checking a test$/);
+      const end = (await readEventsOf()).findLast((e) => e.t === "run.end") as Extract<LedgerEvent, { t: "run.end" }>;
+      expect(end).toMatchObject({ stop: "inconclusive", exit: 3, falsified: { criteria: 1, proved: 1, vacuous: 0, skipped: 1 }, detail: expect.stringMatching(/^Falsified 1 passing criterion/) });
+      // status reads the same verdict
+      expect((await cli(["status"])).out).toContain(`Verdict: ${headline}`);
+      // --no-falsify: nothing is attacked, and the verdict says nothing of it
+      const plain = stages({ build: [stuck] });
+      const p2 = await cli(["run", "--no-falsify"], plain.deps);
+      expect(p2.code).toBe(3);
+      expect(plain.calls).toEqual(["build"]);
+      expect(p2.out).not.toContain("falsified");
+    });
+
+    it("a falsify pass that evolves a use case with the gate shut builds nothing more: the next `holdback run` does; a falsify stop still wins", async () => {
+      await greenFixture();
+      const evolved = stages({ build: [stuck], falsify: [{ ...falsifyOk, survived: ["ac-1"], redesigned: ["uc-1"], evolved: [{ uc: "uc-1", because: "b" }] }] });
+      const r = await cli(["run"], evolved.deps);
+      expect(evolved.calls).toEqual(["build", "falsify"]);
+      expect(r.code).toBe(3);
+      expect(r.out).toContain("Kane evolved the tests of uc-1 after a planted bug got past them: the next `holdback run` builds them");
+      const tamper = stages({ build: [stuck], falsify: [{ ...falsifyOk, reason: "tamper", error: "sealed files changed" }] });
+      expect((await cli(["run"], tamper.deps)).code).toBe(2);
+    });
+
+    it("a stalled build loop: the run stops (exit 3) listing the disputed reports and the inconclusive runs, falsifies what passes, and status says to review them (R48)", async () => {
+      await fixture(); // ac-1 passing, ac-2 owed: t-2 failed, "Limit off by one"
+      const s = stages();
+      const stalled = { turns: [2, 3], disputed: [{ ac: "ac-2", test: "t-2", title: "Limit off by one" }], inconclusive: [{ test: "t-1", reason: "timeout" }] };
+      s.deps.runBuildLoop = async (_p, _d, logFn) => {
+        s.calls.push("build");
+        await logFn({ at, t: "turn.start", n: 2, owed: ["ac-2"] });
+        await logFn({ at, t: "turn.end", n: 2, commit: "abc", filesChanged: [], durationMs: 1, appUp: true, agentExit: 0 });
+        await logFn({ at, t: "turn.start", n: 3, owed: ["ac-2"] });
+        await logFn({ at, t: "turn.end", n: 3, commit: "abc", filesChanged: [], durationMs: 1, appUp: true, agentExit: 0 });
+        await logFn({ at, t: "build.stalled", ...stalled });
+        return { allowStop: false, turns: 2, reason: "stalled", stalled };
+      };
+      const r = await cli(["run"], s.deps);
+      expect(r.code).toBe(3);
+      expect(s.calls).toEqual(["build", "falsify"]);
+      expect(r.err).toContain("the gate stays shut: the agent changed nothing for 2 turns");
+      expect(r.err).toContain("The coding agent changed nothing for 2 turns in a row on code Kane had checked");
+      expect(r.err).toContain('Disputed, review them: Kane\'s reports on the app the agent did not act on:\n  ac-2 (t-2): "Limit off by one"');
+      expect(r.err).toContain("Inconclusive: Kane's own runs that proved nothing:\n  t-1: timeout");
+      expect(r.err).toContain("holdback drift");
+      const headline = /Verdict: (.*)/.exec(r.out)?.[1] ?? "";
+      expect(headline).toContain("Held back");
+      expect(headline).toContain("the run stalled after 2 unchanged turns: Kane's report on ac-2 disputed, review it; 1 Kane run inconclusive");
+      const status = await cli(["status"]);
+      expect(status.out).toContain(`Verdict: ${headline}`);
+      expect(status.out).toContain('Stalled: disputed, review them: ac-2 (t-2): "Limit off by one"; inconclusive: t-1: timeout');
+      expect(JSON.parse((await cli(["status", "--json"])).out).verdict).toMatchObject({ exit: 3, headline });
+      // the coding agent's view (CLAUDECODE): how many runs proved nothing, never which or why
+      const agent = await cli(["status"], { env: { CLAUDECODE: "1" } });
+      expect(agent.out).toContain('Stalled: disputed, review them: ac-2 (t-2): "Limit off by one"; inconclusive: 1 test');
+      expect(agent.out).not.toContain("t-1: timeout");
+      // its `status --json`: the stall reduced to counts, like `state.inconclusive`; no stop detail either
+      const agentJson = JSON.parse((await cli(["status", "--json"], { env: { CLAUDECODE: "1" } })).out);
+      expect(agentJson.state.stalled).toEqual({ turns: [2, 3], disputed: 1, inconclusive: 1 });
+      expect(agentJson.state.stopped).toMatchObject({ reason: "stalled", exit: 3 });
+      expect(agentJson.state.stopped.detail).toBeUndefined();
+      expect(JSON.stringify(agentJson)).not.toContain("timeout"); // why Kane's runs proved nothing
+      expect(JSON.stringify([agentJson.state.stalled, agentJson.state.stopped])).not.toContain("Limit off by one"); // (its brief carried the report itself)
+      // the human's keeps every detail
+      const humanJson = JSON.parse((await cli(["status", "--json"])).out);
+      expect(humanJson.state.stalled).toEqual(stalled);
+    });
   });
 
   it("builds, falsifies, and prints the one-screen summary", async () => {

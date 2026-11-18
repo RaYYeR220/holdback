@@ -14,7 +14,20 @@ export type RunKind = "build" | "falsify" | "exam" | "bisect" | "replay";
  * record on its own): the Kane credit cap, a spec change, Kane runs that proved nothing, the turn
  * limit, an interrupt or an error.
  */
-export type RunStop = "kane-budget" | "drift" | "inconclusive" | "max-turns" | "aborted" | "error";
+export type RunStop = "kane-budget" | "drift" | "inconclusive" | "max-turns" | "aborted" | "error" | "stalled";
+
+/** A stalled build loop (R48): Kane's reports on the app the agent did not act on, and Kane's own runs that proved nothing. */
+export type Stall = {
+  /** The agent turns in a row that changed nothing on code Kane had checked. */
+  turns: number[];
+  /** Owed criteria standing on Kane's report of an app failure: the agent disputes them by changing nothing; a human reviews them. */
+  disputed: { ac: string; test: string; title: string }[];
+  /** Tests whose latest Kane run proved nothing (Kane's own trouble), and why. */
+  inconclusive: { test: string; reason: string }[];
+};
+
+/** What `holdback run`'s falsify pass did with the gate shut: criteria attacked (budget skips apart), proved, vacuous, skipped on the breaker's budget. */
+export type GateShutFalsify = { criteria: number; proved: number; vacuous: number; skipped: number };
 
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }
@@ -30,6 +43,18 @@ export type LedgerEvent = { at: string } & (
   | { t: "design"; useCase: string; acs: AcNode[]; tests: TestNode[]; gaps: GapNode[]; credits: number; rejected?: string[]; notes?: Record<string, string> }
   /** The spec stage's extraction finished for the spec files and links as they hash to `hash`: a resumed stage need not ingest again. */
   | { t: "spec.extracted"; hash: string }
+  /**
+   * The variables gate (R46): the test variables `names`, which Kane declared empty and a test about
+   * to be sealed types, got values. `human`: a human gave them (the spec stage, a drift); `suggested`:
+   * Holdback wrote its own suggestions, with no human there (Kane's evolve). Names only: a value never
+   * goes on the ledger.
+   */
+  | { t: "spec.variables"; names: string[]; filledBy: "human" | "suggested" }
+  /**
+   * Holdback rewrote an `@import` line Kane wrote with an absolute path after `./` (`file` relative to
+   * the verifier, `line` 1-based) to the file of that name next to it, before the test approval.
+   */
+  | { t: "spec.repaired"; file: string; line: number; from: string; to: string }
   /**
    * `by: "kane"`: the seal after Kane's evolve of a use case, whose new tests Kane authored (R40).
    * `checkpoint`: the seal after a drift a human approved interactively (I-2): the only seal that
@@ -114,7 +139,13 @@ export type LedgerEvent = { at: string } & (
    * (its exit code) and `detail` when it stopped short of a clean finish. The verdict holds back, with
    * that exit code, until a run ends without one.
    */
-  | { t: "run.end"; stop?: RunStop; exit?: number; detail?: string }
+  | { t: "run.end"; stop?: RunStop; exit?: number; detail?: string; falsified?: GateShutFalsify }
+  /**
+   * The build loop stalled (R48): agent turns in a row (`turns`) that ended normally changed nothing on
+   * code Kane had checked with the app up. It lists Kane's reports on the app the agent did not act on
+   * (`disputed`: a human reviews them) and the tests whose latest run proved nothing (`inconclusive`).
+   */
+  | ({ t: "build.stalled" } & Stall)
 );
 
 /** `rejected`: a human turned the criterion down when approving the design: never owed, never run. */
@@ -163,5 +194,7 @@ export type LedgerState = {
   /** A `tamper` event with no later `seal`: nothing verified since can be trusted until a human re-seals. */
   tampered: boolean;
   /** How the latest `holdback run` stopped, when it did not finish clean (its `run.end`); absent otherwise. */
-  stopped?: { reason: RunStop; exit: number; detail?: string };
+  stopped?: { reason: RunStop; exit: number; detail?: string; falsified?: GateShutFalsify };
+  /** The latest stall of the build loop (`build.stalled`), until a turn changes code or a human's seal re-plans the tests. */
+  stalled?: Stall;
 };

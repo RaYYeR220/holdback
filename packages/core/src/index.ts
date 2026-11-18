@@ -13,6 +13,7 @@ export {
   type EvolveResult,
   type EvolvePair,
   readGraph,
+  gapsOf,
   listNodes,
   type ListedNode,
   reconcile,
@@ -44,6 +45,8 @@ export {
 export type {
   RunKind,
   RunStop,
+  Stall,
+  GateShutFalsify,
   LedgerEvent,
   AcStatus,
   AcState,
@@ -53,7 +56,7 @@ export { appendEvent, readEvents, parseEvents } from "./ledger/store.js";
 export { decidesStatus, reduce } from "./ledger/reduce.js";
 export { KaneMeter, KaneCapReached, eventCredits, type BalanceReader, type KaneCap } from "./ledger/credits.js";
 export { gate } from "./ledger/gate.js";
-export { verdict, type Verdict, type VerdictState } from "./ledger/verdict.js";
+export { verdict, stallText, falsifiedText, type Verdict, type VerdictState } from "./ledger/verdict.js";
 export { retiredTests, type RetiredTest } from "./ledger/retired.js";
 export { snapshot, type Snapshot } from "./snapshot.js";
 export { serve, DashboardHumanIO, DEFAULT_PORT, PromptRejected, type ServeOptions, type Served, type PendingPrompt } from "./server.js";
@@ -74,7 +77,9 @@ export {
   type AgentSettingsOptions,
 } from "./agent/guard.js";
 export { runClaudeTurn, contractPath, guardMainPath, HEADLESS_ENV, withoutHoldbackEnv, type ClaudeTurnOptions, type ClaudeTurnResult } from "./agent/claude.js";
-export type { HumanIO, ApprovalItem } from "./loop/human.js";
+export type { HumanIO, ApprovalItem, VariableAsk } from "./loop/human.js";
+export { emptyVariables, fillSuggested, fillVariables, liveTests, suggestValues, VariablesMissing, VariablesUnchecked } from "./loop/variables.js";
+export { lintImports, importTargets, type ImportLint, type ImportRepair, type BrokenImport } from "./loop/imports.js";
 export { CliHumanIO, confirmLine, LineReader, lineReaderFor, ScriptedHumanIO, parseHumanScript, type HumanScript } from "./loop/human.js";
 export {
   runSpecStage,
@@ -110,6 +115,8 @@ export {
   evidenceScreenshot,
   lastSeal,
   EVIDENCE_DIR,
+  STALL_TURNS,
+  AGENT_EDITS,
   VerifySession,
   type SessionStop,
   type BuildDeps,

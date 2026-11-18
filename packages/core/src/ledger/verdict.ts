@@ -1,5 +1,5 @@
 import { gate } from "./gate.js";
-import type { LedgerState, RunStop } from "./types.js";
+import type { GateShutFalsify, LedgerState, RunStop, Stall } from "./types.js";
 
 /**
  * `released`: every criterion a human did not turn down is proved or passing, the gate is open and
@@ -50,6 +50,7 @@ export type Verdict = {
 
 /** The last run's stop, in plain words. */
 const STOPPED: Record<RunStop, string> = {
+  stalled: "the run stalled: the agent changed nothing on code Kane had checked",
   "kane-budget": "the last run stopped: the Kane credit cap was reached",
   drift: "the last run stopped: the spec changed",
   inconclusive: "the last run stopped: Kane could not finish checking a test",
@@ -59,6 +60,22 @@ const STOPPED: Record<RunStop, string> = {
 };
 
 const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+
+/** A stall in a few words (R48): the turns, Kane's reports the agent did not act on, the runs that proved nothing. */
+export function stallText(st: Stall): string {
+  const bits: string[] = [];
+  const k = st.disputed.length;
+  if (k > 0) bits.push(`Kane's ${k === 1 ? "report" : "reports"} on ${st.disputed.map((d) => d.ac).join(", ")} disputed, review ${k === 1 ? "it" : "them"}`);
+  if (st.inconclusive.length > 0) bits.push(`${n(st.inconclusive.length, "Kane run", "Kane runs")} inconclusive`);
+  return `the run stalled after ${n(st.turns.length, "unchanged turn", "unchanged turns")}${bits.length > 0 ? `: ${bits.join("; ")}` : ""}`;
+}
+
+/** What falsify did with the gate shut (I3): the criteria it attacked, budget skips apart. */
+export const falsifiedText = (f: GateShutFalsify): string =>
+  `falsified ${n(f.criteria, "passing criterion", "passing criteria")} (${f.proved} proved, ${f.vacuous} vacuous, ${f.skipped} skipped on budget)`;
+
+/** The last run's stop in plain words; a stall names what it stalled on. */
+const stopText = (state: LedgerState, stop: RunStop): string => (stop === "stalled" && state.stalled ? stallText(state.stalled) : STOPPED[stop]);
 
 /**
  * The verdict on `state`, from the same facts that pick `holdback run`'s exit code (N-1). What the
@@ -95,7 +112,7 @@ export function verdict(state: LedgerState, opts: { tampered?: boolean; specChan
   } else if (counts.criteria === 0) {
     state_ = "empty";
     parts.push("no criteria yet");
-    if (state.stopped) stops.push(STOPPED[state.stopped.reason]);
+    if (state.stopped) stops.push(stopText(state, state.stopped.reason));
     parts.push(...stops);
   } else {
     parts.push(`${counts.green}/${counts.criteria} green`);
@@ -105,7 +122,9 @@ export function verdict(state: LedgerState, opts: { tampered?: boolean; specChan
     if (counts.needsSpec > 0) parts.push(`${n(counts.needsSpec, "criterion", "criteria")} with no test`);
     if (counts.inconclusive > 0) parts.push(`${n(counts.inconclusive, "test", "tests")} proved nothing on the last run`);
     const stop = state.stopped?.reason;
-    if (stop) stops.push(STOPPED[stop]);
+    // what the last run's falsify pass did with the gate shut (I3)
+    if (state.stopped?.falsified) parts.push(falsifiedText(state.stopped.falsified));
+    if (stop) stops.push(stopText(state, stop));
     if (opts.specChanged && stop !== "drift") stops.push("the spec changed since the last seal");
     if (opts.capReached && stop !== "kane-budget") stops.push("the Kane credit cap is reached");
     parts.push(...stops);
