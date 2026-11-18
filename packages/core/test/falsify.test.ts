@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppStartError, type StartAppOptions } from "../src/app.js";
 import { Budget, estimateUsd, usdOf, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
+import { patchInMemory } from "../src/breaker/context.js";
 import { REFEREE_MAX_TOKENS, refereeMutant } from "../src/breaker/referee.js";
 import { parseEvents } from "../src/ledger/parse.js";
 import { setAside } from "../src/ledger/setaside.js";
@@ -253,6 +254,11 @@ type Plan = {
   refereeUsage?: { prompt_tokens: number; completion_tokens: number };
 };
 
+/** The first line a patch in the referee's prompt adds, as the referee would quote it. */
+const addedLine = (prompt: string) => (/^Patch:\n[\s\S]*?^\+(?!\+\+ )(.*)$/m.exec(prompt)?.[1] ?? "").trim();
+/** `SRC` with ac-3's planted bug in it, as the mutant's worktree has it. */
+const SRC_AC3 = SRC.replace("income <= LIMITS[size] ?", "income <= LIMITS[size] + 1 ?");
+
 /** The referee confirming a survivor of `ac`: the breaker's inputs, expected and observed results. */
 const confirms = (ac: string) => ({
   verdict: "violates",
@@ -317,7 +323,9 @@ function fakes(plan: Plan) {
         calls.referee.push({ ac, o });
         const said = plan.referee ? plan.referee(ac, n) : confirms(ac);
         if (said instanceof Error) throw said;
-        return { json: said, usage: plan.refereeUsage ?? { prompt_tokens: 0, completion_tokens: 0 } };
+        // a confirmation quotes the line the patch added (in the code after the change it was shown), unless the plan says what it quotes
+        const json = typeof said === "object" && said !== null && (said as { verdict?: unknown }).verdict === "violates" && !("quote" in said) ? { ...said, quote: addedLine(o.messages[1]!.content) } : said;
+        return { json, usage: plan.refereeUsage ?? { prompt_tokens: 0, completion_tokens: 0 } };
       }
       current = ac;
       const n = perAc.get(ac) ?? 0;
@@ -661,11 +669,14 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(calls.referee.map((c) => c.ac)).toEqual(["ac-3"]);
       expect(calls.referee[0]!.o).toMatchObject({ model: REFEREE_MODEL, temperature: 0, schemaName: "referee" });
       expect(calls.referee[0]!.o.messages[1]!.content).toContain(PATCH["ac-3"]!);
+      // the planted file whole, as it was and as the mutant's worktree has it
+      expect(calls.referee[0]!.o.messages[1]!.content).toContain(`(before)\n${SRC}\n`);
+      expect(calls.referee[0]!.o.messages[1]!.content).toContain(`(after)\n${SRC_AC3}\n`);
       const all = await readEvents(p.ledgerFile);
       expect(all.find((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({
         verdict: "survived",
         usd: expect.closeTo(USD_PER_CALL + REF_USD, 12),
-        referee: { confirmed: true, input: said.input, expected: "Not eligible.", observed: "Eligible.", reason: said.reason, usd: expect.closeTo(REF_USD, 12) },
+        referee: { confirmed: true, input: said.input, expected: "Not eligible.", quote: 'return income <= LIMITS[size] + 1 ? "Eligible." : "Not eligible.";', observed: "Eligible.", reason: said.reason, usd: expect.closeTo(REF_USD, 12) },
       });
       expect(r.usd).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
       expect(reduce(all).breakerUsd - spentBefore).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
@@ -673,6 +684,17 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(calls.evolve[0]!.because).toContain(said.input);
       expect(calls.evolve[0]!.because).not.toContain(SLIP["ac-3"]!.inputs);
       expect(calls.evolve[0]!.because).toContain(SLIP["ac-3"]!.behaviour);
+    });
+
+    it("a confirmation whose quoted line is not in the code it was shown is not confirmed: invalid, never sent to Kane, the criterion keeps its status", async () => {
+      await setup();
+      const said = { verdict: "violates", input: "household size 1, monthly income $2,461.50, SNAP unchecked", expected: "Not eligible.", quote: "return income < LIMITS[size] * 2;", observed: "Eligible.", reason: "r" };
+      const { deps, io, calls } = fakes({ mutantRun: survives3, referee: () => said });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], survived: [], invalid: ["ac-3"], redesigned: [] });
+      expect(r.refuted).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", by: "referee", why: "unsupported: the referee's quoted line is not in the code it was given" }]);
+      expect(calls.evolve).toEqual([]);
+      expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("passing");
     });
 
     it("asks on `breaker.refereeModel`, which a project may set apart from the breaker's model", async () => {
@@ -775,6 +797,8 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(asked).toMatchObject({ model: REFEREE_MODEL, temperature: 0, schemaName: "referee", maxTokens: REFEREE_MAX_TOKENS });
       expect(asked.messages[0]!.content).toMatch(/^You are the referee/);
       for (const part of [`AC ac-3: ${AC3.text}`, `"${AC3.cites[0]!.quote}"`, PATCH["ac-3"]!]) expect(asked.messages[1]!.content).toContain(part);
+      // the app's file as committed, and with the patch applied in memory
+      for (const part of [`(before)\n${SRC}\n`, `(after)\n${SRC_AC3}\n`]) expect(asked.messages[1]!.content).toContain(part);
       expect(asked.messages[1]!.content).not.toContain(SLIP["ac-3"]!.behaviour);
       const ev = await after(since);
       expect(tags(ev).slice(0, 3)).toEqual(["recordings", "mutant.referee", "mutant:ac-1:killed"]);
@@ -785,7 +809,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
         ac: "ac-3",
         usd: expect.closeTo(REF_USD, 12),
         model: REFEREE_MODEL,
-        referee: { confirmed: false, input: "", expected: "", observed: "", reason: "it breaks another rule", usd: expect.closeTo(REF_USD, 12), model: REFEREE_MODEL },
+        referee: { confirmed: false, input: "", expected: "", quote: "", observed: "", reason: "it breaks another rule", usd: expect.closeTo(REF_USD, 12), model: REFEREE_MODEL },
         note: "off target: it breaks another rule",
       });
       const all = await readEvents(p.ledgerFile);
@@ -816,6 +840,20 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       const rec = (await readEvents(p.ledgerFile)).find((e) => e.t === "mutant.referee");
       expect(rec).toMatchObject({ mutant: "m-ac-3-1", referee: { confirmed: true, input: said.input, expected: "Not eligible.", observed: "Eligible." } });
       expect(rec).not.toHaveProperty("note");
+    });
+
+    it("the code moved since it was planted (its patch no longer applies at HEAD): judged from the patch alone, its quote held to the patch's lines after the change", async () => {
+      const moved = PATCH["ac-3"]!.replaceAll("LIMITS[size]", "limitOf(size)");
+      await setup({ before: () => log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: moved, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"] }) });
+      const said = { verdict: "violates", input: "household size 1, monthly income $2,461.50, SNAP unchecked", expected: "Not eligible.", observed: "Eligible.", reason: "r" };
+      const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: (_ac, n) => (n === 0 ? { ...said, quote: SRC.split("\n")[3]! } : said) });
+      const r = await runFalsify(p, deps, io, log);
+      const asked = calls.referee[0]!.o.messages[1]!.content;
+      expect(asked).toContain(moved);
+      expect(asked).toMatch(/The changed file is not available/);
+      expect(asked).not.toContain(SRC);
+      // a line of the app as it is now, not of the patch: not confirmed
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "unsupported: the referee's quoted line is not in the code it was given", model: REFEREE_MODEL }]);
     });
 
     it("a re-check pending from before the referee: rejected, nothing is re-checked and the criterion is attacked afresh; confirmed, it is re-checked as planted and not asked about again", async () => {
@@ -2586,8 +2624,10 @@ describe("the pantry run's six survivors, from before the referee, judged by it 
   const REPLIES: Reply[] = JSON.parse(readFileSync(join(here, "fixtures", "venice", "referee-rejudge.json"), "utf8"));
   const LIVE: { mutant: string; patch: string }[] = JSON.parse(readFileSync(join(here, "fixtures", "breaker", "survivors.json"), "utf8"));
   const UC1 = ["ac-26", "ac-27", "ac-36", "ac-37"];
+  /** The app's src/server.js at aad35d5, the commit those survivors were planted on (eval/referee/code). */
+  const SERVER = readFileSync(join(here, "..", "..", "..", "eval", "referee", "code", "pantry-aad35d5", "src", "server.js"), "utf8");
 
-  it("each is judged from the ledger alone; with the referee's replies rejecting them, ac-26, ac-27, ac-36 and ac-37 are no longer vacuous, and none is re-checked or sent to Kane", async () => {
+  it("each is judged from the ledger and the app's code; with the referee's replies rejecting them, ac-26, ac-27, ac-36 and ac-37 are no longer vacuous, and none is re-checked or sent to Kane", async () => {
     const events = parseEvents(readFileSync(PANTRY, "utf8"));
     const before = reduce(events);
     expect(Object.values(before.acs).filter((a) => a.status === "vacuous").map((a) => a.id)).toEqual(UC1);
@@ -2610,9 +2650,12 @@ describe("the pantry run's six survivors, from before the referee, judged by it 
         apiKey: "k",
         budget: new Budget(2, before.breakerUsd),
         chat: async (o) => ((asked = o), { json: r.reply, usage: r.usage }),
+        // as falsify gives it: the app's file as committed, with the patch applied in memory
+        code: patchInMemory([{ path: "src/server.js", content: SERVER }], m.patch)!,
       });
-      // the criterion's text and spec quote from the ledger's design events
+      // the criterion's text and spec quote from the ledger's design events, and the file whole
       expect(asked!.messages[1]!.content).toContain(`AC ${ac.id}: ${ac.text}`);
+      expect(asked!.messages[1]!.content).toContain(SERVER);
       for (const c of ac.cites.slice(0, 3)) expect(asked!.messages[1]!.content).toContain(c.anchor);
       expect(f.confirmed).toBe(false);
       added.push({ at: "2026-11-19T10:00:00.000Z", ...rejudgedEvent(m, f) } as LedgerEvent);

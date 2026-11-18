@@ -31,11 +31,13 @@ export type GateShutFalsify = { criteria: number; proved: number; vacuous: numbe
 
 /**
  * The referee's judgment of a planted bug that got past the tests: `input` what a user enters or
- * does, `expected` what the page must show for it by the criterion, `observed` what the mutant shows,
- * `reason` why, in its words (one line each, capped); `usd` the call's cost; `model` the Venice model that
- * judged it (missing on records from before Holdback kept it: an unknown model).
+ * does, `expected` what the page must show for it by the criterion, `quote` the line of the changed
+ * code it says makes the page show `observed` (missing on records from before it quoted code),
+ * `observed` what the mutant shows, `reason` why, in its words (one line each, capped); `usd` the
+ * call's cost; `model` the Venice model that judged it (missing on records from before Holdback kept
+ * it: an unknown model).
  */
-export type RefereeRecord = { confirmed: boolean; input: string; expected: string; observed: string; reason: string; usd: number; model?: string };
+export type RefereeRecord = { confirmed: boolean; input: string; expected: string; quote?: string; observed: string; reason: string; usd: number; model?: string };
 
 export type LedgerEvent = { at: string } & (
   | { t: "spec.ingested"; sources: { id: string; cid: string; status?: string; file?: string }[]; credits?: number }

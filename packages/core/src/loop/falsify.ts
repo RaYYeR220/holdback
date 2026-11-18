@@ -4,6 +4,7 @@ import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, noOpReason, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
+import { patchInMemory, type PatchedCode } from "../breaker/context.js";
 import { refereeMutant, refereeNote, type RefereeFinding } from "../breaker/referee.js";
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
@@ -384,7 +385,7 @@ export function unjudgedSurvivors(events: LedgerEvent[], model: string): MutantE
 }
 
 /** The referee's finding as the ledger keeps it. */
-const recordOf = (f: RefereeFinding): RefereeRecord => ({ confirmed: f.confirmed, input: f.input, expected: f.expected, observed: f.observed, reason: f.reason, usd: f.usd, model: f.model });
+const recordOf = (f: RefereeFinding): RefereeRecord => ({ confirmed: f.confirmed, input: f.input, expected: f.expected, quote: f.quote, observed: f.observed, reason: f.reason, usd: f.usd, model: f.model });
 
 /** The referee's later judgment of survivor `m` as the ledger records it (`mutant.referee`): its finding, and why it rejected it. */
 export function rejudgedEvent(m: Pick<MutantEvent, "id" | "ac">, f: RefereeFinding): Extract<EventBody, { t: "mutant.referee" }> {
@@ -828,6 +829,8 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     const patchFile = path.join(p.home, MUT_DIR, `${id}.patch`);
     let usd = 0;
     let patch = "";
+    /** The files the patch changes, as the worktree had them and has them now: what the referee is shown. */
+    let code: PatchedCode[] = [];
     let slip: Slip | undefined = recheck?.slip;
     let rationale = "";
     let logged = false;
@@ -864,14 +867,15 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     };
     /**
      * A planted bug that got past every test counts only once the referee confirms it visibly breaks
-     * this criterion (one call, under the USD cap): else it is invalid, refuted when the referee said
-     * so. A re-check of a survivor the referee confirmed, planted as it was, is not asked about again.
+     * this criterion (one call, under the USD cap, shown the planted files before and after the
+     * change): else it is invalid, refuted when the referee said so. A re-check of a survivor the
+     * referee confirmed, planted as it was, is not asked about again.
      */
     const judge = async (v: { verdict: Verdict; note?: string }): Promise<{ verdict: Verdict; note?: string; set: { refuted?: "referee"; referee?: RefereeRecord }; budget?: true }> => {
       if (v.verdict !== "survived" && v.verdict !== "survived-by-heal") return { ...v, set: {} };
       if (recheck?.referee?.confirmed && recheck.referee.model === p.config.breaker.refereeModel && patch === recheck.patch) return { ...v, set: {} };
       try {
-        const f = await refereeMutant(ac, patch, { model: p.config.breaker.refereeModel, apiKey, budget, chat: deps.chat });
+        const f = await refereeMutant(ac, patch, { model: p.config.breaker.refereeModel, apiKey, budget, chat: deps.chat, code });
         usd += f.usd;
         const referee = recordOf(f);
         const why = refereeNote(f);
@@ -985,7 +989,12 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
         return "done";
       }
       // a patch that changes no code proves nothing either way: never started, never replayed
-      const noop = noOpReason(patch, shown, await readSources(dir, patchedFiles(patch)));
+      const now = await readSources(dir, patchedFiles(patch));
+      code = now.flatMap((a) => {
+        const b = shown.find((f) => f.path === a.path);
+        return b ? [{ path: a.path, before: b.content, after: a.content }] : [];
+      });
+      const noop = noOpReason(patch, shown, now);
       if (noop !== undefined) {
         await finish("invalid", `changes no code: ${noop}`, [], [], { refuted: "no-op" });
         return "done";
@@ -1465,8 +1474,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
   /**
    * Survivors a pass logged before the referee existed, whose criterion is still vacuous by them or
    * will be re-checked with them (`unjudgedSurvivors`): the referee judges each first, with the
-   * prompt, caps and USD cap of a pass, from the ledger alone (the patch from the `mutant` event, the
-   * criterion and its spec quotes from the design). Each judgment goes on the ledger
+   * prompt, caps and USD cap of a pass, from the ledger (the patch from the `mutant` event, the
+   * criterion and its spec quotes from the design) and the app's files as committed, with the patch
+   * applied in memory (none when it no longer applies: the patch alone). Each judgment goes on the ledger
    * (`mutant.referee`). Rejected, the bug is set aside: the reducer lifts its criterion's vacuous
    * status, and it is never re-checked or sent to Kane. Confirmed, it goes on as before. No usable
    * answer: its cost is on record, the survivor stands as logged, and the next pass asks again.
@@ -1481,7 +1491,9 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       if (!ac) continue;
       const said = (outcome: "rejected" | "confirmed" | "unanswered", why: string) => void (out.rejudged ??= []).push({ ac: m.ac, mutant: m.id, outcome, why, model });
       try {
-        const f = await refereeMutant(ac, m.patch, { model, apiKey, budget, chat: deps.chat });
+        // falsify runs on a clean work tree: the app's files are the last commit's
+        const code = patchInMemory(await readSources(p.appDir, patchedFiles(m.patch)), m.patch) ?? [];
+        const f = await refereeMutant(ac, m.patch, { model, apiKey, budget, chat: deps.chat, code });
         out.usd += f.usd;
         const e = rejudgedEvent(m, f);
         await emit(e);

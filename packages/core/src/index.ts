@@ -179,6 +179,7 @@ export {
   pickFiles,
   acKeywords,
   checkPatch,
+  patchedFiles,
   BudgetRefused,
   BreakerError,
   BreakerUnavailable,
@@ -188,6 +189,7 @@ export {
   type Mutant,
   type ProposeOptions,
 } from "./breaker/mutate.js";
+export { patchInMemory, codeForReferee, quotedIn, REFEREE_CODE_TOKENS, type PatchedCode, type RefereeCode } from "./breaker/context.js";
 export {
   refereeMutant,
   refereeNote,

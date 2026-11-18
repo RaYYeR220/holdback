@@ -1,5 +1,6 @@
 import type { AcState } from "../ledger/types.js";
 import { escapeControls } from "../text.js";
+import { codeForReferee, quotedIn, type PatchedCode } from "./context.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused } from "./mutate.js";
 import { Budget, estimateUsd, veniceChat, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type ChatMessage } from "./venice.js";
 
@@ -17,10 +18,11 @@ export const REFEREE_SCHEMA = {
     verdict: { type: "string", enum: ["violates", "off-target", "no-change"] },
     input: { type: "string" },
     expected: { type: "string" },
+    quote: { type: "string" },
     observed: { type: "string" },
     reason: { type: "string" },
   },
-  required: ["verdict", "input", "expected", "observed", "reason"],
+  required: ["verdict", "input", "expected", "quote", "observed", "reason"],
   additionalProperties: false,
 };
 
@@ -29,21 +31,22 @@ export type RefereeCall = "violates" | "off-target" | "no-change";
 
 /**
  * The referee's judgment of one survivor: `confirmed` only when it named a concrete input whose
- * expected result (by the criterion) and observed result (the mutant's) visibly differ. An LLM's
- * judgment, not a proof. Every string is the referee's own, one line, capped, control characters escaped.
- * `model`: the Venice model that judged it.
+ * expected result (by the criterion) and observed result (the mutant's) visibly differ, and quoted a
+ * line of the code after the change, as it was shown, that makes the page show it (`quote`; checked
+ * here, verbatim but for whitespace). An LLM's judgment, not a proof. Every string is the referee's
+ * own, one line, capped, control characters escaped. `model`: the Venice model that judged it.
  */
-export type RefereeFinding = { confirmed: boolean; call: RefereeCall; input: string; expected: string; observed: string; reason: string; usd: number; model: string };
+export type RefereeFinding = { confirmed: boolean; call: RefereeCall; input: string; expected: string; quote: string; observed: string; reason: string; usd: number; model: string };
 
 export const REFEREE_SYSTEM = [
   "You are the referee in a mutation test of a web app.",
-  "A breaker changed the app's source (the patch below) to make the running app violate one acceptance criterion (AC), and the AC's browser tests did not catch the change. That counts against the tests only if the change really breaks this AC where a user can see it. Judge from the AC, its spec quotes and the patch alone, reading the code line by line: never assume the change does what it was meant to do.",
+  "A breaker changed the app's source (the patch below) to make the running app violate one acceptance criterion (AC), and the AC's browser tests did not catch the change. That counts against the tests only if the change really breaks this AC where a user can see it. Judge from the AC, its spec quotes, the patch and the changed file before and after the change (whole, or the code around the change and the code that defines what it uses). Read the code line by line and trace where every value the changed lines use comes from (a database column and its default, how a form field is read, what a caller passes): never assume the change does what it was meant to do, or that a value can be one the code never produces.",
   "Verdicts:",
   '- "violates": there is a concrete input or action, within what this AC covers, for which this AC and its spec quotes say the page must show one thing (expected) and the changed app shows something visibly different (observed). Work both out from the code.',
   '- "no-change": a user sees nothing different for any input: the removed and added lines do the same thing, a value the change sets is overwritten or never read, or only whitespace or comments change.',
   '- "off-target": a user may see a difference, but not one this AC is about: it breaks another rule, or only for inputs this AC does not cover.',
   'If you cannot name such an input with certainty, the verdict is not "violates".',
-  'Reply with JSON {"verdict": "violates" | "off-target" | "no-change", "input": string, "expected": string, "observed": string, "reason": string}. For "violates", `input` is what the user enters or does, `expected` what the page must show for it by this AC, `observed` what the changed app shows instead; for the other verdicts they may be empty. `reason` is one sentence on why. Keep every string under 300 characters.',
+  'Reply with JSON {"verdict": "violates" | "off-target" | "no-change", "input": string, "expected": string, "quote": string, "observed": string, "reason": string}. For "violates", `input` is what the user enters or does, `expected` what the page must show for it by this AC, `quote` one line copied character for character from the code after the change, the line that makes the page show `observed` for that input, and `observed` what the changed app shows instead; a "violates" whose `quote` is not in that code is discarded. For the other verdicts they may be empty. `reason` is one sentence on why. Keep every string under 300 characters.',
 ].join("\n");
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -65,10 +68,11 @@ const sameResult = (a: string, b: string) => {
   return n(a) === n(b);
 };
 
-function messagesFor(ac: AcState, patch: string): ChatMessage[] {
+function messagesFor(ac: AcState, patch: string, code: string): ChatMessage[] {
   const parts = [`AC ${ac.id}: ${ac.text}`];
   for (const c of ac.cites.slice(0, MAX_CITES)) parts.push(`Spec quote (${c.source} ${c.anchor}): "${clip(c.quote, MAX_QUOTE)}"`);
   parts.push(`Patch:\n${patch.length > MAX_PATCH ? `${patch.slice(0, MAX_PATCH)}\n[patch cut at ${MAX_PATCH} characters]` : patch}`);
+  parts.push(code);
   return [
     { role: "system", content: REFEREE_SYSTEM },
     { role: "user", content: parts.join("\n\n") },
@@ -79,20 +83,29 @@ export type RefereeOptions = {
   model: string;
   apiKey: string;
   budget: Budget;
+  /**
+   * The files the patch changes, before and after it (as the mutant's worktree has them, or
+   * `patchInMemory`). Empty when they cannot be had (the code moved since the bug was planted): the
+   * referee then judges from the patch, and its quote must be one of the patch's lines after the change.
+   */
+  code: PatchedCode[];
   /** Default: `veniceChat`. */
   chat?: typeof veniceChat;
 };
 
 /**
  * Asks the referee, once, whether a planted bug that got past the tests visibly breaks `ac`: a second
- * Venice call with its own prompt (the criterion, its spec quotes and the patch; never the breaker's
- * account or the source), at temperature 0, under the breaker's USD cap. Its reply is untrusted data:
- * held to the schema (else a paid BreakerError), every field one line and capped, never executed.
- * Refused before any call (BudgetRefused) when the worst case would pass the cap; an outage is a
- * BreakerUnavailable, as for the breaker.
+ * Venice call with its own prompt (the criterion, its spec quotes, the patch and the changed files
+ * before and after it, whole up to about 12k tokens, else excerpts: `codeForReferee`; never the
+ * breaker's account), at temperature 0, under the breaker's USD cap. Its reply is untrusted data:
+ * held to the schema (else a paid BreakerError; a missing `quote` counts as none), every field one
+ * line and capped, never executed. A confirmation must quote a line of the code after the change as
+ * it was shown, else it is not confirmed. Refused before any call (BudgetRefused) when the worst case
+ * would pass the cap; an outage is a BreakerUnavailable, as for the breaker.
  */
 export async function refereeMutant(ac: AcState, patch: string, opts: RefereeOptions): Promise<RefereeFinding> {
-  const messages = messagesFor(ac, patch);
+  const code = codeForReferee(opts.code, patch);
+  const messages = messagesFor(ac, patch, code.text);
   const est = estimateUsd(opts.model, messages, REFEREE_MAX_TOKENS);
   if (!opts.budget.canSpend(est)) throw new BudgetRefused(est, opts.budget.spent, opts.budget.capUsd);
   const chat = opts.chat ?? veniceChat;
@@ -118,8 +131,12 @@ export async function refereeMutant(ac: AcState, patch: string, opts: RefereeOpt
     if (typeof j[k] !== "string") throw new BreakerError(`the referee's reply has no ${k}`, usd);
     text[k] = field(j[k] as string);
   }
-  const confirmed = call === "violates" && text.input !== "" && text.expected !== "" && text.observed !== "" && !sameResult(text.expected, text.observed);
-  return { confirmed, call, ...text, usd, model: opts.model };
+  // a reply from before the referee quoted code has none: it confirms nothing
+  if (j.quote !== undefined && typeof j.quote !== "string") throw new BreakerError("the referee's reply has no quote", usd);
+  const raw = typeof j.quote === "string" ? j.quote : "";
+  const named = call === "violates" && text.input !== "" && text.expected !== "" && text.observed !== "" && !sameResult(text.expected, text.observed);
+  const confirmed = named && quotedIn(raw, code.after);
+  return { confirmed, call, input: text.input, expected: text.expected, quote: field(raw), observed: text.observed, reason: text.reason, usd, model: opts.model };
 }
 
 /** Why the referee did not confirm a survivor, in its own words where it gave them; undefined when it did. */
@@ -128,5 +145,6 @@ export function refereeNote(f: RefereeFinding): string | undefined {
   if (f.call === "no-change") return f.reason ? `no observable change: ${f.reason}` : "no observable change";
   if (f.call === "off-target") return f.reason ? `off target: ${f.reason}` : "off target";
   if (f.input === "" || f.expected === "" || f.observed === "") return "off target: the referee named no input where it breaks this criterion";
-  return "no observable change: the referee's expected and observed results are the same";
+  if (sameResult(f.expected, f.observed)) return "no observable change: the referee's expected and observed results are the same";
+  return f.quote === "" ? "unsupported: the referee quoted no line of the code for what it says the page shows" : "unsupported: the referee's quoted line is not in the code it was given";
 }
