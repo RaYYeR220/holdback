@@ -1,6 +1,6 @@
 # Kane CLI findings
 
-What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. Findings 1 to 14 come from the first live run and the rehearsal on a 4-rule spec; there, "the ledger" is the first live run's, `examples/first-live-run/ledger.jsonl`. Findings 15 to 21 come from the pantry run (2026-11-16 to 18), whose ledger is `apps/dashboard/fixtures/ledger.jsonl` (line numbers are its lines).
+What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this repo, what Holdback does about it, and a suggestion. Findings 1 to 14 come from the first live run and the rehearsal on a 4-rule spec; there, "the ledger" is the first live run's, `examples/first-live-run/ledger.jsonl`. Findings 15 to 22 come from the pantry run (2026-11-16 to 18), whose ledger is `apps/dashboard/fixtures/ledger.jsonl` (line numbers are its lines); 22 comes from a later pass, its evidence in a fixture of its own.
 
 ## 1. `--timeout` bounds each step, not the whole run
 
@@ -148,5 +148,13 @@ What Holdback found about Kane CLI 0.10.4. Each finding has its evidence in this
 - **What it means:** an application verdict goes to the coding agent as a bug to fix. When it is wrong, the agent spends turns on a link that works, and the criterion never passes.
 - **Holdback now:** briefs it, as Kane blamed the app. When two turns in a row change nothing, the stall stop lists such reports as disputed for a human to review (R48).
 - **Suggestion:** check a verdict's root cause against its own `observed` before blaming the app, and add the page URL at the failing step to the evidence.
+
+## 22. Some criteria Kane writes hang off a scenario, not the use case, and an evolve's new test verifies them
+
+- **Seen:** in its first design of uc-1, Kane wrote ac-39 ("The out-of-area result includes 'We serve ZIP codes 19104, 19139 and 19143 only.'") with a `scoped_to` edge to scenario sc-7 and none to uc-1; ac-40 to ac-44 are the same, under other scenarios. The design's criteria for uc-1 are ac-24 to ac-38, yet the sealed t-7, t-8 and t-9 verify ac-39 to ac-44 as well. On 2026-11-18, after the pass's survivors, `maintain evolve uc-1` (25.98 credits) wrote two new tests and kept the 6 it had ("⚒ wrote deny-unserved-zip-20001-without-a-checked-benefit_test.md · apply-two-published-annual-increments-for-ten-household_test.md", `keptTests` 6); the first verifies ac-24, ac-39 and ac-28. Neither file had ever been sealed (`packages/core/test/fixtures/kane/22-evolve-scenario-criterion.json`: Kane's store, its design log of that evolve and the ledger's last seal). Kane's own report of an evolve (`evolve_diff` on stdout) is not kept anywhere: not in the ledger, not in Kane's logs.
+- **What it means:** an evolve's new test can verify a criterion that, read from Kane's graph, belongs to no use case. Kane did not edit a sealed test in place.
+- **Holdback then:** refused the new test, because a minted test may verify only criteria of the use case it evolves, and logged it as a sealed file Kane "did not mint or retire" (`falsify.evolve.stray`): a tamper, the evolve rolled back.
+- **Holdback now:** a new test may also verify a criterion the ledger has under no use case when a sealed test of the same use case already verifies it and Kane's graph puts it under no other use case. A refused new test is named as one, with the reason: "minted tests Holdback may not seal: <path> (t-N: it verifies ac-9, not a criterion of uc-1)".
+- **Suggestion:** give such a criterion a `scoped_to` edge to its scenario's use case as well, so `context view` says where it belongs.
 
 Not filed upstream yet.
