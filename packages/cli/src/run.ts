@@ -91,6 +91,8 @@ function shutBy(b: BuildResult): string | undefined {
     return `${k} Kane run${k === 1 ? "" : "s"} inconclusive`;
   }
   if (b.reason === "stalled") return stallShort(b.stalled);
+  // the turn limit (`--max-turns 0` too: falsify what Kane last saw pass, without another check)
+  if (b.reason === "max-turns") return `turn limit reached after ${b.turns} turn${b.turns === 1 ? "" : "s"}`;
   return undefined;
 }
 

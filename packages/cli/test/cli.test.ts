@@ -877,6 +877,24 @@ describe("run", () => {
       expect(p2.out).not.toContain("falsified");
     });
 
+    it("the turn limit (--max-turns 0 included) shuts the gate too: the passing criteria are falsified, the run keeps the turn limit's exit (1)", async () => {
+      await greenFixture();
+      const limit: BuildResult = { allowStop: false, turns: 0, reason: "max-turns" };
+      const s = stages({ build: [limit] });
+      s.deps.runFalsify = async (_p, _d, _io, _log, opts) => {
+        s.calls.push("falsify");
+        s.seen.falsify.push(opts);
+        await log({ at, t: "mutant", id: "m-ac-1-1", ac: "ac-1", patch: "", model: "m", usd: 0, verdict: "killed" });
+        return { ...falsifyOk, killed: ["ac-1"] };
+      };
+      const r = await cli(["run", "--max-turns", "0"], s.deps);
+      expect(r.code).toBe(1);
+      expect(s.calls).toEqual(["build", "falsify"]);
+      expect(s.seen.falsify[0]).toMatchObject({ gateShut: true });
+      expect(r.out).toContain("The gate is shut (turn limit reached after 0 turns): falsifying the 2 passing criteria anyway");
+      expect(r.err).toContain("Falsified 1 passing criterion (1 proved, 0 vacuous, 0 skipped on budget); the gate stays shut: turn limit reached after 0 turns");
+    });
+
     it("a falsify pass that evolves a use case with the gate shut builds nothing more: the next `holdback run` does; a falsify stop still wins", async () => {
       await greenFixture();
       const evolved = stages({ build: [stuck], falsify: [{ ...falsifyOk, survived: ["ac-1"], redesigned: ["uc-1"], evolved: [{ uc: "uc-1", because: "b" }] }] });
