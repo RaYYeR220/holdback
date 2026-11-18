@@ -1,9 +1,9 @@
 {
   "_readme": "Figures of the recorded demo run (the pantry spec, 2026-11-16 to 2026-11-18). Each one is copied from the run's sanitized ledger (recorded.ledger) or from `holdback status --json` on it: spec from `spec.paused`, `design` and the first `seal`; build from `turn.start`/`turn.end` and the state before each turn; bugReports counts the distinct Kane reports (test, turn, diagnosis) the briefs carried; falsify from `mutant` events (survivedNoChange and survivedOtherRule read from each surviving mutant's `patch`, see CLAIMS.md); evolve from `falsify.evolved` and `redesign.dropped` (paused: an evolve whose child design session stopped on Kane's questions); spend from `credits` (balance), `turn.end` (agentUsd, durationMs) and every `run`'s durationS. drift is null: no spec edit in this run. Links are https only; null means not recorded yet, and the docs leave it out or show it as pending. `pnpm render-readme` refuses unknown keys and values of the wrong form. Never put an estimate here.",
   "links": {
-    "landing": null,
+    "landing": "https://holdback-seven.vercel.app",
     "video": null,
-    "replay": null
+    "replay": "https://holdback-seven.vercel.app/replay/"
   },
   "recorded": {
     "ledger": "apps/dashboard/fixtures/ledger.jsonl"
@@ -42,7 +42,7 @@
   "spend": {
     "kaneCredits": 5233.94,
     "agentUsd": 6.37,
-    "agentMin": 41.0,
+    "agentMin": 41,
     "kaneRunMin": 499.3
   }
 }
