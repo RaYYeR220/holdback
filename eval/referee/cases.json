@@ -28,7 +28,8 @@
         "confirmed": false,
         "input": "",
         "reason": "The patch only refactors the code by inlining the `digits` variable, but the logic and the value tested by the regex remain identical, so the behavior is unchanged."
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-53-1",
@@ -58,7 +59,8 @@
         "confirmed": false,
         "input": "",
         "reason": "The patch only changes whitespace in a template literal (removing a space after the closing brace), which does not affect the rendered HTML or any visible behavior."
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-36-1",
@@ -88,7 +90,8 @@
         "confirmed": true,
         "input": "Enter any income amount and select 'Every two weeks' as the income period, then submit the form.",
         "reason": "The patch changes the return statement to always set `eligible: false`, so for any income that should be eligible (e.g., a low income entered as 'every two weeks'), the page incorrectly shows 'Not eligible.' instead of 'Eligible.'"
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-26-1",
@@ -118,7 +121,8 @@
         "confirmed": true,
         "input": "Household size: 2, Income: $2000, Frequency: monthly, ZIP: 12345, No benefits checked",
         "reason": "The patch changes eligible to false for the case where a benefit is checked, but the AC covers cases without a checked benefit; however, the change also affects the return value for the benefit-checked branch, which is not covered by this AC, so the verdict is off-target."
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-27-1",
@@ -148,7 +152,8 @@
         "confirmed": true,
         "input": "Household size: 1, Income: 0, Frequency: per month, ZIP: 19104, Benefits: none",
         "reason": "With no benefit checked and income of $0, the changed code treats incomeCents === 0 as a benefit, returning 'Eligible' instead of checking the income limit, which for size 1 is above $0, so the AC requires 'Not eligible'."
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-37-1",
@@ -178,7 +183,8 @@
         "confirmed": false,
         "input": "",
         "reason": "The change from `if (form.benefits.length)` to `if (0)` makes the condition always false, but the AC is about income-decided results, not about the benefits path; the benefits path is never taken for income-decided results, so the change does not affect what the user sees for any input covered by…"
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-24-2",
@@ -208,7 +214,8 @@
         "confirmed": true,
         "input": "ZIP code 20001, household size 2, no benefits checked",
         "reason": "The patch adds an else branch that returns an eligibility message for any ZIP not in the list, instead of the out-of-area message required by the AC."
-      }
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-31-2",
@@ -238,7 +245,39 @@
         "confirmed": true,
         "input": "Household size 9, income frequency yearly, income amount 0",
         "reason": "The patch changes the calculation for households larger than 8 to add only one extra amount instead of multiplying by the number of additional members, so for a household of 9 the limit is incorrectly the same as for 8 plus one extra, rather than plus one extra per additional person."
-      }
+      },
+      "code": "pantry-aad35d5"
+    },
+    {
+      "id": "m-ac-19-1",
+      "from": "pantry, survivor",
+      "ac": {
+        "id": "ac-19",
+        "text": "When no proxy is named for a booked visit, confirmation has no Proxy line.",
+        "cites": [
+          {
+            "source": "prd",
+            "anchor": "L114-L117",
+            "quote": "| \"Phone number\" does not contain exactly 10 digits | Enter a 10-digit phone number. | | No \"Visit time\" is chosen | Choose a visit time. | | The household already has a visit in the month of the chosen visit time | This household already has a visit booked in that month. | | The chosen visit time already has 6 visits | That visit time is full. Choose another time. |"
+          },
+          {
+            "source": "prd",
+            "anchor": "L90-L90",
+            "quote": "A household may name one proxy, a person who can pick up the food for them; the proxy is optional."
+          }
+        ]
+      },
+      "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -278,7 +278,7 @@ function bookingPage(checkId, form = {}, errors = [], booked = null) {\n   if (booked) {\n     const lines = ['Visit booked.', `Your visit: ${fmtDate(booked.date)} at ${booked.time}.`];\n-    if (booked.proxy) lines.push(`Proxy: ${booked.proxy}`);\n+    if (booked.proxy === undefined) lines.push(`Proxy: ${booked.proxy}`);\n     return page(\n       'Book a visit',\n",
+      "label": false,
+      "truth": "off-target",
+      "why": "Turns `if (booked.proxy)` into `if (booked.proxy === undefined)`. The confirmation is rendered from the visits row (`proxy: v.proxy`), whose column is `proxy TEXT NOT NULL DEFAULT ''` and is written `form.proxy.trim()`: an unnamed proxy is '', never undefined. So no confirmation shows a Proxy line: ac-19 (no proxy named, no Proxy line) still holds; ac-18 (a named proxy shows 'Proxy: <name>') breaks.",
+      "live": {
+        "model": "z-ai-glm-5-3-flash",
+        "confirmed": true,
+        "input": "Book a visit without naming a proxy (leave the proxy field empty so booked.proxy is undefined)",
+        "reason": "The condition was inverted from truthy-check to === undefined, so an unnamed proxy (undefined) now renders a 'Proxy: undefined' line, which the AC forbids when no proxy is named."
+      },
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-4-1",
@@ -286,7 +325,8 @@
       "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -196,7 +196,7 @@\n   if (!phoneOk) errors.push('Enter a 10-digit phone number.');\n   const slot = listSlots().find((s) => s.value === form.slot);\n   if (!slot) {\n-    errors.push('Choose a visit time.');\n+    // errors.push('Choose a visit time.');\n     form.slot = '';\n   }\n   if (phoneOk && slot) {\n",
       "label": true,
       "truth": "violates",
-      "why": "Comments out the 'Choose a visit time.' error: a booking without a visit time no longer shows it."
+      "why": "Comments out the 'Choose a visit time.' error: a booking without a visit time no longer shows it.",
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-30-2",
@@ -310,7 +350,8 @@
       "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -127,3 +127,3 @@\n   else if (freq === 'yearly') [col, period, counted] = [0, 'year', incomeCents];\n-  else [col, period, counted] = [0, 'year', incomeCents * 26];\n+  else [col, period, counted] = [1, 'month', incomeCents];\n   const limit = limitFor(size, col);\n",
       "label": true,
       "truth": "violates",
-      "why": "Biweekly income is compared, unmultiplied, with the monthly column instead of x26 with the annual one."
+      "why": "Biweekly income is compared, unmultiplied, with the monthly column instead of x26 with the annual one.",
+      "code": "pantry-aad35d5"
     },
     {
       "id": "m-ac-28-2",
@@ -334,7 +375,8 @@
       "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -167,7 +167,7 @@\n     if (outcome.eligible) {\n       after += `<form method=\"get\" action=\"/book-a-visit\"><input type=\"hidden\" name=\"check\" value=\"${esc(outcome.checkId)}\"><button type=\"submit\">Book a visit</button></form>`;\n     }\n-    after += '</div>';\n+    after += '</div>' + (outcome.eligible ? '' : '<form method=\"get\" action=\"/book-a-visit\"><input type=\"hidden\" name=\"check\" value=\"\"><button type=\"submit\">Book a visit</button></form>');\n   }\n   return page(\n     'Food pantry eligibility check',\n",
       "label": true,
       "truth": "violates",
-      "why": "Every result other than 'Eligible.' now ends with a 'Book a visit' button."
+      "why": "Every result other than 'Eligible.' now ends with a 'Book a visit' button.",
+      "code": "pantry-aad35d5"
     }
   ]
 }
