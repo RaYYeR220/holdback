@@ -1371,6 +1371,23 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       it("is a tamper when Kane's graph puts it under another use case", async () => {
         await strayed(mintsBeside(["ac-3", "ac-39"], { ...AC39, useCase: "uc-2" }), [".testmuai/tests/t4_test.md"], sealedVerifies39);
       });
+
+      it("never lets in another use case's criterion: not when a sealed test of this use case verifies it, not when Kane's graph puts it under no use case", async () => {
+        // ac-9 is uc-2's on the ledger; uc-1's sealed t-3 verifies it too, and Kane's graph scopes it to a scenario only
+        await strayed(
+          mintsBeside(["ac-3", "ac-9"], { ...AC9, useCase: "" }),
+          [".testmuai/tests/t4_test.md"],
+          async () => {
+            await otherUseCase()();
+            const tests = [testNodes()[0]!, { ...testNodes()[1]!, verifies: ["ac-3", "ac-9"] }];
+            await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests, gaps: [], credits: 0 });
+            await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+            await greenTurn(2);
+          },
+        );
+        const stray = (await readEvents(p.ledgerFile)).find((e) => e.t === "falsify.evolve.stray") as Extract<LedgerEvent, { t: "falsify.evolve.stray" }>;
+        expect(stray.detail).toContain("(t-4: it verifies ac-9, not a criterion of uc-1)");
+      });
     });
 
     it("a graph that lists one test id twice is a tamper", async () => {
