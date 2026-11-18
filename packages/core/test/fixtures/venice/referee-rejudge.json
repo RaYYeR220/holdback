@@ -1,0 +1,74 @@
+[
+  {
+    "mutant": "m-ac-20-1",
+    "recorded": "fixture reply, written for the re-judge test from the patch (no live call)",
+    "reply": {
+      "verdict": "no-change",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "The added line tests the same expression digits already holds, so phoneOk is the same for every phone number."
+    },
+    "usage": { "prompt_tokens": 1010, "completion_tokens": 70 }
+  },
+  {
+    "mutant": "m-ac-26-1",
+    "recorded": "fixture reply, written for the re-judge test from the patch (no live call)",
+    "reply": {
+      "verdict": "off-target",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "The change is in the branch for a checked benefit, which this criterion excludes, and the lines that branch shows still say Eligible."
+    },
+    "usage": { "prompt_tokens": 760, "completion_tokens": 72 }
+  },
+  {
+    "mutant": "m-ac-27-1",
+    "recorded": "fixture reply, written for the re-judge test from the patch (no live call)",
+    "reply": {
+      "verdict": "off-target",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "A zero income is never above the limit, so no input this criterion covers gets a different result."
+    },
+    "usage": { "prompt_tokens": 790, "completion_tokens": 64 }
+  },
+  {
+    "mutant": "m-ac-36-1",
+    "recorded": "fixture reply, written for the re-judge test from the patch (no live call)",
+    "reply": {
+      "verdict": "no-change",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "The income counted line is built as before; the added eligible: false key does not change the lines the page shows."
+    },
+    "usage": { "prompt_tokens": 770, "completion_tokens": 68 }
+  },
+  {
+    "mutant": "m-ac-37-1",
+    "recorded": "fixture reply, written for the re-judge test from the patch (no live call)",
+    "reply": {
+      "verdict": "off-target",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "Only a household with a checked benefit gets a different result; for an income-decided result the limit line is the same."
+    },
+    "usage": { "prompt_tokens": 880, "completion_tokens": 70 }
+  },
+  {
+    "mutant": "m-ac-53-1",
+    "recorded": "live pilot, 2026-11-18, deepseek-v4-flash, temperature 0 (the reply in referee-pilot.json)",
+    "reply": {
+      "verdict": "no-change",
+      "input": "",
+      "expected": "",
+      "observed": "",
+      "reason": "The patch only changes whitespace in a template literal (removing a space after the closing tag), which does not affect the rendered HTML or the behavior of the page."
+    },
+    "usage": { "prompt_tokens": 730, "completion_tokens": 66 }
+  }
+]

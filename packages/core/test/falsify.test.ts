@@ -5,7 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppStartError, type StartAppOptions } from "../src/app.js";
-import { estimateUsd, usdOf, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
+import { Budget, estimateUsd, usdOf, VeniceHttpError, VeniceOutputError, VeniceUnreachable, type VeniceChatOptions } from "../src/breaker/venice.js";
+import { REFEREE_MAX_TOKENS, refereeMutant } from "../src/breaker/referee.js";
+import { parseEvents } from "../src/ledger/parse.js";
+import { setAside } from "../src/ledger/setaside.js";
+import { verdict } from "../src/ledger/verdict.js";
 import { evolve as kaneEvolve, type AcNode, type EvolveResult, type Graph, type TestNode } from "../src/kane/assurance.js";
 import { BudgetRefused, type Slip } from "../src/breaker/mutate.js";
 import type { RunTestOptions, TestRunResult } from "../src/kane/testmd.js";
@@ -14,7 +18,21 @@ import { appendEvent, readEvents } from "../src/ledger/store.js";
 import type { LedgerEvent } from "../src/ledger/types.js";
 import { gate } from "../src/ledger/gate.js";
 import { runBuildLoop } from "../src/loop/build.js";
-import { becauseText, coverText, falsifyVerdict, KANE_ARG_MAX, TOO_LONG, killsAc, pendingRecheck, runFalsify, unevolvedSurvivors, type FalsifyDeps } from "../src/loop/falsify.js";
+import {
+  becauseText,
+  coverText,
+  falsifyVerdict,
+  KANE_ARG_MAX,
+  TOO_LONG,
+  UNJUDGED,
+  killsAc,
+  pendingRecheck,
+  rejudgedEvent,
+  runFalsify,
+  unevolvedSurvivors,
+  unjudgedSurvivors,
+  type FalsifyDeps,
+} from "../src/loop/falsify.js";
 import type { HumanIO } from "../src/loop/human.js";
 import { appSealFiles } from "../src/loop/spec.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -701,10 +719,12 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
     it("a re-checked survivor is refereed again unless the referee confirmed that same patch before; rejected, the criterion keeps its status", async () => {
       await setup({ before: () => evolvedEarlier() });
-      const a = fakes({ mutantRun: survives3, referee: () => off("it breaks another rule") });
+      // the earlier survivor is from before the referee: judged first, it gets no usable answer, so its re-check is judged on its own
+      const a = fakes({ mutantRun: survives3, referee: (_ac, n) => (n === 0 ? new VeniceHttpError("Venice HTTP 503: busy", 503) : off("it breaks another rule")) });
       const r = await runFalsify(p, a.deps, a.io, log);
       expect(r).toMatchObject({ killed: ["ac-1"], invalid: ["ac-3"], vacuous: [], redesigned: [] });
-      expect(a.calls.referee.map((c) => c.ac)).toEqual(["ac-3"]);
+      expect(a.calls.referee.map((c) => c.ac)).toEqual(["ac-3", "ac-3"]);
+      expect((await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({ recheck: "m-ac-3-1", refuted: "referee" });
       expect(a.calls.evolve).toEqual([]);
       expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("passing");
     });
@@ -717,6 +737,129 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       expect(r).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], vacuous: ["ac-3"], redesigned: [] });
       expect(b.calls.referee).toEqual([]);
       expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]).toMatchObject({ status: "vacuous", reason: expect.stringMatching(/got past the new tests too/) });
+    });
+  });
+
+  describe("a survivor logged before the referee existed is judged by it first, at the start of the next pass", () => {
+    const off = (reason: string) => ({ verdict: "off-target", input: "", expected: "", observed: "", reason });
+    const REF_USD = (1000 * 0.138 + 100 * 0.275) / 1e6;
+    const refereeUsage = { prompt_tokens: 1000, completion_tokens: 100 };
+    /** An earlier pass's survivor of ac-3 with no judgment of the referee's (that pass came before it), never sent to Kane. */
+    const unjudged = () => log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: SLIP["ac-3"] });
+
+    it("rejected: on record (`mutant.referee`) before anything is attacked, set aside, never sent to Kane; its criterion is passing again and attacked like any other", async () => {
+      await setup({ before: unjudged });
+      expect(reduce(await readEvents(p.ledgerFile)).acs["ac-3"]!.status).toBe("vacuous");
+      const since = (await readEvents(p.ledgerFile)).length;
+      const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => off("it breaks another rule"), refereeUsage });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], survived: [], vacuous: [], redesigned: [], reason: "done" });
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule" }]);
+      expect(r.survivors).toBeUndefined();
+      expect(calls.evolve).toEqual([]);
+      // the prompt, caps and model of a pass's referee: the criterion and its spec quote from the design, the patch from the `mutant` event
+      expect(calls.referee).toHaveLength(1);
+      const asked = calls.referee[0]!.o;
+      expect(asked).toMatchObject({ model: MODEL, temperature: 0, schemaName: "referee", maxTokens: REFEREE_MAX_TOKENS });
+      expect(asked.messages[0]!.content).toMatch(/^You are the referee/);
+      for (const part of [`AC ac-3: ${AC3.text}`, `"${AC3.cites[0]!.quote}"`, PATCH["ac-3"]!]) expect(asked.messages[1]!.content).toContain(part);
+      expect(asked.messages[1]!.content).not.toContain(SLIP["ac-3"]!.behaviour);
+      const ev = await after(since);
+      expect(tags(ev).slice(0, 3)).toEqual(["recordings", "mutant.referee", "mutant:ac-1:killed"]);
+      expect(ev[1]).toEqual({
+        at: expect.any(String),
+        t: "mutant.referee",
+        mutant: "m-ac-3-1",
+        ac: "ac-3",
+        usd: expect.closeTo(REF_USD, 12),
+        referee: { confirmed: false, input: "", expected: "", observed: "", reason: "it breaks another rule", usd: expect.closeTo(REF_USD, 12) },
+        note: "off target: it breaks another rule",
+      });
+      const all = await readEvents(p.ledgerFile);
+      expect(reduce(all.slice(0, since + 2)).acs["ac-3"]!.status).toBe("passing");
+      // ac-3 was attacked afresh by the breaker (not a re-check), and the new bug was caught
+      expect(calls.chat.map((c) => c.ac)).toEqual(["ac-1", "ac-3"]);
+      expect(all.findLast((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({ id: "m-ac-3-2", verdict: "killed" });
+      expect(reduce(all).acs["ac-3"]!.status).toBe("proved");
+      // its cost is under the cap with the breaker's
+      expect(r.usd).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
+      expect(reduce(all).breakerUsd - reduce(all.slice(0, since)).breakerUsd).toBeCloseTo(2 * USD_PER_CALL + REF_USD, 12);
+      // judged once: no later pass asks about it again
+      expect(unjudgedSurvivors(all)).toEqual([]);
+    });
+
+    it("confirmed: on record, and it goes on as before: to Kane, told the referee's account", async () => {
+      await setup({ before: unjudged });
+      const said = { verdict: "violates", input: "household size 1, monthly income $2,461.50, SNAP unchecked", expected: "Not eligible.", observed: "Eligible.", reason: "LIMITS[size] + 1 lets $2,461.50 through." };
+      const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => said });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: ["ac-1"], redesigned: ["uc-1"], reason: "done" });
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: said.reason }]);
+      expect(r.survivors).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", slip: SLIP["ac-3"]!.behaviour, earlier: true }]);
+      expect(calls.referee).toHaveLength(1);
+      expect(calls.evolve).toHaveLength(1);
+      expect(calls.evolve[0]!.because).toContain(said.input);
+      expect(calls.evolve[0]!.because).not.toContain(SLIP["ac-3"]!.inputs);
+      const rec = (await readEvents(p.ledgerFile)).find((e) => e.t === "mutant.referee");
+      expect(rec).toMatchObject({ mutant: "m-ac-3-1", referee: { confirmed: true, input: said.input, expected: "Not eligible.", observed: "Eligible." } });
+      expect(rec).not.toHaveProperty("note");
+    });
+
+    it("a re-check pending from before the referee: rejected, nothing is re-checked and the criterion is attacked afresh; confirmed, it is re-checked as planted and not asked about again", async () => {
+      await setup({ before: () => evolvedEarlier() });
+      const a = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => off("it breaks another rule") });
+      const r = await runFalsify(p, a.deps, a.io, log);
+      expect(r).toMatchObject({ killed: ["ac-1", "ac-3"], vacuous: [], redesigned: [] });
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "rejected", why: "off target: it breaks another rule" }]);
+      expect(a.calls.chat.map((c) => c.ac)).toEqual(["ac-1", "ac-3"]);
+      const m = (await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3");
+      expect(m).toMatchObject({ verdict: "killed" });
+      expect(m).not.toHaveProperty("recheck");
+
+      rmSync(root, { recursive: true, force: true });
+      root = mkdtempSync(join(tmpdir(), "hb-falsify-"));
+      process.env.HOLDBACK_HOME = join(root, "home");
+      await setup({ before: () => evolvedEarlier() });
+      const b = fakes({ mutantRun: survives3 });
+      const r2 = await runFalsify(p, b.deps, b.io, log);
+      expect(r2).toMatchObject({ killed: ["ac-1"], survived: ["ac-3"], vacuous: ["ac-3"], redesigned: [] });
+      expect(r2.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "confirmed", why: "the change breaks ac-3" }]);
+      expect(b.calls.chat.map((c) => c.ac)).toEqual(["ac-1"]);
+      expect(b.calls.referee).toHaveLength(1);
+      expect((await readEvents(p.ledgerFile)).findLast((e) => e.t === "mutant" && e.ac === "ac-3")).toMatchObject({ recheck: "m-ac-3-1", verdict: "survived" });
+    });
+
+    it("no usable answer: on record with its cost; the survivor stands as logged, is not sent to Kane in this pass, and the next pass asks again", async () => {
+      await setup({ before: unjudged });
+      const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => new VeniceUnreachable("Venice unreachable: timeout") });
+      const r = await runFalsify(p, deps, io, log);
+      const why = "the referee gave no usable answer: Venice unreachable: timeout";
+      expect(r).toMatchObject({ killed: ["ac-1"], redesigned: [], reason: "done" });
+      expect(r.rejudged).toEqual([{ ac: "ac-3", mutant: "m-ac-3-1", outcome: "unanswered", why }]);
+      expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-3"], why: UNJUDGED }]);
+      expect(calls.evolve).toEqual([]);
+      const all = await readEvents(p.ledgerFile);
+      const rec = all.find((e) => e.t === "mutant.referee");
+      expect(rec).toMatchObject({ mutant: "m-ac-3-1", ac: "ac-3", note: why });
+      expect(rec).not.toHaveProperty("referee");
+      // an outage is charged at the worst case, as the breaker's is
+      expect((rec as { usd: number }).usd).toBeGreaterThan(0);
+      expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
+      expect(unjudgedSurvivors(all).map((m) => m.id)).toEqual(["m-ac-3-1"]);
+    });
+
+    it("the USD cap refuses the referee's call: nothing is spent, attacked or sent to Kane, and the survivor waits", async () => {
+      await setup({ before: unjudged });
+      const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)), referee: () => new BudgetRefused(0.0003, 0.0099, 0.01) });
+      const r = await runFalsify(p, deps, io, log);
+      expect(r).toMatchObject({ killed: [], skipped: ["ac-1"], redesigned: [], reason: "budget" });
+      expect(r.rejudged).toBeUndefined();
+      expect(r.notEvolved).toEqual([{ uc: "uc-1", acs: ["ac-3"], why: UNJUDGED }]);
+      expect(calls.chat).toEqual([]);
+      expect(calls.evolve).toEqual([]);
+      const all = await readEvents(p.ledgerFile);
+      expect(all.some((e) => e.t === "mutant.referee")).toBe(false);
+      expect(reduce(all).acs["ac-3"]!.status).toBe("vacuous");
     });
   });
 
@@ -1422,8 +1565,9 @@ describe("runFalsify", { timeout: 60_000 }, () => {
 
   it("a survivor whose account is too long to hand Kane whole is never cut: its evolve is skipped with the reason, and it stays vacuous", async () => {
     const giant: Slip = { ...SLIP["ac-3"]!, inputs: "household size 1 ".repeat(3000) };
-    // a survivor an earlier pass logged (before the referee) but never got to Kane
-    await setup({ before: async () => void (await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: giant })) });
+    const referee = { confirmed: true, input: giant.inputs, expected: giant.expected, observed: giant.observed, reason: "r", usd: 0.0001 };
+    // a survivor an earlier pass logged but never got to Kane
+    await setup({ before: async () => void (await log({ at, t: "mutant", id: "m-ac-3-1", ac: "ac-3", patch: PATCH["ac-3"]!, model: MODEL, usd: 0.0003, verdict: "survived", slip: giant, referee })) });
     const { deps, io, calls } = fakes({ mutantRun: (ac, files) => files.map(failOn(ac)) });
     const r = await runFalsify(p, deps, io, log);
     expect(r).toMatchObject({ killed: ["ac-1"], vacuous: ["ac-3"], redesigned: [], reason: "done" });
@@ -2277,5 +2421,65 @@ describe("what Kane is told (--because): never cut mid-text", () => {
     // short enough, the criteria keep their text
     const few = coverText(left.slice(0, 2), [s20])!;
     expect(few.startsWith(`cover ac-1 ("${left[0]!.text}"), ac-2 ("${left[1]!.text}") again`)).toBe(true);
+  });
+});
+
+describe("the pantry run's six survivors, from before the referee, judged by it in a later pass", () => {
+  /** The pantry demo run's ledger, sanitized (the dashboard's replay fixture): its 6 survivors carry no judgment of the referee's. */
+  const PANTRY = join(here, "..", "..", "..", "apps", "dashboard", "fixtures", "ledger.jsonl");
+  type Reply = { mutant: string; reply: unknown; usage: { prompt_tokens: number; completion_tokens: number } };
+  const REPLIES: Reply[] = JSON.parse(readFileSync(join(here, "fixtures", "venice", "referee-rejudge.json"), "utf8"));
+  const LIVE: { mutant: string; patch: string }[] = JSON.parse(readFileSync(join(here, "fixtures", "breaker", "survivors.json"), "utf8"));
+  const UC1 = ["ac-26", "ac-27", "ac-36", "ac-37"];
+
+  it("each is judged from the ledger alone; with the referee's replies rejecting them, ac-26, ac-27, ac-36 and ac-37 are no longer vacuous, and none is re-checked or sent to Kane", async () => {
+    const events = parseEvents(readFileSync(PANTRY, "utf8"));
+    const before = reduce(events);
+    expect(Object.values(before.acs).filter((a) => a.status === "vacuous").map((a) => a.id)).toEqual(UC1);
+    expect(before.mutants).toEqual({ killed: 4, survived: 6, invalid: 16 });
+    // uc-1's four stay vacuous (its evolve added no test); ac-20's and ac-53's use cases were evolved, so they wait for a re-check
+    const todo = unjudgedSurvivors(events);
+    expect(todo.map((m) => m.id)).toEqual(["m-ac-20-1", "m-ac-26-1", "m-ac-27-1", "m-ac-36-1", "m-ac-37-1", "m-ac-53-1"]);
+    expect(pendingRecheck(events, before.acs["ac-20"]!)?.id).toBe("m-ac-20-1");
+    expect(pendingRecheck(events, before.acs["ac-53"]!)?.id).toBe("m-ac-53-1");
+
+    const added: LedgerEvent[] = [];
+    for (const m of todo) {
+      // the patch is the ledger's `mutant` event's: the real one, as the sanitized fixture of the six has it
+      expect(m.patch).toBe(LIVE.find((l) => l.mutant === m.id)!.patch);
+      const ac = before.acs[m.ac]!;
+      const r = REPLIES.find((x) => x.mutant === m.id)!;
+      let asked: VeniceChatOptions | undefined;
+      const f = await refereeMutant(ac, m.patch, {
+        model: MODEL,
+        apiKey: "k",
+        budget: new Budget(2, before.breakerUsd),
+        chat: async (o) => ((asked = o), { json: r.reply, usage: r.usage }),
+      });
+      // the criterion's text and spec quote from the ledger's design events
+      expect(asked!.messages[1]!.content).toContain(`AC ${ac.id}: ${ac.text}`);
+      for (const c of ac.cites.slice(0, 3)) expect(asked!.messages[1]!.content).toContain(c.anchor);
+      expect(f.confirmed).toBe(false);
+      added.push({ at: "2026-11-19T10:00:00.000Z", ...rejudgedEvent(m, f) } as LedgerEvent);
+    }
+
+    // the records come after everything the old ledger holds
+    const all = [...events, ...added];
+    const s = reduce(all);
+    for (const id of UC1) expect(s.acs[id], id).toMatchObject({ status: "passing" });
+    for (const id of UC1) expect(s.acs[id]!.reason, id).toBeUndefined();
+    expect(verdict(s).counts.vacuous).toBe(0);
+    expect(s.mutants).toEqual({ killed: 4, survived: 0, invalid: 22 });
+    expect(s.breakerUsd - before.breakerUsd).toBeCloseTo(added.reduce((n, e) => n + (e.t === "mutant.referee" ? e.usd : 0), 0), 12);
+    // every other criterion reduces as it did
+    for (const [id, a] of Object.entries(before.acs)) if (!UC1.includes(id)) expect(s.acs[id], id).toEqual(a);
+    // judged once: nothing to judge, re-check or send to Kane again
+    expect(unjudgedSurvivors(all)).toEqual([]);
+    expect(unevolvedSurvivors(all)).toEqual([]);
+    expect(pendingRecheck(all, s.acs["ac-20"]!)).toBeUndefined();
+    expect(pendingRecheck(all, s.acs["ac-53"]!)).toBeUndefined();
+    // each is set aside on its criterion, by the referee, with its reason (for the human: `status` prints the ids only)
+    expect(setAside(all).filter((a) => a.rejudged).map((a) => [a.ac, a.mutant, a.by])).toEqual(todo.map((m) => [m.ac, m.id, "referee"]));
+    expect(setAside(all).find((a) => a.mutant === "m-ac-27-1")!.why).toBe("off target: A zero income is never above the limit, so no input this criterion covers gets a different result.");
   });
 });

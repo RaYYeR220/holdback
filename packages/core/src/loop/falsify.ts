@@ -4,7 +4,7 @@ import path from "node:path";
 import { freePort, startApp, type RunningApp } from "../app.js";
 import { appEnv, freshDataDir } from "../datadir.js";
 import { BreakerError, BreakerUnavailable, BudgetRefused, checkPatch, noOpReason, patchedFiles, pickFiles, proposeMutant, type Mutant, type Slip, type SourceFile } from "../breaker/mutate.js";
-import { refereeMutant, refereeNote } from "../breaker/referee.js";
+import { refereeMutant, refereeNote, type RefereeFinding } from "../breaker/referee.js";
 import { Budget, MAX_TOKENS, RETRY_MAX_TOKENS, veniceChat } from "../breaker/venice.js";
 import { git, holdbackGitOptions, isRepoRoot, uncommitted, worktreeAdd, worktreeRemove, type GitOptions } from "../git.js";
 import { balance, evolve, gapsOf, readGraph, type Graph, type TestNode } from "../kane/assurance.js";
@@ -109,6 +109,13 @@ export type FalsifyResult = {
    * it was told about (`mutants`, of `acs`); they prove nothing (this pass's are among `invalid`).
    */
   disputed?: { uc: string; acs: string[]; mutants: string[]; question: string }[];
+  /**
+   * Survivors from before the referee existed that it judged at the start of this pass
+   * (`mutant.referee`): `rejected` (set aside, `why` its reason), `confirmed` (`why` its reason) or
+   * `unanswered` (`why` what went wrong; the next pass asks again). For the human's own output
+   * (`holdback run`); `status` names a rejected one by id only (I-4).
+   */
+  rejudged?: { ac: string; mutant: string; outcome: "rejected" | "confirmed" | "unanswered"; why: string }[];
 };
 
 const MUT_DIR = "mut";
@@ -311,9 +318,56 @@ export function pendingRecheck(events: LedgerEvent[], ac: { id: string; useCase:
     if (e.t === "drift" && e.applied) return undefined;
     if (e.t !== "falsify.evolved" || e.uc !== ac.useCase) continue;
     const m = events.find((x): x is MutantEvent => x.t === "mutant" && x.ac === ac.id && e.mutants.includes(x.id));
-    if (m) return m;
+    if (!m) continue;
+    // a survivor from before the referee that it rejected since was never a real bug: nothing to re-check
+    const r = judgmentOf(events, m);
+    if (r && !r.confirmed) return undefined;
+    return r && !m.referee ? { ...m, referee: r } : m;
   }
   return undefined;
+}
+
+/** The referee's judgment of planted bug `m`: on its own event, else the latest logged after it (`mutant.referee`). */
+function judgmentOf(events: LedgerEvent[], m: MutantEvent): RefereeRecord | undefined {
+  if (m.referee) return m.referee;
+  return events.findLast((e): e is Extract<LedgerEvent, { t: "mutant.referee" }> => e.t === "mutant.referee" && e.mutant === m.id && e.referee !== undefined)?.referee;
+}
+
+const survived = (m: MutantEvent) => m.verdict === "survived" || m.verdict === "survived-by-heal";
+
+/**
+ * Survivors logged before the referee existed: a planted bug that got past the tests with no judgment
+ * of the referee's on record (none on its event, none logged since; a re-check planted as it was
+ * shares that of the survivor it re-checks, when confirmed), that still counts: its criterion is
+ * vacuous by it, or will be re-checked with it. Kane's disputes apart. A falsify pass has the referee
+ * judge them first. By criterion id.
+ */
+export function unjudgedSurvivors(events: LedgerEvent[]): MutantEvent[] {
+  const state = reduce(events);
+  const disputed = new Set(events.flatMap((e) => (e.t === "falsify.disputed" ? [e.mutant] : [])));
+  const judged = (m: MutantEvent): boolean => {
+    if (judgmentOf(events, m)) return true;
+    const was = m.recheck === undefined ? undefined : events.find((e): e is MutantEvent => e.t === "mutant" && e.id === m.recheck);
+    return !!was && was.patch === m.patch && judgmentOf(events, was)?.confirmed === true;
+  };
+  const out: MutantEvent[] = [];
+  for (const ac of Object.values(state.acs).sort(byAcId)) {
+    const latest = ac.status === "vacuous" ? events.findLast((e): e is MutantEvent => e.t === "mutant" && e.ac === ac.id) : undefined;
+    for (const m of [latest, pendingRecheck(events, ac)]) {
+      if (!m || !survived(m) || disputed.has(m.id) || judged(m) || out.some((x) => x.id === m.id)) continue;
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+/** The referee's finding as the ledger keeps it. */
+const recordOf = (f: RefereeFinding): RefereeRecord => ({ confirmed: f.confirmed, input: f.input, expected: f.expected, observed: f.observed, reason: f.reason, usd: f.usd });
+
+/** The referee's later judgment of survivor `m` as the ledger records it (`mutant.referee`): its finding, and why it rejected it. */
+export function rejudgedEvent(m: Pick<MutantEvent, "id" | "ac">, f: RefereeFinding): Extract<EventBody, { t: "mutant.referee" }> {
+  const why = refereeNote(f);
+  return { t: "mutant.referee", mutant: m.id, ac: m.ac, usd: f.usd, referee: recordOf(f), ...(why === undefined ? {} : { note: why }) };
 }
 
 /** Why a survivor whose use case Kane did not get to evolve this run stays vacuous for now: the next pass tries again (m-2). */
@@ -327,12 +381,15 @@ const STOPPED_ON_ERROR = "the pass stopped on an error before Kane could evolve 
 /** Why survivors wait when the spec changed during the pass. */
 const SPEC_MOVED = "the spec changed during the pass: run `holdback drift`, then `holdback run`";
 export const EVOLVE_CAP = "the Kane credit cap was reached before Kane could evolve its tests";
+/** Why a survivor from before the referee is not sent to Kane: the referee has not judged it yet. */
+export const UNJUDGED = "logged before the referee existed, and the referee could not judge it yet: the next `holdback run` asks it again";
 
 /**
  * Survivors whose use case Kane never evolved (m-2): the latest mutant of a vacuous criterion survived
  * (not a re-check), no evolve answered it, and Kane was not found unable to add a test for it (a pass
  * stopped, the run's bound or the cap came first, or the spec moved meanwhile). The next pass sends
- * them to Kane without attacking them again.
+ * them to Kane without attacking them again, with the referee's judgment logged since merged in: one
+ * with none (a survivor from before the referee it could not judge yet) waits.
  */
 export function unevolvedSurvivors(events: LedgerEvent[]): MutantEvent[] {
   const state = reduce(events);
@@ -347,7 +404,10 @@ export function unevolvedSurvivors(events: LedgerEvent[]): MutantEvent[] {
     // Kane disputed it: it proves nothing, and is never sent again
     if (after.some((e) => e.t === "falsify.disputed" && e.mutant === m.id)) continue;
     if (after.some((e) => e.t === "redesign.dropped" && e.acs?.includes(ac.id) && e.reason === NO_TEST)) continue;
-    out.push(m);
+    // the referee's judgment logged since (a survivor from before it): rejected, it is never sent
+    const r = judgmentOf(events, m);
+    if (r && !r.confirmed) continue;
+    out.push(r && !m.referee ? { ...m, referee: r } : m);
   }
   return out;
 }
@@ -597,7 +657,9 @@ export type FalsifyOptions = {
  * case (R40): it is told what slipped through, its new tests replace the old ones and are sealed with
  * Kane as their author, and every AC of the use case is owed again, so it goes back to the build
  * loop; the next pass re-checks the survivor's own bug against the new tests first. An evolve that
- * pauses on Kane's question is a dispute: never answered, nothing sealed, the bugs invalid. Afterwards every test is replayed once against the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
+ * pauses on Kane's question is a dispute: never answered, nothing sealed, the bugs invalid. A survivor
+ * an older pass logged before the referee existed is judged by it first, before anything is attacked.
+ * Afterwards every test is replayed once against the real build. `log` must append to `p.ledgerFile`: every append is verified against it.
  * Throws, before anything else, when VENICE_API_KEY is not set.
  */
 export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, log: Log, opts: FalsifyOptions = {}): Promise<FalsifyResult> {
@@ -787,7 +849,7 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
       try {
         const f = await refereeMutant(ac, patch, { model: p.config.breaker.model, apiKey, budget, chat: deps.chat });
         usd += f.usd;
-        const referee: RefereeRecord = { confirmed: f.confirmed, input: f.input, expected: f.expected, observed: f.observed, reason: f.reason, usd: f.usd };
+        const referee = recordOf(f);
         const why = refereeNote(f);
         return why === undefined ? { ...v, set: { referee } } : { verdict: "invalid", note: why, set: { referee, refuted: "referee" } };
       } catch (e) {
@@ -1358,6 +1420,42 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     });
   };
 
+  /**
+   * Survivors a pass logged before the referee existed, whose criterion is still vacuous by them or
+   * will be re-checked with them (`unjudgedSurvivors`): the referee judges each first, with the
+   * prompt, caps and USD cap of a pass, from the ledger alone (the patch from the `mutant` event, the
+   * criterion and its spec quotes from the design). Each judgment goes on the ledger
+   * (`mutant.referee`). Rejected, the bug is set aside: the reducer lifts its criterion's vacuous
+   * status, and it is never re-checked or sent to Kane. Confirmed, it goes on as before. No usable
+   * answer: its cost is on record, the survivor stands as logged, and the next pass asks again.
+   * "budget" when the cap refused a call (nothing spent): the rest wait.
+   */
+  const rejudge = async (budget: Budget): Promise<"budget" | "done"> => {
+    const acs = reduce(events).acs;
+    for (const m of unjudgedSurvivors(events)) {
+      if (opts.signal?.aborted) break;
+      const ac = acs[m.ac];
+      if (!ac) continue;
+      const said = (outcome: "rejected" | "confirmed" | "unanswered", why: string) => void (out.rejudged ??= []).push({ ac: m.ac, mutant: m.id, outcome, why });
+      try {
+        const f = await refereeMutant(ac, m.patch, { model: p.config.breaker.model, apiKey, budget, chat: deps.chat });
+        out.usd += f.usd;
+        const e = rejudgedEvent(m, f);
+        await emit(e);
+        if (f.confirmed) said("confirmed", f.reason);
+        else said("rejected", e.note ?? f.reason);
+      } catch (e) {
+        if (e instanceof BudgetRefused) return "budget";
+        if (!(e instanceof BreakerError || e instanceof BreakerUnavailable)) throw e;
+        out.usd += e.usd;
+        const note = `the referee gave no usable answer: ${e.message}`;
+        await emit({ t: "mutant.referee", mutant: m.id, ac: m.ac, usd: e.usd, note });
+        said("unanswered", note);
+      }
+    }
+    return "done";
+  };
+
   const run = async (): Promise<FalsifyResult> => {
     await dropStaleMutants(); // touches nothing sealed
     const marker = await tamperMarker(p);
@@ -1409,19 +1507,28 @@ export async function runFalsify(p: Project, deps: FalsifyDeps, _io: HumanIO, lo
     // checked against the disk just above: the seal after an evolve holds these, never a fresh read (I-1)
     appPin = appPinOf(p, manifest);
 
+    const budget = new Budget(p.config.breaker.capUsd, state.breakerUsd);
+    // survivors from before the referee existed: judged first, so none is re-checked or sent to Kane unjudged
+    let budgetOut = (await rejudge(budget)) === "budget";
+    // the referee's rejections lift the vacuous status of the criteria they leave
+    const now = reduce(events);
+
     // m-2: survivors an earlier pass never got to Kane go to it in this one, without a new attack
     for (const m of unevolvedSurvivors(events)) {
-      const ac = state.acs[m.ac]!;
-      survivors.push({ ac, id: m.id, patch: m.patch, rationale: "", ...(m.slip ? { slip: m.slip } : {}), ...(m.referee ? { referee: m.referee } : {}) });
+      const ac = now.acs[m.ac]!;
+      // one from before the referee that it could not judge yet waits for it
+      if (!m.referee) {
+        notEvolved(ac.useCase, [ac.id], UNJUDGED);
+        continue;
+      }
+      survivors.push({ ac, id: m.id, patch: m.patch, rationale: "", ...(m.slip ? { slip: m.slip } : {}), referee: m.referee });
       named(m.ac, m.id, m.slip, "", { earlier: true });
     }
-    const budget = new Budget(p.config.breaker.capUsd, state.breakerUsd);
     const fileOf = testFileMap(events, p.verifierDir);
     const lastChanged = recentChanges(events);
-    const passing = Object.values(state.acs)
+    const passing = Object.values(now.acs)
       .filter((a) => a.status === "passing")
       .sort(byAcId);
-    let budgetOut = false;
     let aborted = false;
     /** The spec changed meanwhile: nothing more is attacked or evolved until a human re-plans it. */
     let drifted = false;
