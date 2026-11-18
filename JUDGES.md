@@ -124,7 +124,7 @@ When a planted bug gets past every test of its criterion, Holdback asks Kane to 
 kane-cli maintain evolve uc-2 --because "A planted bug got past every test of this use case. ac-53 (…): The volunteer list displays visits from all dates, not just today, … Add a test that catches it." --mode agent
 ```
 
-Kane minted t-23 and retired t-17, then, asked once more to cover four criteria, minted t-24 to t-26 (`falsify.evolved`, lines 311 and 312). That reason was the breaker's account of m-ac-53-1, a patch that changed nothing: Holdback takes the breaker at its word ([CLAIMS.md](CLAIMS.md#what-the-demo-run-showed)). `holdback status` never shows the reason, since the coding agent may run it; `holdback run`, `holdback watch` and the dashboard show you what Kane was told.
+Kane minted t-23 and retired t-17, then, asked once more to cover four criteria, minted t-24 to t-26 (`falsify.evolved`, lines 311 and 312). That reason was the breaker's account of m-ac-53-1, a patch that changed nothing: Holdback then took the breaker at its word. It now sets such a patch aside before any replay, and a survivor reaches Kane only once a referee confirms it ([CLAIMS.md](CLAIMS.md#what-the-demo-run-showed)). `holdback status` never shows the reason, since the coding agent may run it; `holdback run`, `holdback watch` and the dashboard show you what Kane was told.
 
 ## 6. Run it yourself
 
