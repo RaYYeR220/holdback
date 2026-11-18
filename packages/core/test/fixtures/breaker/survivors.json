@@ -194,5 +194,61 @@
       "expected": "Monthly limit: $2,461",
       "observed": "Monthly limit: $2,460"
     }
+  },
+  {
+    "from": "pantry live run, 2026-11-18, second pass",
+    "mutant": "m-ac-24-2",
+    "ac": {
+      "id": "ac-24",
+      "text": "A valid five-digit ZIP outside 19104, 19139 and 19143 yields 'Outside our service area.' rather than an eligibility decision, even when a benefit is checked.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L58-L59",
+          "quote": "The out-of-area result is two lines: \"Outside our service area.\" and \"We serve ZIP codes 19104, 19139 and 19143 only.\""
+        },
+        {
+          "source": "prd",
+          "anchor": "L15-L20",
+          "quote": "\"Household size\" is the number of people who live together and share food; it must be a whole number of 1 or more."
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -135,7 +135,7 @@ function evaluate(form) {\n \n   if (!ZIPS.includes(zip)) {\n     return { lines: ['Outside our service area.', 'We serve ZIP codes 19104, 19139 and 19143 only.'], eligible: false };\n-  }\n+  } else { return { lines: ['Eligible.', 'Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.'], eligible: true, size }; }\n   if (form.benefits.length) {\n     return {\n       lines: ['Eligible.', 'Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.'],\n",
+    "slip": {
+      "behaviour": "When a user enters a valid five-digit ZIP outside 19104, 19139, and 19143, the page displays 'Eligible.' instead of 'Outside our service area.'",
+      "inputs": "Household size: 2, Household income: 50000, Frequency: Yearly, ZIP code: 12345, no benefits checked",
+      "expected": "The result should show 'Outside our service area.' and 'We serve ZIP codes 19104, 19139 and 19143 only.'",
+      "observed": "The result shows 'Eligible.' and 'Reason: someone in the household receives SNAP, TANF, SSI or Medicaid.'"
+    }
+  },
+  {
+    "from": "pantry live run, 2026-11-18, second pass",
+    "mutant": "m-ac-31-2",
+    "ac": {
+      "id": "ac-31",
+      "text": "For each person beyond eight, the applicable published eight-person limit increases by the same-column additional-member amount.",
+      "useCase": "uc-1",
+      "cites": [
+        {
+          "source": "prd",
+          "anchor": "L35-L35",
+          "quote": "For a household of more than 8 people, the limit is the limit for 8 people plus the \"Each additional member\" amount of the same column for every person above 8."
+        },
+        {
+          "source": "prd",
+          "anchor": "L30-L36",
+          "quote": "Income received every two weeks is multiplied by 26, and the result is compared with the Annual column."
+        }
+      ]
+    },
+    "patch": "--- a/src/server.js\n+++ b/src/server.js\n@@ -78,7 +78,7 @@ const LIMITS = {\n };\n const EXTRA = [10508, 876, 203];\n const FREQS = [\n-  { value: 'weekly', label: 'Weekly' },\n+  { value: 'weekly', label: 'Weekly' },\n   { value: 'biweekly', label: 'Every two weeks' },\n   { value: 'monthly', label: 'Monthly' },\n   { value: 'yearly', label: 'Yearly' },\n@@ -117,7 +117,7 @@ function limitFor(size, col) {\n   if (size <= 8) return LIMITS[size][col];\n-  return LIMITS[8][col] + EXTRA[col] * (size - 8);\n+  return LIMITS[8][col] + EXTRA[col];\n }\n\n function evaluate(form) {\n",
+    "slip": {
+      "behaviour": "For a household with more than 8 people, the income limit shown is too low (it only adds one extra amount regardless of how many people above 8).",
+      "inputs": "Household size: 10; income: $100,000 per year; frequency: yearly; ZIP: 19104; benefits: none.",
+      "expected": "Limit applied: $113,098 per year for a household of 10 (since $103,082 + 2 × $10,508 = $124,098, but corrected: $103,082 + 2×$10,508 = $124,098, actually $103,082 for 8 + extra per person above 8: $103,082 + (10-8) * $10,508 = $124,098).",
+      "observed": "Limit applied: $113,590 per year for a household of 10 (since $103,082 + $10,508 = $113,590, only one extra added)."
+    }
   }
 ]

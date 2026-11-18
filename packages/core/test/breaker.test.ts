@@ -444,7 +444,26 @@ describe("noOpReason", () => {
   });
 
   it("passes every other live survivor on: each changes code (whether it breaks its criterion is the referee's call)", () => {
-    for (const id of ["m-ac-20-1", "m-ac-36-1", "m-ac-26-1", "m-ac-37-1", "m-ac-27-1", "m-ac-4-1"]) expect(noOpReason(live(id).patch, [], []), id).toBeUndefined();
+    for (const id of ["m-ac-20-1", "m-ac-36-1", "m-ac-26-1", "m-ac-37-1", "m-ac-27-1", "m-ac-4-1", "m-ac-24-2"]) expect(noOpReason(live(id).patch, [], []), id).toBeUndefined();
+  });
+
+  it("passes m-ac-31-2 on: its first hunk replaces a line with the identical line, but its second changes the limit for more than 8 people", () => {
+    const patch = live("m-ac-31-2").patch;
+    // no invisible character, carriage return or trailing space: the first hunk's two lines are the same bytes
+    const changed = patch.split("\n").filter((l) => /^[-+](?![-+]{2} )/.test(l));
+    expect(changed).toEqual([
+      "-  { value: 'weekly', label: 'Weekly' },",
+      "+  { value: 'weekly', label: 'Weekly' },",
+      "-  return LIMITS[8][col] + EXTRA[col] * (size - 8);",
+      "+  return LIMITS[8][col] + EXTRA[col];",
+    ]);
+    const [head, first] = patch.split(/(?=^@@ )/m);
+    // the first hunk alone changes nothing; the whole patch is a real change, by its lines and by the file's tokens
+    expect(noOpReason(head! + first!, [], [])).toMatch(/^every line it changes is the same line/);
+    expect(noOpReason(patch, [], [])).toBeUndefined();
+    const before = "function limitFor(size, col) {\n  if (size <= 8) return LIMITS[size][col];\n  return LIMITS[8][col] + EXTRA[col] * (size - 8);\n}\n";
+    const after = before.replace(" * (size - 8)", "");
+    expect(noOpReason(patch, [src("src/server.js", before)], [src("src/server.js", after)])).toBeUndefined();
   });
 
   it("normalises whitespace inside a changed line; an indentation-significant file keeps its leading whitespace", () => {
