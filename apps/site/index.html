@@ -65,7 +65,7 @@
     <div class="wrap">
       <div class="sec-head">
         <h2 id="demo-h">One run, start to finish.</h2>
-        <p>The pantry spec goes in. Kane asks its questions and designs the tests, Claude Code builds from bug reports, and the breaker plants bugs for Kane to catch.</p>
+        <p>The pantry spec goes in. Kane asks its questions and designs the tests, Claude Code builds from Kane&rsquo;s bug reports, and with the criteria that pass, the breaker plants a bug against each for Kane to catch.</p>
       </div>
       <div class="video" id="video">
         <div class="video-pending">
@@ -75,6 +75,7 @@
       </div>
       <dl class="stats" id="demoStats"></dl>
       <p class="stats-note" id="demoNote" hidden>Figures from the recorded run land here with the video.</p>
+      <p class="finding" id="demoFinding" hidden></p>
     </div>
   </section>
 
@@ -156,6 +157,7 @@
         <h2 id="numbers-h">Scored on an exam the build never sees.</h2>
         <p>22 browser cases written from the Pennsylvania TEFAP table and the spec, committed with their hashes before any arm ran. Every arm builds the same pantry app, and each final app is scored once, with no reruns. <a class="tl" data-repo="eval/PREREGISTERED.md" href="#numbers">Pre-registration</a></p>
       </div>
+      <p class="verdict" id="examVerdict">Scores pending.</p>
       <div class="board">
         <div class="meters" id="meters" role="list"></div>
         <aside class="trap" aria-label="One case on the exam">
@@ -216,6 +218,8 @@
       <ul class="claims-list">
         <li><strong>OS-level isolation.</strong><span>The tests sit outside the repo, pinned by hash, with a hook on every agent tool call. That&rsquo;s a seal, not a sandbox.</span></li>
         <li><strong>Private test runs.</strong><span>Kane CLI uploads its runs to LambdaTest Test Manager.</span></li>
+        <li><strong>A win on the exam.</strong><span>All three builds passed every case. On this spec, Claude Code alone gets there.</span></li>
+        <li><strong>Real survivors.</strong><span>Every planted bug that got past Kane in the pantry run broke nothing its criterion says. Holdback still counts it, and has Kane rewrite tests.</span></li>
         <li><strong>Cheap authoring.</strong><span>In the first live run, Kane charged about 16 credits for each test step it authored. Replays cost 0 to 3 credits, and 17.6 when Kane had to heal one.</span></li>
       </ul>
     </div>

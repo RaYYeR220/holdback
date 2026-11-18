@@ -3,12 +3,12 @@ import results from "./data/results.json";
 import { CRITERIA } from "./data/run";
 import { initHero } from "./hero";
 
-type Arm = { id: string; name: string; about: string; passed: number | null; failingAtDone: number | null };
+type Arm = { id: string; name: string; about: string; passed: number | null; failingAtDone: number | null; claimedDone?: boolean | null };
 type Num = number | null;
 type Results = {
   links: { github: string | null; video: string | null };
   firstLiveRun: Record<"specRules" | "questions" | "criteria" | "tests" | "agentBuildSeconds" | "plantedBugs" | "caught" | "breakerUsd", Num>;
-  demo: Record<"criteria" | "turns" | "kaneCredits" | "plantedBugs" | "caught" | "breakerUsd", Num>;
+  demo: Record<"criteria" | "turns" | "kaneCredits" | "plantedBugs" | "caught" | "survived" | "survivedNoChange" | "survivedOtherRule" | "invalid" | "breakerUsd", Num>;
   exam: { cases: number; arms: Arm[] };
 };
 const R = results as unknown as Results;
@@ -121,6 +121,8 @@ if (statsEl) {
     ["Kane credits", demo.kaneCredits, (v) => Math.round(v).toLocaleString("en-US")],
     ["Bugs planted", demo.plantedBugs, String],
     ["Caught by Kane", demo.caught, String],
+    ["Got through", demo.survived, String],
+    ["Proved nothing", demo.invalid, String],
     ["Breaker cost", demo.breakerUsd, usd],
   ];
   for (const [label, v, fmt] of rows) {
@@ -134,7 +136,26 @@ if (statsEl) {
   if (note && rows.some(([, v]) => !isNum(v))) note.hidden = false;
 }
 
-/* ---------- the exam: one meter per arm ---------- */
+/* ---------- what the planted bugs found, from the same figures ---------- */
+const finding = $("demoFinding");
+if (finding && isNum(demo.caught) && isNum(demo.survived) && isNum(demo.invalid)) {
+  const split =
+    isNum(demo.survivedNoChange) && isNum(demo.survivedOtherRule)
+      ? ` broke nothing their criterion says: ${demo.survivedNoChange} changed no behaviour and ${demo.survivedOtherRule} broke a different rule, yet Holdback counted them as misses`
+      : " got past their criterion’s tests";
+  finding.textContent = `Of the ${demo.caught + demo.survived} planted bugs Kane could judge, it caught ${demo.caught}, each on two replays. The ${demo.survived} that got through${split}. The other ${demo.invalid} proved nothing either way, most on Kane’s own automation trouble.`;
+  finding.hidden = false;
+}
+
+/* ---------- the exam: one meter per arm, and what the scores say ---------- */
+const examVerdict = $("examVerdict");
+const scored = R.exam.arms.filter((a) => isNum(a.passed));
+if (examVerdict && scored.length === R.exam.arms.length && scored.length > 0) {
+  const same = scored.every((a) => a.passed === scored[0]!.passed);
+  examVerdict.textContent = same
+    ? `${scored.length === 3 ? "All three" : `All ${scored.length}`} builds passed ${scored[0]!.passed} of ${R.exam.cases}: this spec is within reach of Claude Code alone. The agent alone and the agent with its own Kane checks said done and were right, but neither checked that its checks can fail. Holdback held done back: Kane's own runs were too flaky for its gate to open.`
+    : scored.map((a) => `${a.name}: ${a.passed} of ${R.exam.cases}`).join(" · ");
+}
 const meters = $("meters");
 if (meters) {
   const cases = R.exam.cases;
@@ -155,7 +176,11 @@ if (meters) {
     const note = el(
       "div",
       "m-note",
-      !done ? "pending" : isNum(arm.failingAtDone) ? `${arm.failingAtDone} failing when it stopped` : "",
+      !done
+        ? "pending"
+        : [arm.claimedDone === true ? "claimed done" : arm.claimedDone === false ? "held back" : null, isNum(arm.failingAtDone) ? `${arm.failingAtDone} failing when it stopped` : null]
+            .filter(Boolean)
+            .join(" · "),
     );
     row.setAttribute("aria-label", done ? `${arm.name}: ${arm.passed} of ${cases} exam cases passed` : `${arm.name}: score pending`);
     row.append(name, bar, score, note);
