@@ -1294,7 +1294,7 @@ describe("runFalsify", { timeout: 60_000 }, () => {
       );
     });
 
-    it("a minted test may verify criteria of this use case only", async () => {
+    it("a minted test may verify criteria of this use case only; the tamper names the test and the criterion, not a sealed file", async () => {
       await strayed(
         {
           ...evolveWith((kit) => {
@@ -1304,6 +1304,62 @@ describe("runFalsify", { timeout: 60_000 }, () => {
         },
         [".testmuai/tests/t4_test.md"],
       );
+      const stray = (await readEvents(p.ledgerFile)).find((e) => e.t === "falsify.evolve.stray") as Extract<LedgerEvent, { t: "falsify.evolve.stray" }>;
+      expect(stray.detail).toBe("Kane's evolve of uc-1 minted tests Holdback may not seal: .testmuai/tests/t4_test.md (t-4: it verifies ac-9, not a criterion of uc-1)");
+    });
+
+    describe("a criterion Kane tied to a scenario, not a use case (live: the pantry's ac-39, under sc-7, verified by uc-1's sealed t-7)", () => {
+      /** The live evolve Holdback took for a tamper: Kane's store, its design log and the ledger (fixtures/kane/22-…). */
+      const LIVE_EVOLVE = JSON.parse(readFileSync(join(fxKane, "22-evolve-scenario-criterion.json"), "utf8"));
+      /** Kane derived it while designing: in its graph under no use case, never a criterion on the ledger. */
+      const AC39: AcNode = { id: LIVE_EVOLVE.kaneStore.ac.slug, text: LIVE_EVOLVE.kaneStore.ac.text, useCase: "", cites: [], trust: "trusted" };
+
+      it("is the live shape: scoped to a scenario only, verified by a sealed test of the use case, not one of its criteria; the new test verifying it was never a sealed file", () => {
+        const scopes = LIVE_EVOLVE.kaneStore.edges.filter((e: { type: string; src: string }) => e.type === "scoped_to" && e.src === "ac-39").map((e: { dst: string }) => e.dst);
+        expect(scopes).toEqual(["sc-7"]);
+        expect(LIVE_EVOLVE.sealedTest.verifies).toContain("ac-39");
+        expect(LIVE_EVOLVE.ledgerUseCase.acs).not.toContain("ac-39");
+        expect(LIVE_EVOLVE.evolveDesignLog.tests[0].verifies).toEqual(["ac-24", "ac-39", "ac-28"]);
+        expect(LIVE_EVOLVE.lastSeal.tests).not.toContain(LIVE_EVOLVE.stray.paths[0]);
+      });
+      /** uc-1 as Kane designed it: its sealed t-3 also verifies ac-39, which the design does not list as a criterion. */
+      const sealedVerifies39 = async () => {
+        const tests = [testNodes()[0]!, { ...testNodes()[1]!, verifies: ["ac-3", "ac-39"] }];
+        await log({ at, t: "design", useCase: "uc-1", acs: [AC1, AC3], tests, gaps: [], credits: 0 });
+        await log({ at, t: "seal", manifest: await seal(p.verifierDir, { appDir, files: appSealFiles(p) }) });
+        await greenTurn(2);
+      };
+      /** The live evolve's shape: a new test minted beside the sealed ones, none retired ("keptTests": 6). */
+      const mintsBeside = (verifies: string[], place: AcNode = AC39) => ({
+        evolve: (_n: number, kit: EvolveKit): EvolveResult => {
+          kit.placeAc(place);
+          kit.mint("t-4", verifies);
+          return { ...EVOLVED, minted: [{ scenario: "sc-25", test: "t-4" }], superseded: [] };
+        },
+      });
+
+      it("a new test of this use case may verify it when a sealed test of this use case already does", async () => {
+        await setup({ before: sealedVerifies39 });
+        const { deps, io } = fakes({ mutantRun: survives3, ...mintsBeside(["ac-3", "ac-39"]) });
+        const r = await runFalsify(p, deps, io, log);
+        expect(r).toMatchObject({ redesigned: ["uc-1"], reason: "done" });
+        const all = await readEvents(p.ledgerFile);
+        expect(all.some((e) => e.t === "falsify.evolve.stray" || e.t === "tamper")).toBe(false);
+        expect(all.find((e) => e.t === "falsify.evolved")).toMatchObject({ uc: "uc-1", minted: ["t-4"], retired: [] });
+        const sealEv = all.findLast((e) => e.t === "seal") as Extract<LedgerEvent, { t: "seal" }>;
+        expect(sealEv.by).toBe("kane");
+        expect(Object.keys(sealEv.manifest)).toContain(".testmuai/tests/t4_test.md");
+        // still no criterion of the ledger's: the gate counts uc-1's own
+        expect(reduce(all).acs["ac-39"]).toBeUndefined();
+      });
+
+      it("is a tamper when no sealed test of this use case verifies it", async () => {
+        await strayed(mintsBeside(["ac-3", "ac-39"]), [".testmuai/tests/t4_test.md"]);
+      });
+
+      it("is a tamper when Kane's graph puts it under another use case", async () => {
+        await strayed(mintsBeside(["ac-3", "ac-39"], { ...AC39, useCase: "uc-2" }), [".testmuai/tests/t4_test.md"], sealedVerifies39);
+      });
     });
 
     it("a graph that lists one test id twice is a tamper", async () => {

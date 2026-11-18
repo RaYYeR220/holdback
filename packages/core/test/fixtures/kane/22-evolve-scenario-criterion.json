@@ -1,0 +1,154 @@
+{
+  "about": "The pantry run, 2026-11-18: Kane's maintain evolve uc-1 that Holdback logged as falsify.evolve.stray. Excerpts: Kane's store (.context commits 10 and 11), its design log of that evolve, and the ledger. Sanitized: no home paths.",
+  "kaneStore": {
+    "ac": {
+      "slug": "ac-39",
+      "label": "ac",
+      "text": "The out-of-area result includes 'We serve ZIP codes 19104, 19139 and 19143 only.'."
+    },
+    "edges": [
+      {
+        "type": "scoped_to",
+        "src": "ac-39",
+        "dst": "sc-7"
+      },
+      {
+        "type": "exercises",
+        "src": "sc-7",
+        "dst": "ac-39"
+      },
+      {
+        "type": "verifies",
+        "src": "t-7",
+        "dst": "ac-39"
+      }
+    ]
+  },
+  "sealedTest": {
+    "id": "t-7",
+    "file": ".testmuai/tests/deny-an-out-of-area-household-despite-snap_test.md",
+    "verifies": [
+      "ac-24",
+      "ac-39",
+      "ac-28"
+    ]
+  },
+  "ledgerUseCase": {
+    "useCase": "uc-1",
+    "acs": [
+      "ac-24",
+      "ac-25",
+      "ac-26",
+      "ac-27",
+      "ac-28",
+      "ac-29",
+      "ac-30",
+      "ac-31",
+      "ac-32",
+      "ac-33",
+      "ac-34",
+      "ac-35",
+      "ac-36",
+      "ac-37",
+      "ac-38"
+    ]
+  },
+  "lastSeal": {
+    "at": "2026-11-18T08:14:24.006Z",
+    "tests": [
+      ".testmuai/tests/accept-an-in-area-benefit-above-the-income-limit_test.md",
+      ".testmuai/tests/already-picked-up-visit-cannot-be-undone-from-the-list_test.md",
+      ".testmuai/tests/annualize-biweekly-income-for-eligibility_test.md",
+      ".testmuai/tests/apply-the-published-ninth-member-monthly-increment_test.md",
+      ".testmuai/tests/block-the-booking-form-without-an-eligible-result_test.md",
+      ".testmuai/tests/book-a-pantry-visit-with-123-456-7890-rather-than-rejecting_test.md",
+      ".testmuai/tests/book-an-available-visit-and-confirm-proxy-and-schedule_test.md",
+      ".testmuai/tests/deny-an-out-of-area-household-despite-snap_test.md",
+      ".testmuai/tests/deny-size-two-monthly-income-above-its-published-limit_test.md",
+      ".testmuai/tests/exclude-a-confirmed-future-booking-from-today-s-volunteer-2_test.md",
+      ".testmuai/tests/exclude-a-confirmed-future-booking-from-today-s-volunteer_test.md",
+      ".testmuai/tests/exclude-known-other-day-households-from-today-s-volunteer_test.md",
+      ".testmuai/tests/inspect-anonymous-ordered-expected-roster-and-named-proxy-2_test.md",
+      ".testmuai/tests/inspect-anonymous-ordered-expected-roster-and-named-proxy_test.md",
+      ".testmuai/tests/inspect-ordered-picked-up-visits-in-their-own-section-2_test.md",
+      ".testmuai/tests/inspect-ordered-picked-up-visits-in-their-own-section_test.md",
+      ".testmuai/tests/keep-the-missing-proxy-visit-s-proxy-cell-empty_test.md",
+      ".testmuai/tests/last-expected-pickup-shows-the-empty-section-message_test.md",
+      ".testmuai/tests/pick-up-one-visit-without-changing-another-expected-visit_test.md",
+      ".testmuai/tests/prevent-a-second-monthly-visit-for-a-normalized-phone_test.md",
+      ".testmuai/tests/record-a-pickup-and-retain-it-after-reload_test.md",
+      ".testmuai/tests/reject-a-booking-without-a-chosen-visit-time_test.md",
+      ".testmuai/tests/reject-a-phone-number-without-ten-digits_test.md",
+      ".testmuai/tests/reject-invalid-required-eligibility-inputs_test.md",
+      ".testmuai/tests/show-a-six-household-slot-as-full-and-reject-a-stale-seventh_test.md",
+      ".testmuai/tests/show-the-empty-expected-today-message-alongside-pickups_test.md",
+      ".testmuai/tests/show-the-empty-picked-up-message-alongside-expected-visits_test.md"
+    ]
+  },
+  "evolveDesignLog": {
+    "tests": [
+      {
+        "title": "Deny unserved ZIP 20001 without a checked benefit",
+        "automates": "sc-25",
+        "verifies": [
+          "ac-24",
+          "ac-39",
+          "ac-28"
+        ]
+      },
+      {
+        "title": "Apply two published annual increments for ten household members",
+        "automates": "sc-26",
+        "verifies": [
+          "ac-31",
+          "ac-37",
+          "ac-26",
+          "ac-36"
+        ]
+      }
+    ],
+    "lineage": [
+      {
+        "reuseOf": {
+          "seen": 6,
+          "honored": 0,
+          "linked": 0,
+          "unresolved": 0
+        },
+        "byPair": 0,
+        "byCriteria": 0,
+        "byTitle": 0
+      },
+      {
+        "reuseOf": {
+          "seen": 0,
+          "honored": 0,
+          "linked": 0,
+          "unresolved": 0
+        },
+        "byPair": 0,
+        "byCriteria": 0,
+        "byTitle": 0,
+        "keptTests": 6
+      }
+    ],
+    "transcript": [
+      "designing: uc-1",
+      "warning: everything in this phase is already current — nothing re-committed",
+      "saved 15 ACs as drafts",
+      "saved 8 scenarios as drafts",
+      "saved judgements/wiring as drafts",
+      "saved 2 tests as drafts",
+      "⚒ wrote deny-unserved-zip-20001-without-a-checked-benefit_test.md · apply-two-published-annual-increments-for-ten-household_test.md"
+    ]
+  },
+  "stray": {
+    "t": "falsify.evolve.stray",
+    "uc": "uc-1",
+    "paths": [
+      ".testmuai/tests/deny-unserved-zip-20001-without-a-checked-benefit_test.md"
+    ],
+    "credits": 25.98,
+    "detail": "Kane's evolve of uc-1 changed sealed verifier files it did not mint or retire: .testmuai/tests/deny-unserved-zip-20001-without-a-checked-benefit_test.md"
+  }
+}
