@@ -42,18 +42,18 @@ describe("REPLAY: the static build renders the recorded run", () => {
     await ready(page);
 
     // the pantry demo run: the verdict's parts are long, the pill keeps them on one line
-    await expect(page.locator("[data-testid=gate]").textContent()).resolves.toMatch(/Held back.*23 owed.*2\/58 proved/);
+    await expect(page.locator("[data-testid=gate]").textContent()).resolves.toMatch(/Held back.*19 owed.*3\/58 proved/);
     await expect(page.locator("h1").textContent()).resolves.toBe("Held back.");
     expect(await page.locator("article.ac").count()).toBe(58);
-    expect([await colCount(page, "owed"), await colCount(page, "passing"), await colCount(page, "proved"), await colCount(page, "vacuous"), await colCount(page, "needs-spec")]).toEqual([23, 7, 2, 4, 22]);
+    expect([await colCount(page, "owed"), await colCount(page, "passing"), await colCount(page, "proved"), await colCount(page, "vacuous"), await colCount(page, "needs-spec")]).toEqual([19, 13, 3, 0, 23]);
     // the proved card carries the catch: Kane's words, the screenshot, the planted line
-    const ac29 = page.locator("[data-ac=ac-29]");
-    await expect(ac29.locator(".saw").textContent()).resolves.toBe("Eligible.");
-    await expect(ac29.locator(".d-add").textContent()).resolves.toContain('<button type="submit" disabled>Book a visit</button>');
+    const ac30 = page.locator("[data-ac=ac-30]");
+    await expect(ac30.locator(".saw").textContent()).resolves.toBe("Income counted: $36,000 per year.");
+    await expect(ac30.locator(".d-add").textContent()).resolves.toContain("incomeCents * 24");
     const shots = await page.$$eval(".thumb img", (imgs) => imgs.map((i) => (i as HTMLImageElement).naturalWidth));
     expect(shots.length).toBeGreaterThanOrEqual(3);
     expect(shots.every((w) => w === 1920)).toBe(true);
-    await expect(page.locator(".seg h3").allTextContents()).resolves.toEqual(["Spec", ...Array.from({ length: 9 }, (_, i) => `Turn ${i + 1}`)]);
+    await expect(page.locator(".seg h3").allTextContents()).resolves.toEqual(["Spec", ...Array.from({ length: 10 }, (_, i) => `Turn ${i + 1}`)]);
     // the scored exam, read from eval/results/summary.json at build time
     const exam = (await page.locator("#exam").textContent()) ?? "";
     expect(exam.match(/22\/22/g)).toHaveLength(3);
@@ -61,8 +61,8 @@ describe("REPLAY: the static build renders the recorded run", () => {
     expect(api).toEqual([]);
     expect(errors).toEqual([]);
     // the lightbox opens the full screenshot
-    await ac29.locator(".thumb").click();
-    await expect(page.locator("dialog.lightbox[open] img").getAttribute("src")).resolves.toBe("./artifacts/m-ac-29-1-step_001.png");
+    await ac30.locator(".thumb").click();
+    await expect(page.locator("dialog.lightbox[open] img").getAttribute("src")).resolves.toBe("./artifacts/m-ac-30-3-step_003.png");
     await page.close();
   });
 

@@ -15,12 +15,12 @@ const CLI = path.resolve(DASH, "..", "..", "packages", "cli", "dist", "index.js"
 const json = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 describe("the replay reduces the ledger exactly as core does", () => {
-  it("the fixture is the pantry demo run: 58 criteria, 23 owed, 7 passing, 2 proved, 4 vacuous, 22 without a test; 26 planted bugs, 4 caught", async () => {
+  it("the fixture is the pantry demo run: 58 criteria, 19 owed, 13 passing, 3 proved, 0 vacuous, 23 without a test; 51 planted bugs, 9 caught", async () => {
     const snap = await loadReplay(fixtureFetch);
     const by = snap.api.counts.byStatus;
-    expect(snap.events).toHaveLength(331);
-    expect(by).toEqual({ owed: 23, passing: 7, proved: 2, vacuous: 4, "needs-spec": 22 });
-    expect(snap.api.state.mutants).toEqual({ killed: 4, survived: 6, invalid: 16 });
+    expect(snap.events).toHaveLength(487);
+    expect(by).toEqual({ owed: 19, passing: 13, proved: 3, "needs-spec": 23 });
+    expect(snap.api.state.mutants).toEqual({ killed: 9, survived: 6, invalid: 36 });
     expect(snap.api.gate.open).toBe(false);
     expect(snap.api.config?.breaker.capUsd).toBe(2);
     expect(snap.api.config?.kane.capCredits).toBe(4500);
